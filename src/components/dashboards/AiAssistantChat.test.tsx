@@ -391,23 +391,79 @@ describe("dropping an image on the composer", () => {
  * the bottom — which is the state a freshly opened transcript is in, at the top of
  * the whole history. So nothing scrolled, and the reply someone opened the app to
  * read was a manual scroll away.
+ *
+ * jsdom reports every element as zero-height, and the reveal refuses to scroll a
+ * container it cannot measure, so these tests state the layout they are pretending
+ * to have. That is not a convenience: it is the difference the real bug turned on
+ * (a panel sized after mount), and a test that skipped it would pass while the app
+ * opened on the first message of the history on every launch — which is exactly
+ * what happened.
  */
 describe("where an opened chat starts", () => {
+  /**
+   * Report these box metrics from every element, so the reveal's "did it land?"
+   * check can be driven. jsdom computes no layout at all, so without this every
+   * element measures 0×0 and the question is unanswerable.
+   */
+  function stubBoxMetrics(metrics: { clientHeight: number; scrollHeight: number }): () => void {
+    const previous: Array<[string, PropertyDescriptor | undefined]> = Object.entries(metrics).map(
+      ([name]) => [name, Object.getOwnPropertyDescriptor(HTMLElement.prototype, name)],
+    );
+    for (const [name, value] of Object.entries(metrics)) {
+      Object.defineProperty(HTMLElement.prototype, name, { configurable: true, get: () => value });
+    }
+    return () => {
+      for (const [name, descriptor] of previous) {
+        if (descriptor) Object.defineProperty(HTMLElement.prototype, name, descriptor);
+        else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[name];
+      }
+    };
+  }
+
+  /** The reveal's own jump, told apart from the follow-tail effect's. */
+  const endJumps = (spy: ReturnType<typeof vi.fn>) =>
+    spy.mock.calls.filter(([options]) => (options as { block?: string } | undefined)?.block === "end")
+      .length;
+
   it("scrolls to the newest message", async () => {
     const spy = vi.fn();
     const original = Element.prototype.scrollIntoView;
     Element.prototype.scrollIntoView = spy;
+    // A transcript that fills the panel and is already at its end, which is where
+    // a successful reveal leaves it: one jump, and not a retry.
+    const restore = stubBoxMetrics({ clientHeight: 640, scrollHeight: 640 });
     try {
       render(<AiAssistantChat {...baseProps} />);
       // `block: "end"`, which is this jump and not the follow-tail effect: that
-      // one passes only `behavior`, and in jsdom it fires too (zero heights read as
-      // "already at the bottom"), so asserting a bare call would pass without the
-      // fix — verified by removing the effect and watching it still pass.
-      await waitFor(() =>
-        expect(spy).toHaveBeenCalledWith(expect.objectContaining({ block: "end", behavior: "auto" })),
-      );
+      // one passes only `behavior`, and in jsdom it fires too, so asserting a bare
+      // call would pass without the fix. Confirmed by removing the effect and
+      // watching the assertion below still fail on the count.
+      await waitFor(() => expect(endJumps(spy)).toBeGreaterThan(0));
+      expect(spy).toHaveBeenCalledWith(expect.objectContaining({ block: "end", behavior: "auto" }));
     } finally {
       Element.prototype.scrollIntoView = original;
+      restore();
+    }
+  });
+
+  it("keeps trying while the transcript reports it is not at the end", async () => {
+    // The reproduced failure, in one assertion. The transcript is taller than the
+    // panel and `scrollIntoView` did not land it at the end (in the app because
+    // the height was still changing; here because jsdom does not move `scrollTop`).
+    // One attempt and a "done" flag is what left a relaunched app showing the
+    // first message of the history for the rest of the session — the effect
+    // returns early once that flag is set, and the follow-tail effect will not
+    // fill in, because a container at the top is not following the bottom.
+    const spy = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = spy;
+    const restore = stubBoxMetrics({ clientHeight: 400, scrollHeight: 5_000 });
+    try {
+      render(<AiAssistantChat {...baseProps} />);
+      await waitFor(() => expect(endJumps(spy)).toBeGreaterThan(1));
+    } finally {
+      Element.prototype.scrollIntoView = original;
+      restore();
     }
   });
 });

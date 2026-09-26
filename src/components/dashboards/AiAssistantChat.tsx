@@ -12,7 +12,7 @@ import { useState, useRef, useEffect, useCallback, memo } from "react";
 import { Icon } from "../ui/Icon";
 import { Trash2, Copy, GitCommit, Maximize2, Minimize2, RefreshCw, Square, User, Check, ChevronDown, ChevronRight, Code, Code2, MessageSquare, ListTodo, X, Bot, CheckCircle2, Plus, Folder, GitBranch, ArrowUp, Image as ImageIcon, Database, AlertCircle, AtSign, Sparkles, Shield, Terminal, Search, Wrench, Users, HelpCircle } from "lucide-react";
 import type { PipelineStatus, PipelineOutputLine } from "../../types/telemetry";
-import { isFollowingBottom } from "../../services/scrollAnchor";
+import { FOLLOW_THRESHOLD_PX, isFollowingBottom } from "../../services/scrollAnchor";
 import {
   getConfiguredModelsList,
   ensureProvidersHydrated,
@@ -133,6 +133,19 @@ export type WorkflowMode = "agent" | "chat" | "plan";
  */
 const NO_STEPS: AgentStep[] = [];
 const NO_CHANGES: PendingFileChange[] = [];
+
+/**
+ * How many animation frames "open at the newest message" may keep correcting
+ * itself — 90 frames is about a second and a half at 60Hz.
+ *
+ * The scroll cannot be done once: the transcript is still being laid out when a
+ * hydrated history arrives (a `ChangeLogCard`, a code block, an expanded step
+ * drawer each change the height after the first paint), and a scroll issued
+ * against a height that is about to change leaves the view somewhere other than
+ * the end. Retrying is what makes it land; the cap is what stops a transcript
+ * that can never reach the end from spinning a frame loop.
+ */
+const REVEAL_ATTEMPTS = 90;
 
 export function cleanThoughtText(raw?: string): string {
   if (!raw) return "";
@@ -1096,14 +1109,54 @@ export function AiAssistantChat({
   // the top of the whole history, so the reply someone came back to read was a
   // manual scroll away. This runs once, when there is finally something to scroll
   // to (history arrives after mount), and then the follow logic takes over.
+  //
+  // "Once" is the whole difficulty, and it is why this checks where it landed
+  // rather than trusting that it ran. The transcript is still being laid out when
+  // history arrives — cards and code blocks land over several frames — so
+  // `scrollIntoView` can fire against a box whose height is about to change and
+  // leave the view at the top while looking like success. Marking the scroll done
+  // at that point wedges it for good: the effect returns early from then on, and
+  // the follow-tail effect will not fill in, because a container at the top is by
+  // definition not following the bottom. So it retries for a moment, stops the
+  // instant the view is really at the end, and only then sets the flag. Verified
+  // by hand on a relaunch with a five-message transcript: the manual scroll
+  // reached the newest message while the automatic one had left it at the first,
+  // and after this change the automatic one lands where the manual one did.
   const didInitialScroll = useRef(false);
   useEffect(() => {
     if (didInitialScroll.current || chatMessages.length === 0) return;
-    didInitialScroll.current = true;
-    // After paint: the sentinel has to exist and the list has to be laid out, or
-    // this scrolls to a height that is about to change.
-    const frame = requestAnimationFrame(() => {
-      chatBottomRef.current?.scrollIntoView({ block: "end", behavior: "auto" });
+    let attempts = 0;
+    let settledHeight = -1;
+    let pinnedTop = -1;
+    let frame = requestAnimationFrame(function reveal() {
+      if (didInitialScroll.current) return;
+      const container = transcriptScrollRef.current;
+      const sentinel = chatBottomRef.current;
+      attempts += 1;
+      if (container && sentinel) {
+        // The reader scrolled away under their own steam — this is a jump for a
+        // transcript that has just opened, not a lock on the scrollbar.
+        if (pinnedTop >= 0 && container.scrollTop < pinnedTop - FOLLOW_THRESHOLD_PX) {
+          didInitialScroll.current = true;
+          return;
+        }
+        sentinel.scrollIntoView({ block: "end", behavior: "auto" });
+        pinnedTop = container.scrollTop;
+        // Done once the view is at the end *and* the transcript has stopped
+        // growing. "At the end" alone is not enough to stop on: while history is
+        // still being laid out the content is momentarily shorter than the panel,
+        // so the view is trivially at the end and the next frame moves it.
+        if (isFollowingBottom(container) && container.scrollHeight === settledHeight) {
+          didInitialScroll.current = true;
+          return;
+        }
+        settledHeight = container.scrollHeight;
+      }
+      // Not at the end yet — layout is still moving. Keep going for about a
+      // second and a half, then accept it, so a transcript that can never reach
+      // the end does not spin a frame loop forever.
+      if (attempts < REVEAL_ATTEMPTS) frame = requestAnimationFrame(reveal);
+      else didInitialScroll.current = true;
     });
     return () => cancelAnimationFrame(frame);
   }, [chatMessages.length]);
