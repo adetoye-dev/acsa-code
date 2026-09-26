@@ -23,8 +23,11 @@ import {
 } from "lucide-react";
 import { Icon } from "../ui/Icon";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { FileIcon } from "../ui/FileIcon";
 import { SurfaceFallback } from "../ui/SurfaceFallback";
+import { CommitGraph } from "./CommitGraph";
 import { gitFetch } from "../../services/gitClient";
+import type { GitCommit, GitRef } from "../../services/gitGraph";
 
 /* Monaco is ~1.5 MB. This page is part of the workbench bundle, so the diff
    surface loads only when a file is actually being reviewed — the same rule the
@@ -59,6 +62,9 @@ interface GitResponse {
   unstaged?: ChangedGitFile[];
   originalContent?: string;
   modifiedContent?: string;
+  commits?: GitCommit[];
+  refs?: GitRef[];
+  head?: string;
 }
 
 /** `git status --porcelain` letters, in the colours people expect for them. */
@@ -79,6 +85,12 @@ function statusTone(status: string): string {
 }
 
 const shortName = (path: string) => path.split("/").pop() || path;
+/** The dimmed half of a path, the way source control lists truncate to. */
+const parentDir = (path: string) => {
+  const parts = path.split("/");
+  parts.pop();
+  return parts.join("/");
+};
 
 export function GitDashboard({ projectCwd, onWorkspaceChanged }: GitDashboardProps) {
   const [isGit, setIsGit] = useState(true);
@@ -96,6 +108,12 @@ export function GitDashboard({ projectCwd, onWorkspaceChanged }: GitDashboardPro
   const [diff, setDiff] = useState<{ path: string; original: string; modified: string } | null>(null);
   const [isDiffLoading, setIsDiffLoading] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState<ChangedGitFile | null>(null);
+  const [commits, setCommits] = useState<GitCommit[]>([]);
+  const [refs, setRefs] = useState<GitRef[]>([]);
+  const [head, setHead] = useState("");
+  const [isLogLoading, setIsLogLoading] = useState(true);
+  /** A history that could not be read is not an empty history, and says so. */
+  const [logError, setLogError] = useState<string | null>(null);
   const requestSeq = useRef(0);
 
   const call = useCallback(
@@ -127,13 +145,30 @@ export function GitDashboard({ projectCwd, onWorkspaceChanged }: GitDashboardPro
     return data;
   }, [call]);
 
+  /**
+   * The history, which the graph draws. Sixty is enough to fill the pane at any
+   * window size and cheap for git to read; the count is shown, so a truncated
+   * history says so rather than looking like the whole repository.
+   */
+  const fetchLog = useCallback(async () => {
+    setIsLogLoading(true);
+    const data = await call("log", { limit: 60 });
+    const failed = data.success === false;
+    setLogError(failed ? data.error || "The history could not be read." : null);
+    setCommits(failed ? [] : data.commits || []);
+    setRefs(failed ? [] : data.refs || []);
+    setHead(failed ? "" : data.head || "");
+    setIsLogLoading(false);
+  }, [call]);
+
   useEffect(() => {
     setSelected(null);
     setDiff(null);
     setNotice(null);
     setCommitMessage("");
     void fetchStatus();
-  }, [fetchStatus]);
+    void fetchLog();
+  }, [fetchStatus, fetchLog]);
 
   /** Preview a file's diff. The newest request wins; older ones are dropped. */
   const preview = useCallback(
@@ -170,6 +205,8 @@ export function GitDashboard({ projectCwd, onWorkspaceChanged }: GitDashboardPro
       }
       setNotice({ tone: "ok", text: data.output || data.message || `${action} done` });
       const status = await fetchStatus();
+      // A commit moves the graph; so does a fetch, which can bring commits in.
+      await fetchLog();
       onWorkspaceChanged?.();
       if (selected) {
         const stillChanged = [...(status.staged || []), ...(status.unstaged || [])].some(
@@ -183,7 +220,7 @@ export function GitDashboard({ projectCwd, onWorkspaceChanged }: GitDashboardPro
       setBusy(null);
       return true;
     },
-    [call, fetchStatus, onWorkspaceChanged, selected]
+    [call, fetchStatus, fetchLog, onWorkspaceChanged, selected]
   );
 
   const commit = useCallback(async () => {
@@ -247,7 +284,49 @@ export function GitDashboard({ projectCwd, onWorkspaceChanged }: GitDashboardPro
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        {/* ── The commit, and the changes it is about ─────────────────────
+            Message first, as source control does: the box at the bottom of the
+            panel is the one thing you have to scroll to find after staging. */}
+        <div className="flex min-h-0 flex-[1.5] flex-col">
+        <div className="shrink-0 border-b border-hairline p-2.5">
+          <textarea
+            value={commitMessage}
+            onChange={(event) => setCommitMessage(event.target.value)}
+            onKeyDown={(event) => {
+              if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && canCommit) {
+                event.preventDefault();
+                void commit();
+              }
+            }}
+            rows={2}
+            placeholder="Commit message"
+            aria-label="Commit message"
+            data-testid="git-commit-message"
+            className="w-full resize-none rounded-lg border border-hairline bg-canvas px-2.5 py-2 font-sans text-2xs text-zinc-100 outline-none placeholder:text-zinc-500 focus:border-accent"
+          />
+          <button
+            type="button"
+            disabled={!canCommit || busy !== null}
+            onClick={() => void commit()}
+            data-testid="git-commit"
+            className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg bg-emerald-700 px-2.5 py-1.5 text-2xs font-semibold text-white transition-colors hover:bg-emerald-600 disabled:opacity-40"
+          >
+            <Icon icon={GitCommitHorizontal} className="w-3.5 h-3.5" />
+            <span>
+              Commit {staged.length > 0 ? `${staged.length} file${staged.length === 1 ? "" : "s"}` : ""}
+            </span>
+          </button>
+          <div className="mt-1.5 truncate text-4xs text-zinc-500">
+            {busy ? `${busy}…` : notice ? notice.text : `${totalChanges} changed`}
+          </div>
+          {notice?.tone === "error" && (
+            <div className="mt-2 rounded-lg border border-red-800 bg-red-950/50 px-2.5 py-2 text-4xs text-red-300">
+              {notice.text}
+            </div>
+          )}
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto" data-testid="git-changes">
           {!isGit ? (
             <div className="p-4 text-2xs leading-relaxed text-zinc-400">
               This folder is not a git repository, so there is nothing to review here. Initialize
@@ -285,54 +364,23 @@ export function GitDashboard({ projectCwd, onWorkspaceChanged }: GitDashboardPro
                 onDiscard={(file) => setConfirmDiscard(file)}
               />
               {totalChanges === 0 && !isLoading && (
-                <div className="px-4 py-6 text-2xs leading-relaxed text-zinc-400">
+                <div className="px-3 py-5 text-2xs leading-relaxed text-zinc-400">
                   Nothing to commit — the working tree is clean.
                 </div>
               )}
             </>
           )}
         </div>
-
-        {/* ── Commit ─────────────────────────────────────────────────────── */}
-        <div className="border-t border-hairline p-3">
-          <textarea
-            value={commitMessage}
-            onChange={(event) => setCommitMessage(event.target.value)}
-            onKeyDown={(event) => {
-              if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && canCommit) {
-                event.preventDefault();
-                void commit();
-              }
-            }}
-            rows={3}
-            placeholder="Commit message"
-            aria-label="Commit message"
-            data-testid="git-commit-message"
-            className="w-full resize-none rounded-lg border border-hairline bg-canvas px-2.5 py-2 font-sans text-2xs text-zinc-100 outline-none placeholder:text-zinc-500 focus:border-accent"
-          />
-          <div className="mt-2 flex items-center justify-between gap-2">
-            <span className="truncate text-4xs text-zinc-500">
-              {busy ? `${busy}…` : notice ? notice.text : `${totalChanges} changed`}
-            </span>
-            <button
-              type="button"
-              disabled={!canCommit || busy !== null}
-              onClick={() => void commit()}
-              data-testid="git-commit"
-              className="flex shrink-0 items-center gap-1.5 rounded-lg bg-emerald-700 px-2.5 py-1.5 text-2xs font-semibold text-white transition-colors hover:bg-emerald-600 disabled:opacity-40"
-            >
-              <Icon icon={GitCommitHorizontal} className="w-3.5 h-3.5" />
-              <span>
-                Commit {staged.length > 0 ? `${staged.length} file${staged.length === 1 ? "" : "s"}` : ""}
-              </span>
-            </button>
-          </div>
-          {notice?.tone === "error" && (
-            <div className="mt-2 rounded-lg border border-red-800 bg-red-950/50 px-2.5 py-2 text-4xs text-red-300">
-              {notice.text}
-            </div>
-          )}
         </div>
+
+        <CommitGraph
+          commits={commits}
+          refs={refs}
+          head={head}
+          isLoading={isLogLoading}
+          error={logError}
+          onRefresh={() => void fetchLog()}
+        />
       </div>
 
       {/* ── Diff ──────────────────────────────────────────────────────────── */}
@@ -459,16 +507,24 @@ function ChangeGroup({
               onClick={() => onPreview(file)}
               data-testid={`git-file-${file.path}`}
               title={file.path}
-              className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1 py-0.5 text-left"
+              className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 py-0.5 text-left"
             >
-              <span className={`shrink-0 font-mono text-2xs ${statusTone(status)}`}>
-                {status?.trim() || "M"}
+              <FileIcon fileName={file.path} className="w-3.5 h-3.5 shrink-0" />
+              <span className="min-w-0 flex-1 truncate text-2xs text-zinc-200">
+                {shortName(file.path)}
               </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-2xs text-zinc-200">{shortName(file.path)}</span>
-                <span className="block truncate font-mono text-4xs text-zinc-500">{file.path}</span>
-              </span>
+              {parentDir(file.path) && (
+                <span className="hidden min-w-0 shrink-0 truncate font-mono text-4xs text-zinc-500 xl:inline">
+                  {parentDir(file.path)}
+                </span>
+              )}
             </button>
+            <span
+              className={`shrink-0 font-mono text-2xs ${statusTone(status)}`}
+              title={status?.trim() || "M"}
+            >
+              {status?.trim() || "M"}
+            </span>
             <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
               <button
                 type="button"
