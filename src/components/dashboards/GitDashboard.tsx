@@ -847,6 +847,7 @@ export function GitDashboard({
               /* Nothing local is selected, so the pane answers the questions that
                  are not local: checks, pull requests, and your issues. */
               <RepoOverview
+                projectCwd={projectCwd}
                 data={overview.data}
                 isLoading={overview.isLoading}
                 checkedAt={overview.checkedAt}

@@ -19,7 +19,7 @@
  *   failed says so rather than rendering as an empty list, which would read as
  *   "you have none".
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowUpRight,
   CheckCircle2,
@@ -35,9 +35,18 @@ import {
 import { Icon } from "../ui/Icon";
 import { openExternal } from "../../services/openExternal";
 import { durationLabel, relativeDate } from "../../services/relativeTime";
-import type { GhIssue, GhOverview, GhPullRequest, GhRun } from "../../services/ghClient";
+import { ghRunLog } from "../../services/ghClient";
+import type {
+  GhIssue,
+  GhOverview,
+  GhPullRequest,
+  GhRun,
+  GhRunLog,
+} from "../../services/ghClient";
 
 interface RepoOverviewProps {
+  /** Needed for the one call this panel makes on demand: a failed run's log. */
+  projectCwd: string;
   data: GhOverview | null;
   isLoading: boolean;
   /** When the answer was read, epoch ms; 0 before the first one arrives. */
@@ -133,10 +142,121 @@ function RowLink({
       data-testid={testId}
       title={url}
       onClick={() => void openExternal(url)}
-      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-white/5"
+      className="flex w-full min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-white/5"
     >
       {children}
     </button>
+  );
+}
+
+/**
+ * Runs whose failed-step log can say something.
+ *
+ * A cancelled run is included on purpose: the panel then answers "GitHub has no
+ * failed-step log" rather than leaving a person wondering whether the button is
+ * missing because the run somehow passed.
+ */
+function hasFailure(run: GhRun): boolean {
+  const conclusion = (run.conclusion || "").toLowerCase();
+  return ["failure", "startup_failure", "timed_out", "cancelled", "action_required"].includes(
+    conclusion
+  );
+}
+
+/**
+ * Why a run is red: the tail of its failed steps' logs, in place.
+ *
+ * Fetched here rather than from the page's own hook because it is wanted one run
+ * at a time, on a click, and only for the row that asked.
+ */
+function RunLogPanel({
+  run,
+  log,
+  isLoading,
+  onClose,
+}: {
+  run: GhRun;
+  log: GhRunLog | null;
+  isLoading: boolean;
+  onClose: () => void;
+}) {
+  const bodyRef = useRef<HTMLPreElement | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    // The end of the tail is where the error is; making someone scroll to it would
+    // undo the point of showing a tail at all.
+    if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+  }, [log]);
+
+  const summary = log ? [...log.jobs, ...log.steps].join(" · ") : "";
+
+  return (
+    <div
+      data-testid={`gh-log-${run.id}`}
+      className="mx-2.5 mb-2 overflow-hidden rounded-lg border border-hairline bg-black/30"
+    >
+      <div className="flex items-center gap-2 border-b border-hairline px-2.5 py-1.5">
+        <span className="shrink-0 text-4xs font-semibold uppercase tracking-wider text-zinc-500">
+          Why it failed
+        </span>
+        <span className="min-w-0 flex-1 truncate text-4xs text-zinc-500" title={summary}>
+          {summary}
+        </span>
+        {log?.available && log.lines.length > 0 && (
+          <button
+            type="button"
+            data-testid={`gh-log-copy-${run.id}`}
+            onClick={() => {
+              void navigator.clipboard?.writeText(log.lines.join("\n")).then(
+                () => setCopied(true),
+                () => setCopied(false)
+              );
+            }}
+            className="shrink-0 text-4xs text-zinc-500 transition-colors hover:text-zinc-200"
+          >
+            {copied ? "copied" : "Copy"}
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close the log"
+          className="shrink-0 text-4xs text-zinc-500 transition-colors hover:text-zinc-200"
+        >
+          Close
+        </button>
+      </div>
+
+      {isLoading ? (
+        <p className="px-2.5 py-2 text-2xs text-zinc-500">Reading the log…</p>
+      ) : !log ? (
+        null
+      ) : !log.available ? (
+        <p
+          data-testid="gh-log-message"
+          className="px-2.5 py-2 text-2xs leading-relaxed text-zinc-400"
+        >
+          {log.detail}
+        </p>
+      ) : (
+        <>
+          <pre
+            ref={bodyRef}
+            data-testid="gh-log-lines"
+            className="max-h-72 overflow-auto whitespace-pre-wrap px-2.5 py-2 font-mono text-2xs leading-relaxed text-zinc-300"
+          >
+            {log.lines.join("\n")}
+          </pre>
+          <div className="border-t border-hairline px-2.5 py-1 text-4xs text-zinc-500">
+            {/* A log that quietly starts mid-way reads as the whole story. */}
+            {log.dropped > 0
+              ? `Last ${log.lines.length} of ${log.lines.length + log.dropped} lines — the run has the rest.`
+              : `${log.lines.length} lines, all of them.`}
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -154,8 +274,42 @@ function SectionError({ message }: { message: string }) {
 
 const MUTED_LINE = "px-2.5 py-2 text-2xs leading-relaxed text-zinc-500";
 
-export function RepoOverview({ data, isLoading, checkedAt, onRefresh }: RepoOverviewProps) {
+export function RepoOverview({
+  projectCwd,
+  data,
+  isLoading,
+  checkedAt,
+  onRefresh,
+}: RepoOverviewProps) {
   const [copied, setCopied] = useState(false);
+  /**
+   * The run whose failed-step log is open, if any. One at a time.
+   *
+   * Row ids are the `gh-run-` namespace and the harness counts rows by it, so the
+   * panel's own ids stay out of it.
+   */
+  const [openRunId, setOpenRunId] = useState<number | null>(null);
+  const [log, setLog] = useState<GhRunLog | null>(null);
+  const [isLogLoading, setIsLogLoading] = useState(false);
+  /** The newest request wins; a closed panel's answer is dropped. */
+  const logSeq = useRef(0);
+
+  const toggleLog = async (run: GhRun) => {
+    if (openRunId === run.id) {
+      logSeq.current += 1;
+      setOpenRunId(null);
+      setLog(null);
+      return;
+    }
+    const seq = ++logSeq.current;
+    setOpenRunId(run.id);
+    setLog(null);
+    setIsLogLoading(true);
+    const next = await ghRunLog(projectCwd, run.id ?? 0);
+    if (seq !== logSeq.current) return;
+    setLog(next);
+    setIsLogLoading(false);
+  };
 
   if (!data) {
     return (
@@ -261,24 +415,53 @@ export function RepoOverview({ data, isLoading, checkedAt, onRefresh }: RepoOver
         data.runs.map((run) => {
           const look = runAppearance(run);
           return (
-            <RowLink key={`${run.id}-${run.createdAt}`} url={run.url} testId={`gh-run-${run.id}`}>
-              <Icon icon={look.icon} className={`w-3.5 h-3.5 shrink-0 ${look.tone}`} />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-2xs text-zinc-200">
-                  {run.title || run.workflow || "workflow run"}
-                </span>
-                <span className="mt-0.5 block truncate text-4xs text-zinc-500">
-                  {[run.workflow, run.branch, look.label].filter(Boolean).join(" · ")}
-                </span>
-              </span>
-              <span className="flex shrink-0 items-center gap-1 font-mono text-4xs text-zinc-400">
-                {run.durationSeconds !== null && <Clock className="w-3 h-3 text-zinc-500" />}
-                {durationLabel(run.durationSeconds)}
-              </span>
-              <span className="w-16 shrink-0 text-right text-4xs text-zinc-500">
-                {relativeDate(run.createdAt)}
-              </span>
-            </RowLink>
+            <div key={`${run.id}-${run.createdAt}`}>
+              <div className="flex items-center gap-1 pr-2.5">
+                <RowLink url={run.url} testId={`gh-run-${run.id}`}>
+                  <Icon icon={look.icon} className={`w-3.5 h-3.5 shrink-0 ${look.tone}`} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-2xs text-zinc-200">
+                      {run.title || run.workflow || "workflow run"}
+                    </span>
+                    <span className="mt-0.5 block truncate text-4xs text-zinc-500">
+                      {[run.workflow, run.branch, look.label].filter(Boolean).join(" · ")}
+                    </span>
+                  </span>
+                  <span className="flex shrink-0 items-center gap-1 font-mono text-4xs text-zinc-400">
+                    {run.durationSeconds !== null && <Clock className="w-3 h-3 text-zinc-500" />}
+                    {durationLabel(run.durationSeconds)}
+                  </span>
+                  <span className="w-16 shrink-0 text-right text-4xs text-zinc-500">
+                    {relativeDate(run.createdAt)}
+                  </span>
+                </RowLink>
+                {/* Beside the row, not inside it: a button within a button is not a
+                    thing a browser will render, and this needs its own click. */}
+                {hasFailure(run) && run.id !== null && (
+                  <button
+                    type="button"
+                    data-testid={`gh-why-${run.id}`}
+                    title="Read the failed step's log"
+                    onClick={() => void toggleLog(run)}
+                    className="shrink-0 rounded-md px-1.5 py-1 text-4xs text-zinc-400 transition-colors hover:bg-white/5 hover:text-zinc-100"
+                  >
+                    {openRunId === run.id ? "Hide" : "Why?"}
+                  </button>
+                )}
+              </div>
+              {openRunId === run.id && (
+                <RunLogPanel
+                  run={run}
+                  log={log}
+                  isLoading={isLogLoading}
+                  onClose={() => {
+                    logSeq.current += 1;
+                    setOpenRunId(null);
+                    setLog(null);
+                  }}
+                />
+              )}
+            </div>
           );
         })
       )}

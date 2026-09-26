@@ -77,6 +77,26 @@ export interface GhOverview {
   errors: Record<string, string>;
 }
 
+/**
+ * The tail of a run's failed steps: why it is red.
+ *
+ * `dropped` is how many lines the tail left behind, and it is shown — a log that
+ * quietly starts mid-way reads as the whole story. `reason` is `no-log` when
+ * nothing failed in that run (`--log-failed` prints nothing for a cancelled run or
+ * an expired log), which is a fact about the run rather than an error.
+ */
+export interface GhRunLog {
+  success: boolean;
+  available: boolean;
+  reason: string | null;
+  detail: string;
+  raw: string;
+  lines: string[];
+  dropped: number;
+  jobs: string[];
+  steps: string[];
+}
+
 const EMPTY: Omit<GhOverview, "reason" | "detail"> = {
   success: false,
   available: false,
@@ -100,6 +120,40 @@ export async function ghOverview(cwd: string, limit = 5): Promise<GhOverview> {
       reason: "failed",
       detail: "The GitHub CLI could not be run.",
       raw: String((error as Error)?.message ?? error),
+    };
+  }
+}
+
+export async function ghRunLog(cwd: string, runId: number, tail = 120): Promise<GhRunLog> {
+  if (!hasIpc()) {
+    return {
+      success: false,
+      available: false,
+      reason: "desktop-required",
+      detail: DESKTOP_REQUIRED_MESSAGE,
+      raw: "",
+      lines: [],
+      dropped: 0,
+      jobs: [],
+      steps: [],
+    };
+  }
+  try {
+    return await engineCall<GhRunLog>("gh", [
+      "run-log",
+      JSON.stringify({ cwd, runId, tail }),
+    ]);
+  } catch (error) {
+    return {
+      success: false,
+      available: false,
+      reason: "failed",
+      detail: "The GitHub CLI could not be run.",
+      raw: String((error as Error)?.message ?? error),
+      lines: [],
+      dropped: 0,
+      jobs: [],
+      steps: [],
     };
   }
 }

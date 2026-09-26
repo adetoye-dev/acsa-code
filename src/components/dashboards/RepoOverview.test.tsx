@@ -11,6 +11,32 @@ vi.mock("../../services/openExternal", () => ({
   },
 }));
 
+/** What the run-log call answers, and what it was asked for. */
+const logMock = vi.hoisted(() => ({
+  runIds: [] as number[],
+  result: {
+    success: true,
+    available: true,
+    reason: null as string | null,
+    detail: "",
+    raw: "",
+    lines: [
+      "npm test",
+      "AssertionError: expected 1 to be 2",
+      "##[error]Process completed with exit code 1.",
+    ],
+    dropped: 1814,
+    jobs: ["Verify (typecheck, tests, build)"],
+    steps: ["Rust shell compiles"],
+  },
+}));
+vi.mock("../../services/ghClient", () => ({
+  ghRunLog: async (_cwd: string, runId: number) => {
+    logMock.runIds.push(runId);
+    return logMock.result;
+  },
+}));
+
 const { RepoOverview } = await import("./RepoOverview");
 
 const RUN = {
@@ -25,6 +51,17 @@ const RUN = {
   updatedAt: new Date(Date.now() - 3 * 3600_000 + 487_000).toISOString(),
   durationSeconds: 487,
   url: "https://github.com/adetoye-dev/asca-code/actions/runs/36207865178",
+};
+
+const FAILED_RUN = {
+  ...RUN,
+  id: 36207824813,
+  title: "Add agent controls, project snapshots, and workbench UI updates",
+  workflow: "CI",
+  conclusion: "failure",
+  branch: "dev",
+  durationSeconds: 523,
+  url: "https://github.com/adetoye-dev/asca-code/actions/runs/36207824813",
 };
 
 const PR = {
@@ -67,11 +104,25 @@ const unavailable = (reason: string, detail: string, over: Partial<GhOverview> =
 });
 
 const renderPanel = (data: GhOverview | null, isLoading = false) =>
-  render(<RepoOverview data={data} isLoading={isLoading} checkedAt={Date.now()} onRefresh={() => {}} />);
+  render(
+    <RepoOverview
+      projectCwd="/work/acsa-code"
+      data={data}
+      isLoading={isLoading}
+      checkedAt={Date.now()}
+      onRefresh={() => {}}
+    />
+  );
 
 afterEach(() => {
   cleanup();
   opened.urls = [];
+  logMock.runIds = [];
+  logMock.result = { ...logMock.result, available: true, reason: null, dropped: 1814, lines: [
+    "npm test",
+    "AssertionError: expected 1 to be 2",
+    "##[error]Process completed with exit code 1.",
+  ] };
 });
 
 describe("the repository landing panel", () => {
@@ -151,5 +202,49 @@ describe("the repository landing panel", () => {
     expect(screen.getAllByText("Assigned to you").length).toBeGreaterThan(0);
     expect(screen.getByText("Crash when opening a project")).toBeTruthy();
     expect(screen.getByText("bug")).toBeTruthy();
+  });
+
+  it("reads why a failed run is red, and says when it is only a tail", async () => {
+    renderPanel(available({ runs: [RUN, FAILED_RUN] }));
+    fireEvent.click(await screen.findByTestId("gh-why-36207824813"));
+
+    const body = await screen.findByTestId("gh-log-lines");
+    expect(body.textContent).toContain("AssertionError: expected 1 to be 2");
+    // The header names the job and step, so the tail is not anonymous.
+    expect(screen.getByText(/Verify \(typecheck, tests, build\) · Rust shell compiles/)).toBeTruthy();
+    // And the reader is told they are not seeing the whole log.
+    expect(screen.getByText(/Last 3 of 1817 lines/)).toBeTruthy();
+    expect(logMock.runIds).toEqual([36207824813]);
+  });
+
+  it("closes the log again, and offers nothing for a run that passed", async () => {
+    renderPanel(available({ runs: [RUN, FAILED_RUN] }));
+    // The passing run has no failed step for a log to explain.
+    expect(screen.queryByTestId("gh-why-36207865178")).toBeNull();
+
+    fireEvent.click(await screen.findByTestId("gh-why-36207824813"));
+    await screen.findByTestId("gh-log-lines");
+    // Clicking it again is a toggle, not a second fetch.
+    fireEvent.click(screen.getByTestId("gh-why-36207824813"));
+    expect(screen.queryByTestId("gh-log-lines")).toBeNull();
+    expect(logMock.runIds.length).toBe(1);
+  });
+
+  it("says when a run has no failed log instead of showing an empty one", async () => {
+    logMock.result = {
+      ...logMock.result,
+      available: false,
+      reason: "no-log",
+      detail:
+        "This run has no failed-step log — it may have been cancelled, or the log may have expired (GitHub keeps them for 90 days).",
+      lines: [],
+      dropped: 0,
+    };
+    renderPanel(available({ runs: [FAILED_RUN] }));
+    fireEvent.click(await screen.findByTestId("gh-why-36207824813"));
+
+    expect(await screen.findByTestId("gh-log-message")).toBeTruthy();
+    expect(screen.getByText(/no failed-step log/)).toBeTruthy();
+    expect(screen.queryByTestId("gh-log-lines")).toBeNull();
   });
 });
