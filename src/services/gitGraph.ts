@@ -34,6 +34,8 @@ export interface GitRef {
 /** One file inside a commit — what the commit view lists beside the diff. */
 export interface GitCommitFile {
   path: string;
+  /** Where the file was, when the commit renamed or copied it. */
+  fromPath?: string;
   /** `git`'s own letter: M, A, D, R, C, T. */
   status: string;
   /** `null` for a binary file, where git reports `-` rather than a count. */

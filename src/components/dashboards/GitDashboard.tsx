@@ -13,6 +13,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
+  Check,
   FileCode,
   GitBranch,
   GitCommitHorizontal,
@@ -40,6 +41,8 @@ const MonacoDiffContainer = lazy(() =>
 
 export interface ChangedGitFile {
   path: string;
+  /** Where the file was, for a rename or a copy; empty for everything else. */
+  fromPath?: string;
   indexStatus: string;
   workTreeStatus: string;
   isStaged: boolean;
@@ -49,6 +52,13 @@ interface GitDashboardProps {
   projectCwd: string;
   /** Something on disk moved: refresh the tree and the branch in the titlebar. */
   onWorkspaceChanged?: () => void;
+  /**
+   * Bumped whenever the workspace is re-read, which is how this page hears about
+   * changes it did not make: a checkout from the titlebar, an agent writing files
+   * in the chat, the tree's own refresh. Without it the page kept showing the
+   * branch and the changes it had seen when it mounted.
+   */
+  workspaceRevision?: number;
 }
 
 interface GitResponse {
@@ -62,6 +72,9 @@ interface GitResponse {
   behind?: number;
   staged?: ChangedGitFile[];
   unstaged?: ChangedGitFile[];
+  conflicted?: ChangedGitFile[];
+  /** `merge`, `rebase`, `cherry-pick`, `revert`, or empty when nothing is in flight. */
+  operation?: string;
   originalContent?: string;
   modifiedContent?: string;
   commits?: GitCommit[];
@@ -89,6 +102,9 @@ function statusTone(status: string): string {
       return "text-emerald-400";
     case "D":
       return "text-red-400";
+    // An unresolved conflict: the one status where committing is not possible.
+    case "U":
+      return "text-red-400";
     case "R":
       return "text-sky-400";
     case "M":
@@ -97,6 +113,14 @@ function statusTone(status: string): string {
       return "text-zinc-400";
   }
 }
+
+/** How a half-finished operation reads above the changes it is about. */
+const OPERATION_LABELS: Record<string, string> = {
+  merge: "Merging",
+  rebase: "Rebasing",
+  "cherry-pick": "Cherry-picking",
+  revert: "Reverting",
+};
 
 const shortName = (path: string) => path.split("/").pop() || path;
 /** The dimmed half of a path, the way source control lists truncate to. */
@@ -176,13 +200,21 @@ function HeaderAction({
   );
 }
 
-export function GitDashboard({ projectCwd, onWorkspaceChanged }: GitDashboardProps) {
+export function GitDashboard({
+  projectCwd,
+  onWorkspaceChanged,
+  workspaceRevision = 0,
+}: GitDashboardProps) {
   const [isGit, setIsGit] = useState(true);
   const [branch, setBranch] = useState("main");
   const [ahead, setAhead] = useState(0);
   const [behind, setBehind] = useState(0);
   const [staged, setStaged] = useState<ChangedGitFile[]>([]);
   const [unstaged, setUnstaged] = useState<ChangedGitFile[]>([]);
+  /** Unresolved conflicts, which are neither staged nor a working-tree change. */
+  const [conflicted, setConflicted] = useState<ChangedGitFile[]>([]);
+  /** A merge, rebase, cherry-pick or revert that is stopped half-way. */
+  const [operation, setOperation] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
@@ -200,12 +232,18 @@ export function GitDashboard({ projectCwd, onWorkspaceChanged }: GitDashboardPro
   /** A history that could not be read is not an empty history, and says so. */
   const [logError, setLogError] = useState<string | null>(null);
   const requestSeq = useRef(0);
+  /** A pending re-read of the remote half after a push; cleared on unmount. */
+  const catchUpTimer = useRef<number | null>(null);
   /**
    * The remote's state, read here rather than inside the landing view: selecting a
    * file swaps that view out, and re-asking GitHub (three `gh` calls, seconds each)
    * every time the user came back to it would be a tax on the commonest gesture.
    */
   const overview = useGhOverview(projectCwd);
+  // Destructured for the focus listener, which needs the two values rather than the
+  // object: the hook returns a fresh object every render, so depending on it would
+  // re-subscribe on every keystroke.
+  const { checkedAt: overviewCheckedAt, refresh: refreshOverview } = overview;
 
   const call = useCallback(
     async (action: string, payload: Record<string, unknown> = {}): Promise<GitResponse> => {
@@ -232,6 +270,8 @@ export function GitDashboard({ projectCwd, onWorkspaceChanged }: GitDashboardPro
     setBehind(data.behind || 0);
     setStaged(data.staged || []);
     setUnstaged(data.unstaged || []);
+    setConflicted(data.conflicted || []);
+    setOperation(data.operation || "");
     setIsLoading(false);
     return data;
   }, [call]);
@@ -253,6 +293,8 @@ export function GitDashboard({ projectCwd, onWorkspaceChanged }: GitDashboardPro
   }, [call]);
 
   useEffect(() => {
+    // A different repository: nothing from the old one may linger, down to the
+    // half-typed commit message.
     setSelected(null);
     setCommitDetail(null);
     setDiff(null);
@@ -262,6 +304,45 @@ export function GitDashboard({ projectCwd, onWorkspaceChanged }: GitDashboardPro
     void fetchLog();
   }, [fetchStatus, fetchLog]);
 
+  /**
+   * The workspace moved under the page — a checkout from the titlebar, an agent
+   * writing files in the chat, the file tree's own refresh — so the data is read
+   * again. Only the data: the open file, the diff beside it and a half-typed
+   * commit message belong to the person using the page, not to a refresh.
+   */
+  useEffect(() => {
+    if (workspaceRevision === 0) return;
+    void fetchStatus();
+    void fetchLog();
+  }, [workspaceRevision, fetchStatus, fetchLog]);
+
+  /**
+   * Coming back to the window re-reads the working tree, because the likeliest
+   * reason this page is wrong is that something happened while it was in the
+   * background — a terminal in another window, an editor outside the app. The
+   * remote half is network-bound, so it waits until what is on screen is old
+   * enough to be worth asking about again.
+   */
+  useEffect(() => {
+    const onFocus = () => {
+      void fetchStatus();
+      void fetchLog();
+      if (overviewCheckedAt && Date.now() - overviewCheckedAt > 10 * 60_000) {
+        refreshOverview();
+      }
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [fetchStatus, fetchLog, overviewCheckedAt, refreshOverview]);
+
+  /** A pending post-push re-read has to die with the page. */
+  useEffect(
+    () => () => {
+      if (catchUpTimer.current !== null) window.clearTimeout(catchUpTimer.current);
+    },
+    []
+  );
+
   /** Preview a file's diff. The newest request wins; older ones are dropped. */
   const preview = useCallback(
     async (file: ChangedGitFile, isStaged: boolean) => {
@@ -269,7 +350,11 @@ export function GitDashboard({ projectCwd, onWorkspaceChanged }: GitDashboardPro
       setCommitDetail(null);
       setIsDiffLoading(true);
       const seq = ++requestSeq.current;
-      const data = await call("diff-file", { filePath: file.path, staged: isStaged });
+      const data = await call("diff-file", {
+        filePath: file.path,
+        fromPath: file.fromPath,
+        staged: isStaged,
+      });
       if (seq !== requestSeq.current) return;
       setDiff({
         path: file.path,
@@ -310,7 +395,11 @@ export function GitDashboard({ projectCwd, onWorkspaceChanged }: GitDashboardPro
 
       const first = files[0];
       if (first) {
-        const sides = await call("commit-file", { sha: commit.sha, filePath: first.path });
+        const sides = await call("commit-file", {
+          sha: commit.sha,
+          filePath: first.path,
+          fromPath: first.fromPath,
+        });
         if (seq !== requestSeq.current) return;
         setDiff({ path: first.path, original: sides.originalContent ?? "", modified: sides.modifiedContent ?? "" });
       }
@@ -321,13 +410,22 @@ export function GitDashboard({ projectCwd, onWorkspaceChanged }: GitDashboardPro
 
   /** One file inside the commit that is open. */
   const openCommitFile = useCallback(
-    async (path: string) => {
+    async (file: GitCommitFile) => {
       if (selected?.kind !== "commit") return;
       setIsDiffLoading(true);
       const seq = ++requestSeq.current;
-      const sides = await call("commit-file", { sha: selected.commit.sha, filePath: path });
+      const sides = await call("commit-file", {
+        sha: selected.commit.sha,
+        filePath: file.path,
+        // A rename's previous side lives under its old name.
+        fromPath: file.fromPath,
+      });
       if (seq !== requestSeq.current) return;
-      setDiff({ path, original: sides.originalContent ?? "", modified: sides.modifiedContent ?? "" });
+      setDiff({
+        path: file.path,
+        original: sides.originalContent ?? "",
+        modified: sides.modifiedContent ?? "",
+      });
       setIsDiffLoading(false);
     },
     [call, selected]
@@ -353,6 +451,20 @@ export function GitDashboard({ projectCwd, onWorkspaceChanged }: GitDashboardPro
       // A commit moves the graph; so does a fetch, which can bring commits in.
       await fetchLog();
       onWorkspaceChanged?.();
+      // Pushing changes what the remote knows about this branch, so the GitHub half
+      // is re-read too — and once more a few seconds later, because a new run takes
+      // that long to appear and "checked just now" beside the pre-push list would be
+      // worse than not refreshing at all.
+      if (action === "push" || action === "pull") {
+        overview.refresh();
+        if (action === "push") {
+          if (catchUpTimer.current !== null) window.clearTimeout(catchUpTimer.current);
+          catchUpTimer.current = window.setTimeout(() => {
+            catchUpTimer.current = null;
+            overview.refresh();
+          }, 8000);
+        }
+      }
       if (selected?.kind === "change") {
         const stillChanged = [...(status.staged || []), ...(status.unstaged || [])].some(
           (file) => file.path === selected.file.path
@@ -365,7 +477,7 @@ export function GitDashboard({ projectCwd, onWorkspaceChanged }: GitDashboardPro
       setBusy(null);
       return true;
     },
-    [call, fetchStatus, fetchLog, onWorkspaceChanged, selected]
+    [call, fetchStatus, fetchLog, onWorkspaceChanged, overview, selected]
   );
 
   const commit = useCallback(async () => {
@@ -378,8 +490,11 @@ export function GitDashboard({ projectCwd, onWorkspaceChanged }: GitDashboardPro
     }
   }, [commitMessage, runAction]);
 
-  const totalChanges = staged.length + unstaged.length;
-  const canCommit = commitMessage.trim().length > 0 && staged.length > 0;
+  // A conflicted file is changed work, so it counts here — otherwise a page full of
+  // conflicts would claim the working tree was clean.
+  const totalChanges = staged.length + unstaged.length + conflicted.length;
+  // Git refuses to commit an unresolved conflict, so the button must not offer it.
+  const canCommit = commitMessage.trim().length > 0 && staged.length > 0 && conflicted.length === 0;
   // Hoisted, so the actions below close over a value TypeScript has narrowed once
   // rather than re-narrowing the union inside each handler.
   const openChange = selected?.kind === "change" ? selected : null;
@@ -391,7 +506,9 @@ export function GitDashboard({ projectCwd, onWorkspaceChanged }: GitDashboardPro
         <div className="flex items-center justify-between gap-2 border-b border-hairline px-3 py-2">
           <div className="flex min-w-0 items-center gap-2">
             <Icon icon={GitBranch} className="w-3.5 h-3.5 shrink-0 text-zinc-400" />
-            <span className="truncate font-mono text-2xs text-zinc-100">{branch}</span>
+            <span data-testid="git-branch" className="truncate font-mono text-2xs text-zinc-100">
+              {branch}
+            </span>
             {(ahead > 0 || behind > 0) && (
               <span className="flex items-center gap-1 font-mono text-4xs text-zinc-400">
                 {behind > 0 && <span title={`${behind} behind the remote`}>↓{behind}</span>}
@@ -438,6 +555,26 @@ export function GitDashboard({ projectCwd, onWorkspaceChanged }: GitDashboardPro
             panel is the one thing you have to scroll to find after staging. */}
         <div className="flex min-h-0 flex-[1.5] flex-col">
         <div className="shrink-0 border-b border-hairline p-2.5">
+          {/* A half-finished merge is the context for everything below it, and the
+              one state where the commit button deliberately refuses to work. */}
+          {operation && (
+            <div
+              data-testid="git-operation"
+              className="mb-2 rounded-lg border border-amber-900/60 bg-amber-950/30 px-2.5 py-2 text-4xs leading-relaxed text-amber-200"
+            >
+              {OPERATION_LABELS[operation] ?? "In progress"}
+              {conflicted.length > 0 ? (
+                <>
+                  {" — "}
+                  {conflicted.length} file{conflicted.length === 1 ? "" : "s"} still{" "}
+                  {conflicted.length === 1 ? "has" : "have"} conflicts. Mark{" "}
+                  {conflicted.length === 1 ? "it" : "them"} resolved to carry on.
+                </>
+              ) : (
+                " — every conflict is resolved. Commit to finish."
+              )}
+            </div>
+          )}
           <textarea
             value={commitMessage}
             onChange={(event) => setCommitMessage(event.target.value)}
@@ -483,6 +620,21 @@ export function GitDashboard({ projectCwd, onWorkspaceChanged }: GitDashboardPro
             </div>
           ) : (
             <>
+              {/* Conflicts come first: nothing else on this list can be committed
+                  until they are gone. */}
+              <ChangeGroup
+                title="Merge conflicts"
+                files={conflicted}
+                isStaged={false}
+                busy={busy}
+                selectedPath={openChange?.file.path ?? null}
+                onPreview={(file) => void preview(file, false)}
+                /* `git add` is what "resolved" means to git. */
+                onAction={(action, file) => void runAction(action, action, { filePath: file.path })}
+                onActionAll={() => void runAction("resolve-all", "resolve-all")}
+                actionIcon={Check}
+                actionTitle="Mark resolved"
+              />
               <ChangeGroup
                 title="Staged changes"
                 files={staged}
@@ -565,11 +717,11 @@ export function GitDashboard({ projectCwd, onWorkspaceChanged }: GitDashboardPro
 
         {/*
           One row, and one diff surface, for both a commit's file and a
-          working-tree change. The surface is deliberately kept in a single place
-          in the tree: mounting a second `<DiffEditor>` where the first one stood
-          made Monaco dispose a model the widget was still holding — "TextModel
-          got disposed before DiffEditorWidget model got reset" — and rebuilt the
-          editor on every switch between a commit and a change.
+          working-tree change. One surface, in one place in the tree, because a
+          second one would be built (and the first thrown away) on every switch
+          between a commit and a change: the container takes the new text and
+          updates what it is already showing. The disposal order that used to make
+          that swap unsafe is the container's business now.
         */}
         <div className="flex min-h-0 flex-1">
           {/* The commit's files. Selecting one swaps the diff beside it, the same
@@ -579,13 +731,13 @@ export function GitDashboard({ projectCwd, onWorkspaceChanged }: GitDashboardPro
               <div className="px-2.5 py-1.5 text-4xs font-semibold uppercase tracking-wider text-zinc-500">
                 {commitDetail.files.length} file{commitDetail.files.length === 1 ? "" : "s"} in this commit
               </div>
-              {commitDetail.files.map((file) => (
-                <button
-                  key={file.path}
-                  type="button"
-                  onClick={() => void openCommitFile(file.path)}
-                  title={file.path}
-                  data-testid={`git-commit-file-${file.path}`}
+                  {commitDetail.files.map((file) => (
+                    <button
+                      key={file.path}
+                      type="button"
+                      onClick={() => void openCommitFile(file)}
+                      title={file.fromPath ? `${file.fromPath} → ${file.path}` : file.path}
+                      data-testid={`git-commit-file-${file.path}`}
                   className={`flex items-center gap-2 px-2.5 py-1 text-left transition-colors ${
                     diff?.path === file.path ? "bg-white/10" : "hover:bg-white/5"
                   }`}
@@ -594,10 +746,16 @@ export function GitDashboard({ projectCwd, onWorkspaceChanged }: GitDashboardPro
                     {file.status}
                   </span>
                   <FileIcon fileName={file.path} className="w-3.5 h-3.5 shrink-0" />
-                  <span className="min-w-0 flex-1 truncate text-2xs text-zinc-200">
-                    {shortName(file.path)}
-                  </span>
-                  <span className="shrink-0 font-mono text-4xs">
+                      <span className="min-w-0 flex-1 truncate text-2xs text-zinc-200">
+                        {shortName(file.path)}
+                      </span>
+                      {/* The commit's file list had only the name, so two files
+                          called `index.ts` were told apart by a hover. The change
+                          rows already dim the directory; this matches them. */}
+                      <span className="hidden min-w-0 shrink-0 truncate font-mono text-4xs text-zinc-500 xl:inline">
+                        {file.fromPath ? `← ${parentDir(file.fromPath) || shortName(file.fromPath)}` : parentDir(file.path)}
+                      </span>
+                      <span className="shrink-0 font-mono text-4xs">
                     {file.additions !== null && <span className="text-emerald-400">+{file.additions}</span>}
                     {file.deletions !== null && <span className="ml-1 text-red-400">-{file.deletions}</span>}
                   </span>
@@ -781,6 +939,16 @@ function ChangeGroup({
               <span className="min-w-0 flex-1 truncate text-2xs text-zinc-200">
                 {shortName(file.path)}
               </span>
+              {/* A rename is two names; the old one is the answer to "what was
+                  this before", which the new name cannot give. */}
+              {file.fromPath && (
+                <span
+                  className="hidden min-w-0 shrink-0 truncate font-mono text-4xs text-zinc-500 xl:inline"
+                  title={`${file.fromPath} → ${file.path}`}
+                >
+                  ← {shortName(file.fromPath)}
+                </span>
+              )}
               {parentDir(file.path) && (
                 <span className="hidden min-w-0 shrink-0 truncate font-mono text-4xs text-zinc-500 xl:inline">
                   {parentDir(file.path)}

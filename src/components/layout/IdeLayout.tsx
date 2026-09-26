@@ -176,6 +176,7 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
     deleteFile,
     createProject,
     refreshProjectFiles,
+    workspaceRevision,
     indexStatus,
     isIndexing,
     syncIndex,
@@ -1437,6 +1438,7 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
                   {screen === "git" && (
                     <GitDashboard
                       projectCwd={activeProject.path}
+                      workspaceRevision={workspaceRevision}
                       onWorkspaceChanged={() => {
                         refreshBranch();
                         refreshProjectFiles();

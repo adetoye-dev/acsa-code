@@ -5,6 +5,10 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 /** What the fake engine answers, and what it was asked. */
 const engine = vi.hoisted(() => ({
   calls: [] as string[],
+  /** What each call was asked, so a request's payload can be asserted. */
+  payloads: [] as { action: string; body: Record<string, unknown> }[],
+  /** Per-test deviations from the fixture below, cleared before each test. */
+  overrides: {} as Record<string, Record<string, unknown>>,
   status: {
     isGit: true,
     branch: "dev",
@@ -15,18 +19,23 @@ const engine = vi.hoisted(() => ({
       { path: "src/b.ts", indexStatus: " ", workTreeStatus: "M", isStaged: false },
       { path: "src/new.ts", indexStatus: " ", workTreeStatus: "??", isStaged: false },
     ],
+    conflicted: [] as unknown[],
+    operation: "",
   },
   diff: { success: true, originalContent: "before", modifiedContent: "after" },
   commit: { success: true, message: "committed" },
 }));
 
 vi.mock("../../services/gitClient", () => ({
-  gitFetch: async (path: string) => {
+  gitFetch: async (path: string, init?: RequestInit) => {
     const action = path.replace("/api/git/", "");
     engine.calls.push(action);
+    if (init?.body) {
+      engine.payloads.push({ action, body: JSON.parse(String(init.body)) });
+    }
     const body =
       action === "status"
-        ? engine.status
+        ? { ...engine.status, ...(engine.overrides.status ?? {}) }
         : action === "diff-file"
           ? engine.diff
           : action === "commit"
@@ -53,6 +62,8 @@ const { GitDashboard } = await import("./GitDashboard");
 
 beforeEach(() => {
   engine.calls = [];
+  engine.payloads = [];
+  engine.overrides = {};
 });
 afterEach(cleanup);
 
@@ -126,5 +137,72 @@ describe("the source control page", () => {
     render(<GitDashboard projectCwd="/tmp/not-a-repo" />);
     expect(await screen.findByText(/not a git repository/)).toBeTruthy();
     engine.status = { ...engine.status, isGit: true };
+  });
+
+  it("puts a conflict in its own group, names the operation, and refuses to commit", async () => {
+    engine.overrides.status = {
+      staged: [],
+      unstaged: [],
+      conflicted: [
+        { path: "f.txt", fromPath: "", indexStatus: "U", workTreeStatus: "U", isStaged: false },
+      ],
+      operation: "merge",
+    };
+    render(<GitDashboard projectCwd="/work/acsa-code" />);
+
+    expect(await screen.findByText("Merge conflicts · 1")).toBeTruthy();
+    expect(screen.getByTestId("git-operation").textContent).toContain("Merging");
+    expect(screen.getByTestId("git-operation").textContent).toContain("1 file still has conflicts");
+
+    // Even with a message typed, git would refuse: the button must not offer it.
+    fireEvent.change(screen.getByTestId("git-commit-message"), { target: { value: "wip" } });
+    expect(screen.getByTestId("git-commit").hasAttribute("disabled")).toBe(true);
+    // A conflicted file is changed work, so the page does not claim to be clean.
+    expect(screen.getByText("1 changed")).toBeTruthy();
+  });
+
+  it("marks every conflict resolved through one action", async () => {
+    engine.overrides.status = {
+      conflicted: [
+        { path: "f.txt", fromPath: "", indexStatus: "U", workTreeStatus: "U", isStaged: false },
+      ],
+      operation: "merge",
+    };
+    render(<GitDashboard projectCwd="/work/acsa-code" />);
+    await waitFor(() => expect(screen.getByText("Merge conflicts · 1")).toBeTruthy());
+
+    fireEvent.click(screen.getByTitle("Mark resolved all"));
+    await waitFor(() => expect(engine.calls).toContain("resolve-all"));
+  });
+
+  it("shows where a renamed file came from, and asks about both names", async () => {
+    engine.overrides.status = {
+      unstaged: [
+        { path: "src/new.ts", fromPath: "src/old.ts", indexStatus: " ", workTreeStatus: "R", isStaged: false },
+      ],
+    };
+    render(<GitDashboard projectCwd="/work/acsa-code" />);
+
+    fireEvent.click(await screen.findByTestId("git-file-src/new.ts"));
+    await waitFor(() => expect(screen.getByTestId("diff-path").textContent).toBe("src/new.ts"));
+    // The old name is on the row — the new one cannot answer "what was this".
+    expect(screen.getByText("← old.ts")).toBeTruthy();
+    // And the engine is told both, or the original side is empty.
+    const request = engine.payloads.filter((call) => call.action === "diff-file").at(-1);
+    expect(request?.body.fromPath).toBe("src/old.ts");
+    expect(request?.body.filePath).toBe("src/new.ts");
+  });
+
+  it("re-reads when the workspace revision moves under it", async () => {
+    const { rerender } = render(
+      <GitDashboard projectCwd="/work/acsa-code" workspaceRevision={1} />
+    );
+    await waitFor(() => expect(screen.getByText("Staged changes · 1")).toBeTruthy());
+
+    engine.calls = [];
+    // What a checkout from the titlebar, or an agent's writes, look like from here.
+    rerender(<GitDashboard projectCwd="/work/acsa-code" workspaceRevision={2} />);
+    await waitFor(() => expect(engine.calls).toContain("status"));
+    expect(engine.calls).toContain("log");
   });
 });

@@ -1211,6 +1211,16 @@ export interface UsePipelineReturn {
   deleteFile: (path: string) => Promise<void>;
   createProject: (name: string, template: string, parentDir?: string) => Promise<void>;
   refreshProjectFiles: () => Promise<FileNode[]>;
+  /**
+   * How many times the workspace has been re-read.
+   *
+   * Every path that looks at the filesystem again — a branch switch, an agent's
+   * writes, the tree's own refresh, a new project — goes through
+   * `refreshProjectFiles`, so this is the one honest signal that the files on disk
+   * may have moved. The repository page re-reads its own view when it changes;
+   * without that it kept describing the branch it had seen when it mounted.
+   */
+  workspaceRevision: number;
 
   // Code Intelligence & Indexer State
   indexStatus: ProjectIndexState;
@@ -1501,6 +1511,8 @@ export function usePipeline(): UsePipelineReturn {
   };
 
   const [projectFiles, setProjectFiles] = useState<FileNode[]>([]);
+  /** See `workspaceRevision` in the context: a count, not a value. */
+  const [workspaceRevision, setWorkspaceRevision] = useState(0);
   const [selectedFile, setSelectedFile] = useState<FileNode | null>(null);
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
@@ -1635,6 +1647,10 @@ export function usePipeline(): UsePipelineReturn {
 
   // ── File Tree Loading ─────────────────────────────────────────────────────
   const refreshProjectFiles = useCallback(async (): Promise<FileNode[]> => {
+    // Bumped before the read rather than after: what a consumer of this signal
+    // needs is "look again", and a read that fails still means the app asked the
+    // filesystem a question it should not keep assuming the answer to.
+    setWorkspaceRevision((count) => count + 1);
     if (!activeProject.path) {
       setProjectFiles([]);
       return [];
@@ -2551,6 +2567,7 @@ export function usePipeline(): UsePipelineReturn {
     deleteFile,
     createProject,
     refreshProjectFiles,
+    workspaceRevision,
     indexStatus,
     noFileChanges,
     waitingForUser,
