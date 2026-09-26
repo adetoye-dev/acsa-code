@@ -14,6 +14,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core-engine"))
 
@@ -642,6 +643,445 @@ class QuotedPathRepositoryTests(unittest.TestCase):
             }
         )
         self.assertEqual(sides["originalContent"], "one\n")
+
+
+class SplitDiffTests(unittest.TestCase):
+    """One file's diff as a header and hunks — the shape `git add -p` works on."""
+
+    # A file with two changes far enough apart for git to emit two hunks.
+    TWO_HUNKS = (
+        "diff --git a/src/one.ts b/src/one.ts\n"
+        "index 1111111..2222222 100644\n"
+        "--- a/src/one.ts\n"
+        "+++ b/src/one.ts\n"
+        "@@ -1,4 +1,5 @@\n"
+        " context\n"
+        "-old line\n"
+        "+new line\n"
+        "+added line\n"
+        " more context\n"
+        "@@ -20,3 +21,3 @@ function thing() {\n"
+        "-another old\n"
+        "+another new\n"
+    )
+
+    def test_the_header_is_everything_before_the_first_hunk(self):
+        header, hunks = git_cli.split_diff(self.TWO_HUNKS)
+        self.assertIn("diff --git a/src/one.ts b/src/one.ts", header)
+        self.assertIn("--- a/src/one.ts", header)
+        self.assertNotIn("@@", header)
+        self.assertEqual(len(hunks), 2)
+        self.assertTrue(hunks[0].startswith("@@ -1,4 +1,5 @@"))
+        self.assertTrue(hunks[1].startswith("@@ -20,3 +21,3 @@"))
+
+    def test_each_hunk_is_described_for_a_person_choosing_between_them(self):
+        described = git_cli.parse_hunks(self.TWO_HUNKS)
+        self.assertEqual([h["index"] for h in described], [0, 1])
+        self.assertEqual((described[0]["additions"], described[0]["deletions"]), (2, 1))
+        self.assertEqual((described[1]["additions"], described[1]["deletions"]), (1, 1))
+        # The preview is the first changed line's text without its marker, because
+        # "which of these is the one I mean" is answered by the text.
+        self.assertEqual(described[0]["preview"], "old line")
+        self.assertEqual(described[1]["preview"], "another old")
+
+    def test_a_new_file_is_one_hunk_from_nothing(self):
+        diff = (
+            "diff --git a/fresh.txt b/fresh.txt\n"
+            "new file mode 100644\n"
+            "index 0000000..abcdef1\n"
+            "--- /dev/null\n"
+            "+++ b/fresh.txt\n"
+            "@@ -0,0 +1,2 @@\n"
+            "+brand new\n"
+            "+second line\n"
+        )
+        described = git_cli.parse_hunks(diff)
+        self.assertEqual(len(described), 1)
+        self.assertEqual((described[0]["additions"], described[0]["deletions"]), (2, 0))
+        self.assertTrue(described[0]["header"].startswith("@@ -0,0 +1,2 @@"))
+
+    def test_a_missing_final_newline_travels_with_its_hunk(self):
+        # The marker describes the line above it; a hunk rebuilt without it does not
+        # apply, which is the whole point of keeping it.
+        diff = (
+            "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n"
+            "@@ -1 +1 @@\n-one\n\\ No newline at end of file\n+one, edited\n"
+        )
+        _, hunks = git_cli.split_diff(diff)
+        self.assertEqual(len(hunks), 1)
+        self.assertIn("No newline at end of file", hunks[0])
+        # And nothing is invented for a diff with no hunks at all.
+        self.assertEqual(git_cli.split_diff("diff --git a/x b/x\n"), ("diff --git a/x b/x\n", []))
+        self.assertEqual(git_cli.parse_hunks(""), [])
+
+
+class HunkStagingTests(unittest.TestCase):
+    """Staging one hunk of a file, against real git."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="acsa-git-hunks-")).resolve()
+        git(self.root, "init", "-q")
+        git(self.root, "config", "user.email", "t@local")
+        git(self.root, "config", "user.name", "t")
+        # Two changes, twenty lines apart, so git reports two hunks.
+        original = [f"line {n}" for n in range(1, 41)]
+        (self.root / "file.txt").write_text("\n".join(original) + "\n", encoding="utf-8")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-qm", "base")
+
+        edited = list(original)
+        edited[2] = "line 3, changed"
+        edited[30] = "line 31, changed"
+        (self.root / "file.txt").write_text("\n".join(edited) + "\n", encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _hunks(self, staged=False):
+        result = git_cli.hunks({"cwd": str(self.root), "filePath": "file.txt", "staged": staged})
+        self.assertTrue(result["success"], result.get("error"))
+        return result["hunks"]
+
+    def test_the_change_is_reported_as_two_hunks(self):
+        described = self._hunks()
+        self.assertEqual(len(described), 2)
+        self.assertEqual([h["index"] for h in described], [0, 1])
+
+    def test_staging_one_hunk_leaves_the_other_in_the_working_tree(self):
+        staged = git_cli.apply_hunk(
+            {"cwd": str(self.root), "filePath": "file.txt", "hunk": 0, "staged": False}
+        )
+        self.assertTrue(staged["success"], staged.get("error"))
+        self.assertIn("Staged hunk 1 of 2", staged["message"])
+
+        status = git_cli.status({"cwd": str(self.root)})
+        # The file is now in both lists: part of it is staged, part is not.
+        self.assertEqual([f["path"] for f in status["staged"]], ["file.txt"])
+        self.assertEqual([f["path"] for f in status["unstaged"]], ["file.txt"])
+
+        cached = subprocess.run(
+            ["git", "diff", "--cached", "--", "file.txt"],
+            cwd=str(self.root), capture_output=True, text=True,
+        ).stdout
+        self.assertIn("line 3, changed", cached)
+        self.assertNotIn("line 31, changed", cached)
+
+        # And the other hunk is still there to stage.
+        self.assertEqual(len(self._hunks()), 1)
+
+    def test_unstaging_one_hunk_takes_it_back_out_of_the_index(self):
+        git_cli.apply_hunk(
+            {"cwd": str(self.root), "filePath": "file.txt", "hunk": 0, "staged": False}
+        )
+        # Staged now: the diff is HEAD against the index, and hunk 0 of *that* is the
+        # one to take back.
+        staged_hunks = self._hunks(staged=True)
+        self.assertEqual(len(staged_hunks), 1)
+
+        undone = git_cli.apply_hunk(
+            {"cwd": str(self.root), "filePath": "file.txt", "hunk": 0, "staged": True}
+        )
+        self.assertTrue(undone["success"], undone.get("error"))
+        status = git_cli.status({"cwd": str(self.root)})
+        self.assertEqual(status["staged"], [])
+        self.assertEqual([f["path"] for f in status["unstaged"]], ["file.txt"])
+
+    def test_staging_the_second_hunk_alone_stages_only_it(self):
+        git_cli.apply_hunk(
+            {"cwd": str(self.root), "filePath": "file.txt", "hunk": 1, "staged": False}
+        )
+        cached = subprocess.run(
+            ["git", "diff", "--cached", "--", "file.txt"],
+            cwd=str(self.root), capture_output=True, text=True,
+        ).stdout
+        self.assertIn("line 31, changed", cached)
+        self.assertNotIn("line 3, changed", cached)
+
+    def test_an_untracked_file_has_no_hunks_to_stage(self):
+        # Nothing to compare it with, so there is nothing to split; the file is
+        # staged whole by the action that stages a file.
+        (self.root / "brand-new.txt").write_text("hello\n", encoding="utf-8")
+        result = git_cli.hunks(
+            {"cwd": str(self.root), "filePath": "brand-new.txt", "staged": False}
+        )
+        self.assertTrue(result["success"])
+        self.assertEqual(result["hunks"], [])
+
+    def test_a_hunk_that_does_not_exist_is_an_error(self):
+        result = git_cli.apply_hunk(
+            {"cwd": str(self.root), "filePath": "file.txt", "hunk": 7, "staged": False}
+        )
+        self.assertFalse(result["success"])
+        self.assertIn("no hunk 8", result["error"])
+        # Nothing was staged by the attempt.
+        self.assertEqual(git_cli.status({"cwd": str(self.root)})["staged"], [])
+
+    def test_a_patch_that_no_longer_fits_is_reported(self):
+        """The index moves between the hunk being read and the patch being applied.
+
+        A patch is applied *to the index*, so what can invalidate it is the index
+        moving — the whole file staged from another window, or an agent running
+        `git add` — rather than the file on disk changing. Git refuses a patch that
+        does not fit, and that refusal is reported instead of the hunk being applied
+        against text it was never made from.
+        """
+        result = git_cli.hunks({"cwd": str(self.root), "filePath": "file.txt", "staged": False})
+        self.assertTrue(result["hunks"])
+        # Something else stages the whole file first.
+        git(self.root, "add", "file.txt")
+
+        refused = git_cli.apply_hunk(
+            {"cwd": str(self.root), "filePath": "file.txt", "hunk": 0, "staged": False}
+        )
+        self.assertFalse(refused["success"])
+        self.assertTrue(refused["error"])
+
+        # And the attempt left the index exactly as the other window had it.
+        cached = subprocess.run(
+            ["git", "diff", "--cached", "--", "file.txt"],
+            cwd=str(self.root), capture_output=True, text=True,
+        ).stdout
+        self.assertIn("line 31, changed", cached)
+
+
+class ConflictTests(unittest.TestCase):
+    """A real merge, stopped on a conflict."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="acsa-git-conflict-")).resolve()
+        git(self.root, "init", "-q")
+        git(self.root, "config", "user.email", "t@local")
+        git(self.root, "config", "user.name", "t")
+        (self.root / "f.txt").write_text("base\n", encoding="utf-8")
+        (self.root / "untouched.txt").write_text("mine\n", encoding="utf-8")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-qm", "base")
+        git(self.root, "checkout", "-q", "-b", "other")
+        (self.root / "f.txt").write_text("theirs\n", encoding="utf-8")
+        git(self.root, "commit", "-qam", "theirs")
+        git(self.root, "checkout", "-q", "-")
+        (self.root / "f.txt").write_text("ours\n", encoding="utf-8")
+        git(self.root, "commit", "-qam", "ours")
+        # A merge that conflicts (and one unrelated edit, to prove the bulk action
+        # does not sweep it up).
+        subprocess.run(
+            ["git", "merge", "other"], cwd=str(self.root), capture_output=True, text=True
+        )
+        (self.root / "untouched.txt").write_text("mine, edited mid-conflict\n", encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_the_conflict_is_its_own_group_and_the_operation_is_named(self):
+        status = git_cli.status({"cwd": str(self.root)})
+        self.assertEqual([f["path"] for f in status["conflicted"]], ["f.txt"])
+        self.assertEqual(status["staged"], [])
+        self.assertEqual(status["operation"], "merge")
+        # The unrelated edit is what the commit button should still be about.
+        self.assertEqual([f["path"] for f in status["unstaged"]], ["untouched.txt"])
+
+    def test_the_conflicted_file_still_has_a_readable_diff(self):
+        sides = git_cli.diff_file({"cwd": str(self.root), "filePath": "f.txt", "staged": False})
+        # The markers are in the working tree, which is what a person resolves.
+        self.assertIn("<<<<<<<", sides["modifiedContent"])
+
+    def test_resolving_all_stages_the_conflict_and_nothing_else(self):
+        result = git_cli.resolve_all({"cwd": str(self.root)})
+        self.assertTrue(result["success"])
+        self.assertIn("1 file", result["message"])
+
+        status = git_cli.status({"cwd": str(self.root)})
+        self.assertEqual(status["conflicted"], [])
+        self.assertEqual([f["path"] for f in status["staged"]], ["f.txt"])
+        # The unrelated work is exactly where it was.
+        self.assertEqual([f["path"] for f in status["unstaged"]], ["untouched.txt"])
+
+    def test_nothing_left_to_resolve_says_so_rather_than_failing(self):
+        git_cli.resolve_all({"cwd": str(self.root)})
+        again = git_cli.resolve_all({"cwd": str(self.root)})
+        self.assertTrue(again["success"])
+        self.assertEqual(again["message"], "Nothing left to resolve.")
+
+    def test_the_operation_is_empty_in_a_repository_at_rest(self):
+        git(self.root, "merge", "--abort")
+        self.assertEqual(git_cli.status({"cwd": str(self.root)})["operation"], "")
+
+class UnquotePathTests(unittest.TestCase):
+    """Git's quoted paths, undone.
+
+    Every string here is what `git status --porcelain=v1` actually printed for a
+    file with that name, tab-escapes and all, in a throwaway repository.
+    """
+
+    def test_an_unquoted_path_is_left_alone(self):
+        self.assertEqual(git_cli.unquote_path("src/plain.py"), "src/plain.py")
+        # A quote in the middle does not make it a quoted path.
+        self.assertEqual(git_cli.unquote_path('a"b.py'), 'a"b.py')
+
+    def test_a_non_ascii_name_is_octal_bytes_not_letters(self):
+        # "caf\303\251.py" → café.py: the two escapes are one character once the
+        # bytes are decoded together, which is the part a naive decoder gets wrong.
+        self.assertEqual(git_cli.unquote_path('"caf\\303\\251.py"'), "café.py")
+
+    def test_the_named_escapes(self):
+        self.assertEqual(git_cli.unquote_path('"tab\\there.py"'), "tab\there.py")
+        self.assertEqual(git_cli.unquote_path('"new\\nline.py"'), "new\nline.py")
+        self.assertEqual(git_cli.unquote_path('"ctrl\\001char.py"'), "ctrl\x01char.py")
+        self.assertEqual(git_cli.unquote_path('"del\\177char.py"'), "del\x7fchar.py")
+
+    def test_a_quote_or_backslash_inside_the_name(self):
+        self.assertEqual(git_cli.unquote_path('"a\\"b.py"'), 'a"b.py')
+        self.assertEqual(git_cli.unquote_path('"back\\\\slash.py"'), "back\\slash.py")
+
+    def test_an_escape_git_does_not_write_is_kept_visible(self):
+        # Better a visibly odd path than a silently mangled one.
+        self.assertEqual(git_cli.unquote_path('"a\\qb.py"'), "a\\qb.py")
+
+
+class QuotedStatusTests(unittest.TestCase):
+    def test_a_quoted_path_in_status_is_unquoted(self):
+        parsed = git_cli.parse_status('## dev\n?? "caf\\303\\251.py"\n')
+        self.assertEqual([f["path"] for f in parsed["files"]], ["café.py"])
+        self.assertEqual([f["path"] for f in parsed["unstaged"]], ["café.py"])
+
+    def test_both_sides_of_a_quoted_rename(self):
+        parsed = git_cli.parse_status('## dev\nR  "caf\\303\\251.py" -> "caf\\303\\251-2.py"\n')
+        entry = parsed["staged"][0]
+        self.assertEqual(entry["path"], "café-2.py")
+        self.assertEqual(entry["fromPath"], "café.py")
+
+    def test_a_quoted_path_in_a_commit(self):
+        files = git_cli.parse_commit_files('M\t"caf\\303\\251.py"\n', "1\t0\t\"caf\\303\\251.py\"\n")
+        self.assertEqual(files[0]["path"], "café.py")
+        renamed = git_cli.parse_commit_files(
+            'R100\t"caf\\303\\251.py"\t"caf\\303\\251-2.py"\n', "0\t0\tx\n"
+        )
+        self.assertEqual(renamed[0]["path"], "café-2.py")
+        self.assertEqual(renamed[0]["fromPath"], "café.py")
+
+
+class QuotedPathRepositoryTests(unittest.TestCase):
+    """The same names, through real git: this is what used to fail."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="acsa-git-quoted-")).resolve()
+        git(self.root, "init", "-q")
+        git(self.root, "config", "user.email", "t@local")
+        git(self.root, "config", "user.name", "t")
+        # Pinned on purpose: the default is on, but a machine that turned it off
+        # would make this test pass without exercising anything.
+        git(self.root, "config", "core.quotePath", "true")
+        self.name = "café.py"
+        (self.root / self.name).write_text("one\n", encoding="utf-8")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-qm", "base")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_status_reports_the_name_a_person_can_type(self):
+        (self.root / self.name).write_text("one\ntwo\n", encoding="utf-8")
+        status = git_cli.status({"cwd": str(self.root)})
+        self.assertEqual([f["path"] for f in status["unstaged"]], [self.name])
+
+    def test_staging_and_diffing_it_works(self):
+        (self.root / self.name).write_text("one\ntwo\n", encoding="utf-8")
+        entry = git_cli.status({"cwd": str(self.root)})["unstaged"][0]
+
+        staged = git_cli.stage({"cwd": str(self.root), "filePath": entry["path"]})
+        self.assertTrue(staged["success"], staged.get("error"))
+
+        status = git_cli.status({"cwd": str(self.root)})
+        self.assertEqual([f["path"] for f in status["staged"]], [self.name])
+
+        sides = git_cli.diff_file({"cwd": str(self.root), "filePath": self.name, "staged": True})
+        self.assertEqual(sides["originalContent"], "one\n")
+        self.assertEqual(sides["modifiedContent"], "one\ntwo\n")
+
+    def test_a_rename_of_one_is_carried_by_both_names(self):
+        git(self.root, "mv", self.name, "café-2.py")
+        entry = git_cli.status({"cwd": str(self.root)})["staged"][0]
+        self.assertEqual(entry["path"], "café-2.py")
+        self.assertEqual(entry["fromPath"], self.name)
+        sides = git_cli.diff_file(
+            {
+                "cwd": str(self.root),
+                "filePath": entry["path"],
+                "fromPath": entry["fromPath"],
+                "staged": True,
+            }
+        )
+        self.assertEqual(sides["originalContent"], "one\n")
+
+
+class SplitDiffTests(unittest.TestCase):
+    """One file's diff as a header and hunks — the shape `git add -p` works on."""
+
+    # A file with two changes far enough apart for git to emit two hunks.
+    TWO_HUNKS = (
+        "diff --git a/src/one.ts b/src/one.ts\n"
+        "index 1111111..2222222 100644\n"
+        "--- a/src/one.ts\n"
+        "+++ b/src/one.ts\n"
+        "@@ -1,4 +1,5 @@\n"
+        " context\n"
+        "-old line\n"
+        "+new line\n"
+        "+added line\n"
+        " more context\n"
+        "@@ -20,3 +21,3 @@ function thing() {\n"
+        "-another old\n"
+        "+another new\n"
+    )
+
+    def test_the_header_is_everything_before_the_first_hunk(self):
+        header, hunks = git_cli.split_diff(self.TWO_HUNKS)
+        self.assertIn("diff --git a/src/one.ts b/src/one.ts", header)
+        self.assertIn("--- a/src/one.ts", header)
+        self.assertNotIn("@@", header)
+        self.assertEqual(len(hunks), 2)
+        self.assertTrue(hunks[0].startswith("@@ -1,4 +1,5 @@"))
+        self.assertTrue(hunks[1].startswith("@@ -20,3 +21,3 @@"))
+
+    def test_each_hunk_is_described_for_a_person_choosing_between_them(self):
+        described = git_cli.parse_hunks(self.TWO_HUNKS)
+        self.assertEqual([h["index"] for h in described], [0, 1])
+        self.assertEqual((described[0]["additions"], described[0]["deletions"]), (2, 1))
+        self.assertEqual((described[1]["additions"], described[1]["deletions"]), (1, 1))
+        # The preview is the first changed line's text without its marker, because
+        # "which of these is the one I mean" is answered by the text.
+        self.assertEqual(described[0]["preview"], "old line")
+        self.assertEqual(described[1]["preview"], "another old")
+
+    def test_a_new_file_is_one_hunk_from_nothing(self):
+        diff = (
+            "diff --git a/fresh.txt b/fresh.txt\n"
+            "new file mode 100644\n"
+            "index 0000000..abcdef1\n"
+            "--- /dev/null\n"
+            "+++ b/fresh.txt\n"
+            "@@ -0,0 +1,2 @@\n"
+            "+brand new\n"
+            "+second line\n"
+        )
+        described = git_cli.parse_hunks(diff)
+        self.assertEqual(len(described), 1)
+        self.assertEqual((described[0]["additions"], described[0]["deletions"]), (2, 0))
+        self.assertTrue(described[0]["header"].startswith("@@ -0,0 +1,2 @@"))
+
+    def test_a_missing_final_newline_travels_with_its_hunk(self):
+        # The marker describes the line above it; a hunk rebuilt without it does not
+        # apply, which is the whole point of keeping it.
+        diff = (
+            "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n"
+            "@@ -1 +1 @@\n-one\n\\ No newline at end of file\n+one, edited\n"
+        )
+        _, hunks = git_cli.split_diff(diff)
+        self.assertEqual(len(hunks), 1)
+        self.assertIn("No newline at end of file", hunks[0])
+        # And nothing is invented for a diff with no hunks at all.
+        self.assertEqual(git_cli.split_diff("diff --git a/x b/x\n"), ("diff --git a/x b/x\n", []))
+        self.assertEqual(git_cli.parse_hunks(""), [])
 
 
 if __name__ == "__main__":

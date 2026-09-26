@@ -25,7 +25,9 @@ LOCAL_TIMEOUT = 20
 REMOTE_TIMEOUT = 180
 
 
-def _run(cwd: str, args: list[str], timeout: int = LOCAL_TIMEOUT) -> tuple[bool, str, str]:
+def _run(
+    cwd: str, args: list[str], timeout: int = LOCAL_TIMEOUT, stdin: str | None = None
+) -> tuple[bool, str, str]:
     """Run git, returning (ok, stdout, stderr).
 
     Decoded as UTF-8 with `errors="replace"` rather than the locale default: git
@@ -33,12 +35,17 @@ def _run(cwd: str, args: list[str], timeout: int = LOCAL_TIMEOUT) -> tuple[bool,
     raise `UnicodeDecodeError` out of `subprocess` and fail the whole action. A
     replacement character in a diff is a much smaller problem than a dead panel,
     and commit messages in other encodings no longer take the log down with them.
+
+    `stdin` is how a patch reaches `git apply`: writing it to a temporary file to
+    pass as an argument would work too, and would leave a file behind to clean up
+    on every failure path.
     """
     try:
         result = subprocess.run(
             ["git", *args],
             cwd=cwd,
             capture_output=True,
+            input=stdin,
             text=True,
             encoding="utf-8",
             errors="replace",
@@ -569,6 +576,139 @@ def diff_since(payload: dict) -> dict:
     return {"success": True, "originalContent": original, "modifiedContent": modified}
 
 
+def split_diff(diff_text: str) -> tuple[str, list[str]]:
+    """One file's diff as its header and its hunks.
+
+    The header is everything up to the first `@@` — the `diff --git` line, the index
+    line, the `---`/`+++` pair, and the `new file mode` lines for a file that did not
+    exist. It is needed twice: to describe the change, and to rebuild a patch.
+
+    Lines after a hunk header belong to that hunk until the next one, including the
+    `\\ No newline at end of file` marker, which describes the line it follows and
+    has to travel with it or `git apply` refuses the patch.
+    """
+    header: list[str] = []
+    hunks: list[str] = []
+    for line in diff_text.replace("\r\n", "\n").split("\n"):
+        if line.startswith("@@"):
+            hunks.append(line)
+        elif hunks:
+            hunks[-1] += "\n" + line
+        else:
+            header.append(line)
+    # Every hunk ends with exactly one newline. A hunk that is not the last one is
+    # closed by the *next* `@@` line rather than by a blank one, so assembling a patch
+    # from a hunk that kept its ragged end produced a patch whose last line had no
+    # newline — which git reads as a truncated patch and refuses with "corrupt patch".
+    return (
+        "\n".join(header),
+        [hunk.rstrip("\n") + "\n" for hunk in hunks if hunk.strip()],
+    )
+
+
+def parse_hunks(diff_text: str) -> list[dict]:
+    """Each hunk of one file's diff, with what it does.
+
+    Enough to list them for a person choosing which to stage: where it starts, how
+    many lines it adds and removes, and the first changed line as a preview — the
+    question "which of these is the one I mean" is answered by the text, not by the
+    line numbers.
+    """
+    _, hunks = split_diff(diff_text)
+    described: list[dict] = []
+    for index, hunk in enumerate(hunks):
+        lines = hunk.split("\n")
+        header = lines[0] if lines else ""
+        additions = sum(1 for line in lines[1:] if line.startswith("+"))
+        deletions = sum(1 for line in lines[1:] if line.startswith("-"))
+        preview = next(
+            (
+                line[1:].strip()
+                for line in lines[1:]
+                if line.startswith("+") or line.startswith("-")
+            ),
+            "",
+        )
+        described.append(
+            {
+                "index": index,
+                "header": header,
+                "additions": additions,
+                "deletions": deletions,
+                "preview": preview,
+            }
+        )
+    return described
+
+
+def _file_diff_args(file_path: str, staged: bool) -> list[str]:
+    """The diff of one file: the index against the working tree, or HEAD against it."""
+    # `--no-ext-diff` and `--no-color`: a user's diff driver or colour config must not
+    # change the text this is parsed from.
+    base = ["diff", "--no-ext-diff", "--no-color"]
+    if staged:
+        base.append("--cached")
+    return [*base, "--", file_path]
+
+
+def hunks(payload: dict) -> dict:
+    """The hunks of one file's change, so they can be staged one at a time.
+
+    An untracked file has no diff — there is nothing for git to compare — so it
+    reports none. That is not a failure: it is a new file, and the whole of it is
+    staged at once by the action that stages a file.
+    """
+    cwd = _cwd(payload)
+    file_path = _file(payload)
+    staged = bool(payload.get("staged"))
+    ok, out, stderr = _run(cwd, _file_diff_args(file_path, staged))
+    if not ok:
+        return {"success": False, "error": (stderr or "That diff could not be read.").strip()}
+    return {"success": True, "hunks": parse_hunks(out)}
+
+
+def apply_hunk(payload: dict) -> dict:
+    """Stage one hunk of one file, or unstage it again.
+
+    This is what `git add -p` does underneath: the single hunk is rebuilt as a patch
+    and applied to the index, which leaves the working tree exactly as it was. A hunk
+    is rebuilt rather than edited in place so that the *other* hunks in the file
+    cannot be touched by a mistake here, and `--reverse` is what unstaging means —
+    the same patch, taken back out of the index.
+
+    Nothing is applied if the file's diff has moved on since it was read: git refuses
+    a patch that does not fit, and that refusal is reported rather than retried
+    against different text.
+    """
+    cwd = _cwd(payload)
+    file_path = _file(payload)
+    staged = bool(payload.get("staged"))
+    try:
+        wanted = int(payload.get("hunk"))
+    except (TypeError, ValueError):
+        return {"success": False, "error": "That is not a hunk of this file."}
+
+    ok, out, stderr = _run(cwd, _file_diff_args(file_path, staged))
+    if not ok:
+        return {"success": False, "error": (stderr or "That diff could not be read.").strip()}
+    header, hunks_raw = split_diff(out)
+    if wanted < 0 or wanted >= len(hunks_raw):
+        return {"success": False, "error": f"This file has no hunk {wanted + 1}."}
+
+    patch = header + "\n" + hunks_raw[wanted]
+    args = ["apply", "--cached"]
+    if staged:
+        args.append("--reverse")
+    ok_apply, _, apply_error = _run(cwd, args, stdin=patch)
+    if not ok_apply:
+        return {
+            "success": False,
+            "error": (apply_error or "That hunk could not be applied.").strip(),
+        }
+    verb = "Unstaged" if staged else "Staged"
+    return {"success": True, "message": f"{verb} hunk {wanted + 1} of {len(hunks_raw)}."}
+
+
 def _simple(payload: dict, args: list[str], *, ok_key: str = "output") -> dict:
     ok, stdout, stderr = _run(_cwd(payload), args)
     if not ok:
@@ -731,6 +871,8 @@ COMMANDS = {
     "status": status,
     "diff-file": diff_file,
     "diff-since": diff_since,
+    "hunks": hunks,
+    "apply-hunk": apply_hunk,
     "stage": stage,
     "unstage": unstage,
     "discard": discard,
