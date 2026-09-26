@@ -16,6 +16,11 @@ export interface GitCommit {
   author: string;
   date: string;
   subject: string;
+  /**
+   * The message after the subject. `git log` does not ask for it — a graph does
+   * not draw it — so it is only filled in where a commit is opened on its own.
+   */
+  body?: string;
 }
 
 export interface GitRef {
@@ -24,6 +29,16 @@ export interface GitRef {
   target: string;
   /** The ref the working tree is on, as far as git's own ref list knows. */
   current: boolean;
+}
+
+/** One file inside a commit — what the commit view lists beside the diff. */
+export interface GitCommitFile {
+  path: string;
+  /** `git`'s own letter: M, A, D, R, C, T. */
+  status: string;
+  /** `null` for a binary file, where git reports `-` rather than a count. */
+  additions: number | null;
+  deletions: number | null;
 }
 
 export interface GraphRow {

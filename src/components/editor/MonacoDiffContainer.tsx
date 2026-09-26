@@ -16,6 +16,16 @@ interface MonacoDiffContainerProps {
   originalContent: string;
   modifiedContent: string;
   filePath: string;
+  /**
+   * The container's own toolbar — the file name, the inline/side-by-side
+   * toggle, and any accept/reject actions.
+   *
+   * A host that already heads the diff with the file's path and what the two
+   * sides are (the repository page does) turns this off, so the pane does not
+   * say its own name twice. Standalone tabs keep it, since it is their only
+   * chrome.
+   */
+  showToolbar?: boolean;
   onAccept?: () => void;
   onReject?: () => void;
 }
@@ -24,6 +34,7 @@ export function MonacoDiffContainer({
   originalContent,
   modifiedContent,
   filePath,
+  showToolbar = true,
   onAccept,
   onReject,
 }: MonacoDiffContainerProps) {
@@ -61,56 +72,58 @@ export function MonacoDiffContainer({
   return (
     <div className="flex flex-col h-full w-full bg-workbench overflow-hidden select-none">
       {/* Diff Toolbar */}
-      <div className="flex items-center justify-between px-4 py-2 bg-workbench border-b border-hairline text-xs">
-        <div className="flex items-center gap-2">
-          <span className="font-semibold text-zinc-300">Diff Review:</span>
-          <span className="font-mono text-zinc-400">{filePath || "patch.diff"}</span>
-        </div>
+      {showToolbar && (
+        <div className="flex items-center justify-between px-4 py-2 bg-workbench border-b border-hairline text-xs">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-zinc-300">Diff Review:</span>
+            <span className="font-mono text-zinc-400">{filePath || "patch.diff"}</span>
+          </div>
 
-        <div className="flex items-center gap-2">
-          {/* Toggle Side-by-side vs Inline */}
-          <button
-            type="button"
-            onClick={() => setRenderSideBySide(!renderSideBySide)}
-            className="flex items-center gap-1 px-2.5 py-1 rounded bg-workbench hover:bg-workbench border border-hairline text-zinc-300 text-xs transition-colors"
-            title={renderSideBySide ? "Switch to Inline View" : "Switch to Side-by-Side View"}
-          >
-            {renderSideBySide ? (
-              <>
-                <Icon icon={Menu} className="w-3.5 h-3.5" />
-                <span>Inline</span>
-              </>
-            ) : (
-              <>
-                <Icon icon={Menu} className="w-3.5 h-3.5" />
-                <span>Side-by-Side</span>
-              </>
+          <div className="flex items-center gap-2">
+            {/* Toggle Side-by-side vs Inline */}
+            <button
+              type="button"
+              onClick={() => setRenderSideBySide(!renderSideBySide)}
+              className="flex items-center gap-1 px-2.5 py-1 rounded bg-workbench hover:bg-workbench border border-hairline text-zinc-300 text-xs transition-colors"
+              title={renderSideBySide ? "Switch to Inline View" : "Switch to Side-by-Side View"}
+            >
+              {renderSideBySide ? (
+                <>
+                  <Icon icon={Menu} className="w-3.5 h-3.5" />
+                  <span>Inline</span>
+                </>
+              ) : (
+                <>
+                  <Icon icon={Menu} className="w-3.5 h-3.5" />
+                  <span>Side-by-Side</span>
+                </>
+              )}
+            </button>
+
+            {onReject && (
+              <button
+                type="button"
+                onClick={onReject}
+                className="flex items-center gap-1 px-2.5 py-1 rounded bg-red-950/60 hover:bg-red-900 border border-red-800 text-red-300 text-xs font-medium transition-colors"
+              >
+                <Icon icon={X} className="w-3.5 h-3.5" />
+                <span>Reject</span>
+              </button>
             )}
-          </button>
 
-          {onReject && (
-            <button
-              type="button"
-              onClick={onReject}
-              className="flex items-center gap-1 px-2.5 py-1 rounded bg-red-950/60 hover:bg-red-900 border border-red-800 text-red-300 text-xs font-medium transition-colors"
-            >
-              <Icon icon={X} className="w-3.5 h-3.5" />
-              <span>Reject</span>
-            </button>
-          )}
-
-          {onAccept && (
-            <button
-              type="button"
-              onClick={onAccept}
-              className="flex items-center gap-1 px-3 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold shadow-sm transition-colors"
-            >
-              <Icon icon={Check} className="w-3.5 h-3.5" />
-              <span>Accept Patch</span>
-            </button>
-          )}
+            {onAccept && (
+              <button
+                type="button"
+                onClick={onAccept}
+                className="flex items-center gap-1 px-3 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold shadow-sm transition-colors"
+              >
+                <Icon icon={Check} className="w-3.5 h-3.5" />
+                <span>Accept Patch</span>
+              </button>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Monaco Diff Editor Surface */}
       <div className="flex-1 overflow-hidden">

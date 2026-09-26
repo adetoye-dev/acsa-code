@@ -101,12 +101,27 @@ function RefBadge({ badge }: { badge: GitRef }) {
   );
 }
 
-function GraphRow({ row, refsWidth }: { row: ReturnType<typeof layoutGraph>["rows"][number]; refsWidth: number }) {
+function GraphRow({
+  row,
+  refsWidth,
+  isSelected,
+  onSelect,
+}: {
+  row: ReturnType<typeof layoutGraph>["rows"][number];
+  refsWidth: number;
+  isSelected: boolean;
+  onSelect?: (commit: GitCommit) => void;
+}) {
   const { lane, commit } = row;
   const middle = ROW_HEIGHT / 2;
   return (
-    <div
-      className="flex items-center gap-2 pr-2"
+    <button
+      type="button"
+      onClick={onSelect ? () => onSelect(commit) : undefined}
+      aria-current={isSelected ? "true" : undefined}
+      className={`flex w-full items-center gap-2 pr-2 text-left transition-colors ${
+        isSelected ? "bg-white/10" : onSelect ? "hover:bg-white/5" : ""
+      }`}
       style={{ height: ROW_HEIGHT }}
       data-testid={`git-graph-row-${commit.short}`}
       title={`${commit.subject}\n${commit.short} · ${commit.author} · ${relativeDate(commit.date)}`}
@@ -195,7 +210,7 @@ function GraphRow({ row, refsWidth }: { row: ReturnType<typeof layoutGraph>["row
       <span className="hidden shrink-0 font-mono text-4xs text-zinc-500 xl:inline">
         {commit.author}
       </span>
-    </div>
+    </button>
   );
 }
 
@@ -205,6 +220,8 @@ export function CommitGraph({
   head,
   isLoading,
   error,
+  selectedSha,
+  onSelectCommit,
   onRefresh,
 }: {
   commits: GitCommit[];
@@ -213,6 +230,9 @@ export function CommitGraph({
   isLoading?: boolean;
   /** Set when the history could not be read at all. */
   error?: string | null;
+  selectedSha?: string;
+  /** Picking a commit is what opens it in the pane beside this one. */
+  onSelectCommit?: (commit: GitCommit) => void;
   onRefresh?: () => void;
 }) {
   const [isOpen, setIsOpen] = useState(true);
@@ -267,7 +287,15 @@ export function CommitGraph({
               </p>
             )
           ) : (
-            rows.map((row) => <GraphRow key={row.commit.sha} row={row} refsWidth={refsWidth} />)
+            rows.map((row) => (
+              <GraphRow
+                key={row.commit.sha}
+                row={row}
+                refsWidth={refsWidth}
+                isSelected={row.commit.sha === selectedSha}
+                onSelect={onSelectCommit}
+              />
+            ))
           )}
         </div>
       )}
