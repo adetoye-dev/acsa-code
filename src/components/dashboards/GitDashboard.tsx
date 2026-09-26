@@ -14,6 +14,8 @@ import {
   ArrowDownToLine,
   ArrowUpFromLine,
   Check,
+  ChevronDown,
+  ChevronRight,
   FileCode,
   GitBranch,
   GitCommitHorizontal,
@@ -82,6 +84,18 @@ interface GitResponse {
   head?: string;
   commit?: GitCommit;
   files?: GitCommitFile[];
+  hunks?: ChangeHunk[];
+}
+
+/** One hunk of a changed file, as the engine describes it. */
+interface ChangeHunk {
+  index: number;
+  /** The `@@ -1,4 +1,5 @@` line, section heading and all. */
+  header: string;
+  additions: number;
+  deletions: number;
+  /** The first changed line's text, which is what tells two hunks apart. */
+  preview: string;
 }
 
 /**
@@ -251,6 +265,12 @@ export function GitDashboard({
   const [diff, setDiff] = useState<{ path: string; original: string; modified: string } | null>(null);
   /** What an open commit's diff is compared against; the change view has its own. */
   const [diffScope, setDiffScope] = useState<DiffScope>("commit");
+  /** The hunks of the change on screen, for staging them one at a time. */
+  const [hunks, setHunks] = useState<ChangeHunk[]>([]);
+  const [hunksError, setHunksError] = useState<string | null>(null);
+  const [isHunksOpen, setIsHunksOpen] = useState(false);
+  /** Which hunk is being applied, so its own button can say so. */
+  const [hunkBusy, setHunkBusy] = useState<number | null>(null);
   const [isDiffLoading, setIsDiffLoading] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState<ChangedGitFile | null>(null);
   const [commits, setCommits] = useState<GitCommit[]>([]);
@@ -361,9 +381,20 @@ export function GitDashboard({
         modified: data.modifiedContent ?? "",
       });
       setIsDiffLoading(false);
+
+      // Which hunks this file has. An untracked file has none — there is nothing for
+      // git to compare — and neither has a binary one, so the strip stays away and
+      // the file-level actions above remain the way to stage those.
+      const described = await call("hunks", { filePath: file.path, staged: isStaged });
+      if (seq !== requestSeq.current) return;
+      setHunks(described.success === false ? [] : described.hunks || []);
+      setHunksError(
+        described.success === false ? described.error || "The hunks could not be read." : null
+      );
     },
     [call]
   );
+
 
   /**
    * The open selection, as a ref.
@@ -470,6 +501,8 @@ export function GitDashboard({
       setSelected({ kind: "commit", commit });
       setCommitDetail(null);
       setDiff(null);
+      setHunks([]);
+      setHunksError(null);
       // A commit opens as its own change; the scope is a question you ask after.
       setDiffScope("commit");
       setIsDiffLoading(true);
@@ -572,6 +605,29 @@ export function GitDashboard({
       return true;
     },
     [call, fetchStatus, fetchLog, onWorkspaceChanged, overview, reconcileSelection]
+  );
+
+  /**
+   * Stage or unstage one hunk, through the same path as every other mutation.
+   *
+   * `runAction` re-reads the status, tells the workspace (which re-reads this file's
+   * diff and hunks) and reconciles the selection. That is what makes the loop close:
+   * once the last hunk of a file is staged, the file moves to the staged group, the
+   * selection follows it there, and the strip offers to take a hunk back out instead
+   * of the pane jumping away from the file being worked on.
+   */
+  const applyOneHunk = useCallback(
+    async (index: number) => {
+      if (selected?.kind !== "change") return;
+      setHunkBusy(index);
+      await runAction(`hunk-${index}`, "apply-hunk", {
+        filePath: selected.file.path,
+        hunk: index,
+        staged: selected.staged,
+      });
+      setHunkBusy(null);
+    },
+    [runAction, selected]
   );
 
   const commit = useCallback(async () => {
@@ -925,6 +981,83 @@ export function GitDashboard({
                     </span>
                   )}
                 </div>
+                {/* Hunks, so part of a file can be staged. Only a working-tree change
+                    can be staged at all, which is why the commit view does not offer
+                    them: a commit's diff is history, not an index to move. */}
+                {openChange && hunksError && (
+                  <p
+                    data-testid="git-hunks-error"
+                    className="shrink-0 border-b border-hairline px-3 py-1 text-4xs text-amber-300"
+                  >
+                    {hunksError}
+                  </p>
+                )}
+                {openChange && !hunksError && hunks.length > 0 && (
+                  <div className="shrink-0 border-b border-hairline">
+                    <button
+                      type="button"
+                      data-testid="git-hunks-toggle"
+                      onClick={() => setIsHunksOpen((open) => !open)}
+                      className="flex w-full items-center gap-1.5 px-3 py-1 text-left text-4xs text-zinc-500 transition-colors hover:bg-white/5 hover:text-zinc-200"
+                    >
+                      <Icon
+                        icon={isHunksOpen ? ChevronDown : ChevronRight}
+                        className="w-3 h-3 shrink-0"
+                      />
+                      <span className="shrink-0">
+                        {hunks.length} hunk{hunks.length === 1 ? "" : "s"}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate">
+                        {isHunksOpen
+                          ? "stage or unstage one at a time"
+                          : "of this file — stage one at a time"}
+                      </span>
+                    </button>
+                    {isHunksOpen && (
+                      <div
+                        data-testid="git-hunks"
+                        className="max-h-40 overflow-y-auto border-t border-hairline"
+                      >
+                        {hunks.map((hunk) => (
+                          <div key={hunk.index} className="flex items-center gap-2 px-3 py-1">
+                            <span
+                              className="shrink-0 font-mono text-4xs text-zinc-500"
+                              title={hunk.header}
+                            >
+                              {hunk.header}
+                            </span>
+                            <span className="shrink-0 font-mono text-4xs">
+                              <span className="text-emerald-400">+{hunk.additions}</span>
+                              <span className="ml-1 text-red-400">-{hunk.deletions}</span>
+                            </span>
+                            {/* Which hunk is which is answered by the text, not the
+                                line numbers, so the first changed line is shown. */}
+                            <span
+                              className="min-w-0 flex-1 truncate text-4xs text-zinc-400"
+                              title={hunk.preview}
+                            >
+                              {hunk.preview}
+                            </span>
+                            <button
+                              type="button"
+                              data-testid={`git-hunk-${hunk.index}`}
+                              disabled={busy !== null || hunkBusy !== null}
+                              onClick={() => void applyOneHunk(hunk.index)}
+                              className="shrink-0 rounded-md px-1.5 py-0.5 text-4xs text-zinc-400 transition-colors hover:bg-white/5 hover:text-zinc-100 disabled:opacity-40"
+                            >
+                              {hunkBusy === hunk.index
+                                ? "working…"
+                                : openChange.staged
+                                  ? "Unstage hunk"
+                                  : "Stage hunk"}
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* No accept/reject callbacks: a git diff is read, not applied. */}
                 <div className="relative min-h-0 flex-1">
                   <Suspense fallback={<SurfaceFallback label="the diff" />}>

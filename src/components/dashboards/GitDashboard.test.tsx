@@ -3,6 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 /** What the fake engine answers, and what it was asked. */
+type HunkFixture = {
+  index: number;
+  header: string;
+  additions: number;
+  deletions: number;
+  preview: string;
+};
+
 const engine = vi.hoisted(() => ({
   calls: [] as string[],
   /** What each call was asked, so a request's payload can be asserted. */
@@ -31,6 +39,18 @@ const engine = vi.hoisted(() => ({
   },
   commitFile: { success: true, originalContent: "parent", modifiedContent: "in the commit" },
   sinceDiff: { success: true, originalContent: "in the commit", modifiedContent: "on disk" },
+  /** Two hunks of one file, as the engine describes them. */
+  hunks: {
+    success: true,
+    hunks: [
+      { index: 0, header: "@@ -1,4 +1,5 @@", additions: 2, deletions: 1, preview: "first change" },
+      { index: 1, header: "@@ -20,3 +21,3 @@", additions: 1, deletions: 1, preview: "second change" },
+    ],
+    // A failed read has no hunks and a reason instead, which a test sets.
+    error: undefined as string | undefined,
+    // Widened on purpose: a test sets a failed read, which has no hunks and a reason.
+  } as { success: boolean; hunks?: HunkFixture[]; error?: string },
+  applyHunk: { success: true, message: "Staged hunk 1 of 2." },
   commit: { success: true, message: "committed" },
 }));
 
@@ -52,6 +72,10 @@ vi.mock("../../services/gitClient", () => ({
               ? engine.commitFile
               : action === "diff-since"
                 ? engine.sinceDiff
+                : action === "hunks"
+                  ? engine.hunks
+                  : action === "apply-hunk"
+                    ? engine.applyHunk
                 : action === "commit"
                     ? engine.commit
                     : action === "log"
@@ -380,5 +404,49 @@ describe("the source control page", () => {
 
     expect(await screen.findByText("No changes since this commit")).toBeTruthy();
     expect(screen.getByText(/matches the commit/)).toBeTruthy();
+  });
+
+  it("stages one hunk of a file, through the same path as every other action", async () => {
+    render(<GitDashboard projectCwd="/work/acsa-code" />);
+    fireEvent.click(await screen.findByTestId("git-file-src/b.ts"));
+
+    // The strip names how many hunks there are, and the diff itself is untouched.
+    const toggle = await screen.findByTestId("git-hunks-toggle");
+    expect(toggle.textContent).toContain("2 hunks");
+    expect(screen.queryByTestId("git-hunks")).toBeNull();
+
+    fireEvent.click(toggle);
+    // Collapsed by default: the diff is the point, the hunks are a tool beside it.
+    expect(screen.getByTestId("git-hunks").children.length).toBe(2);
+    // Both are described well enough to choose between them.
+    expect(screen.getByText("@@ -1,4 +1,5 @@")).toBeTruthy();
+    expect(screen.getByText("second change")).toBeTruthy();
+
+    engine.payloads = [];
+    fireEvent.click(screen.getByTestId("git-hunk-1"));
+    await waitFor(() => {
+      const ask = engine.payloads.filter((call) => call.action === "apply-hunk").at(-1);
+      // The second hunk of this file, and the group it is in — not the file as a whole.
+      expect(ask?.body).toMatchObject({ filePath: "src/b.ts", hunk: 1, staged: false });
+    });
+    // The engine's own words are what the page reports.
+    expect(await screen.findByText("Staged hunk 1 of 2.")).toBeTruthy();
+  });
+
+  it("offers no hunks for a file that has none", async () => {
+    // An untracked file, or a binary one: there is nothing to split.
+    engine.hunks = { success: true, hunks: [] };
+    render(<GitDashboard projectCwd="/work/acsa-code" />);
+    fireEvent.click(await screen.findByTestId("git-file-src/b.ts"));
+    await screen.findByTestId("diff-surface");
+    expect(screen.queryByTestId("git-hunks-toggle")).toBeNull();
+  });
+
+  it("says when the hunks could not be read", async () => {
+    engine.hunks = { success: false, error: "fatal: bad revision" };
+    render(<GitDashboard projectCwd="/work/acsa-code" />);
+    fireEvent.click(await screen.findByTestId("git-file-src/b.ts"));
+    expect(await screen.findByTestId("git-hunks-error")).toBeTruthy();
+    expect(screen.getByText("fatal: bad revision")).toBeTruthy();
   });
 });
