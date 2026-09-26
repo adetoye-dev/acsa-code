@@ -1305,6 +1305,28 @@ const cardHit = await session.eval(`(() => {
     hitInsideCard: Boolean(hit && hit.closest('.acsa-review-card')),
   };
 })()`);
+// A real mouse click on a card's own button, not a programmatic one: the zone pass
+// used to remove and re-add every zone, so the node under the pointer was replaced
+// between the mousedown and the mouseup and the click never fired — the buttons
+// worked sometimes and not others.
+// The card's *Dismiss*, which is a span with a role rather than the header button
+// above it — clicking that one folds the thread instead of dismissing the finding.
+const dismissPoint = await session.eval(`(() => {
+  const control = document.querySelector('.acsa-review-card [title="Dismiss this finding"]');
+  if (!control) return null;
+  const box = control.getBoundingClientRect();
+  return { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) };
+})()`);
+const rowsBefore = await session.eval(`document.querySelectorAll('[data-testid^="review-finding-"]').length`);
+if (dismissPoint) {
+  await session.click(dismissPoint.x, dismissPoint.y);
+  await sleep(700);
+}
+const rowsAfter = await session.eval(`document.querySelectorAll('[data-testid^="review-finding-"]').length`);
+check("a mouse click on a card's Dismiss reaches its handler",
+  dismissPoint !== null && rowsAfter === rowsBefore - 1,
+  `before=${rowsBefore} after=${rowsAfter} at=${JSON.stringify(dismissPoint)}`);
+
 check("the finding card's own controls are still reachable",
   cardHit.buttons > 0 && cardHit.hitInsideCard === true, JSON.stringify(cardHit));
 
