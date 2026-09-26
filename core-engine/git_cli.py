@@ -26,13 +26,22 @@ REMOTE_TIMEOUT = 180
 
 
 def _run(cwd: str, args: list[str], timeout: int = LOCAL_TIMEOUT) -> tuple[bool, str, str]:
-    """Run git, returning (ok, stdout, stderr)."""
+    """Run git, returning (ok, stdout, stderr).
+
+    Decoded as UTF-8 with `errors="replace"` rather than the locale default: git
+    hands back whatever bytes a file contains, so `git show` on a PNG used to
+    raise `UnicodeDecodeError` out of `subprocess` and fail the whole action. A
+    replacement character in a diff is a much smaller problem than a dead panel,
+    and commit messages in other encodings no longer take the log down with them.
+    """
     try:
         result = subprocess.run(
             ["git", *args],
             cwd=cwd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
     except FileNotFoundError:
@@ -47,6 +56,19 @@ def _run(cwd: str, args: list[str], timeout: int = LOCAL_TIMEOUT) -> tuple[bool,
 def _cwd(payload: dict) -> str:
     candidate = str(payload.get("cwd") or os.getcwd())
     return candidate if Path(candidate).is_dir() else os.getcwd()
+
+
+def _text_only(original: str, modified: str) -> tuple[str, str]:
+    """Drop both sides when either is binary.
+
+    The diff pane can only draw text, and a committed PNG arrives from `git show`
+    as a screenful of replacement characters. Git's own test for "not text" is a
+    NUL byte, so the same test blanks the pair — the pane then says there is
+    nothing to compare, which is true, instead of pretending to diff mojibake.
+    """
+    if "\0" in original or "\0" in modified:
+        return "", ""
+    return original, modified
 
 
 def _file(payload: dict) -> str:
@@ -221,6 +243,112 @@ def log(payload: dict) -> dict:
     }
 
 
+# One commit's header, for the panel that opens when a graph row is picked.
+# `commit` is already taken by the verb — creating one — so reading one is
+# `commit-info`, and `commit-file` is one file's two sides inside it.
+COMMIT_FIELDS = ["%H", "%h", "%an", "%aI", "%s", "%b"]
+
+
+def parse_commit_meta(stdout: str) -> dict:
+    """A commit's header fields; an empty subject or body stays an empty string."""
+    fields = stdout.split(LOG_RECORD)[0].split(LOG_FIELD)
+    if len(fields) < len(COMMIT_FIELDS):
+        return {}
+    sha, short, author, date, subject, body = fields[: len(COMMIT_FIELDS)]
+    return {
+        "sha": sha,
+        "short": short,
+        "author": author,
+        "date": date,
+        "subject": subject,
+        "body": body.strip(),
+    }
+
+
+def parse_commit_files(name_status: str, numstat: str) -> list[dict]:
+    """Pair `--name-status` with `--numstat`, line by line.
+
+    Both come out of the same diff walk in the same order, so they line up
+    one-to-one — which is cheaper and far more predictable than parsing either
+    into a format git does not emit. Both are asked for with `--no-renames` so the
+    pairing cannot drift; the cost is that a rename reads as an add and a delete.
+
+    A binary file has no counts (`-` rather than digits), so its additions and
+    deletions are `None` rather than a misleading zero.
+    """
+    statuses = [line.split("\t") for line in name_status.splitlines() if line.strip()]
+    stats = [line.split("\t") for line in numstat.splitlines() if line.strip()]
+
+    files: list[dict] = []
+    for index, parts in enumerate(statuses):
+        if len(parts) < 2:
+            continue
+        additions = deletions = None
+        if index < len(stats) and len(stats[index]) >= 3:
+            added, removed = stats[index][0].strip(), stats[index][1].strip()
+            additions = int(added) if added.isdigit() else None
+            deletions = int(removed) if removed.isdigit() else None
+        files.append(
+            {
+                "path": parts[-1],
+                "status": (parts[0] or "M")[:1],
+                "additions": additions,
+                "deletions": deletions,
+            }
+        )
+    return files
+
+
+def commit_info(payload: dict) -> dict:
+    """One commit: its header, and the files it touched."""
+    cwd = _cwd(payload)
+    sha = str(payload.get("sha") or "HEAD").strip() or "HEAD"
+
+    ok, meta_out, stderr = _run(
+        cwd,
+        [
+            "show",
+            "--no-patch",
+            f"--pretty=format:{LOG_FIELD.join(COMMIT_FIELDS)}{LOG_RECORD}",
+            sha,
+        ],
+    )
+    if not ok:
+        return {"success": False, "error": (stderr or "could not read that commit").strip()}
+
+    # `--name-status` and `--no-patch` cannot be combined, and neither can the file
+    # list be asked for with the patch suppressed — an empty `--format=` is what
+    # keeps the message out while leaving the file list intact.
+    ok_names, names, _ = _run(cwd, ["show", "--no-renames", "--name-status", "--format=", sha])
+    ok_stats, stats, _ = _run(cwd, ["show", "--no-renames", "--numstat", "--format=", sha])
+
+    return {
+        "success": True,
+        "commit": parse_commit_meta(meta_out),
+        # A commit that touched nothing is still a commit, not a failure.
+        "files": parse_commit_files(names, stats) if (ok_names and ok_stats) else [],
+    }
+
+
+def commit_file(payload: dict) -> dict:
+    """The two sides of one file *inside* a commit, for the diff editor.
+
+    The same shape `diff-file` returns: the parent's copy against the commit's,
+    with either side empty when the file was added or deleted in that commit.
+    """
+    cwd = _cwd(payload)
+    sha = str(payload.get("sha") or "HEAD").strip() or "HEAD"
+    path = _file(payload)
+    ok_before, before, _ = _run(cwd, ["show", f"{sha}^:{path}"])
+    ok_after, after, _ = _run(cwd, ["show", f"{sha}:{path}"])
+    original, modified = _text_only(before if ok_before else "", after if ok_after else "")
+    return {
+        "success": True,
+        "originalContent": original,
+        "modifiedContent": modified,
+    }
+
+
 def diff_file(payload: dict) -> dict:
     """Return the two sides of a file so the editor can show a real diff."""
     cwd, file_path = _cwd(payload), _file(payload)
@@ -244,6 +372,7 @@ def diff_file(payload: dict) -> dict:
         except OSError:
             modified = ""
 
+    original, modified = _text_only(original, modified)
     return {"success": True, "originalContent": original, "modifiedContent": modified}
 
 
@@ -379,6 +508,8 @@ COMMANDS = {
     "commit": commit,
     "branches": branches,
     "log": log,
+    "commit-info": commit_info,
+    "commit-file": commit_file,
     "checkout": checkout,
     "pull": pull,
     "push": push,
