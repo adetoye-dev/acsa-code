@@ -58,6 +58,9 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "pty": ("pty_bridge", "main"),
     "ollama": ("ollama_cli", "run"),
     "git": ("git_cli", "run"),
+    # The remote's state — checks, pull requests, your issues — through the `gh`
+    # the user already signed into. See gh_cli for why it is not a token of ours.
+    "gh": ("gh_cli", "run"),
     "indexer": ("indexer_cli", "run"),
     "skills": ("skills_cli", "run"),
     "mcp": ("mcp_cli", "run"),
