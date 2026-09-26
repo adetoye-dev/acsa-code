@@ -2071,9 +2071,9 @@ fn run_with_timeout_env(
 /// page is compromised. `pty` and `adapter` are deliberately absent — the
 /// terminal and the local-model adapter are spawned by Rust with arguments Rust
 /// picked, not with arguments the webview supplies.
-const ALLOWED_ENGINE_SUBCOMMANDS: [&str; 13] = [
-    "db", "ollama", "index", "git", "indexer", "skills", "mcp", "ai", "project", "fs", "backup",
-    "support", "snapshot",
+const ALLOWED_ENGINE_SUBCOMMANDS: [&str; 15] = [
+    "db", "ollama", "index", "git", "gh", "indexer", "skills", "mcp", "ai", "project", "fs",
+    "backup", "support", "snapshot", "crash",
 ];
 
 fn engine_subcommand_allowed(subcommand: &str) -> bool {

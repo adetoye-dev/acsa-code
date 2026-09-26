@@ -56,6 +56,53 @@ class EngineFreezeTests(unittest.TestCase):
             "scripts/build_engine_sidecar.sh as --hidden-import.",
         )
 
+    def allowed_engine_subcommands(self) -> set[str]:
+        """The Rust IPC layer's allowlist — the third list that has to agree.
+
+        Parsed from the source rather than imported: it is a Rust constant, and a
+        test that restated it would be the same drift in a different language.
+        """
+        rust = (ROOT / ".tauri" / "src" / "main.rs").read_text(encoding="utf-8")
+        start = rust.index("const ALLOWED_ENGINE_SUBCOMMANDS")
+        block = rust[start : rust.index("];", start)]
+        return set(re.findall(r'"([a-z_]+)"', block))
+
+    def test_every_subcommand_can_be_reached_over_ipc(self):
+        """A subcommand the page cannot reach is a feature that ships dead.
+
+        `ALLOWED_ENGINE_SUBCOMMANDS` is a *security* boundary — the page picks these,
+        so it is a deliberate list — and it is maintained by hand, which is the same
+        shape as the freeze list above and drifts the same way. It drifted twice: `gh`
+        shipped in 0.2.18 with every GitHub panel answering "engine subcommand not
+        allowed: gh" (the CI card, the pull requests, the run log — all working in
+        development, where the engine is source rather than the packaged sidecar), and
+        `crash` has never been allowed at all, so the app's own crash reporter has
+        been unable to write a crash log in any packaged build.
+
+        `pty` and `adapter` are the deliberate exclusions, and the Rust comment says
+        why: Rust spawns both with arguments Rust chose, so the page has no business
+        reaching them.
+        """
+        allowed = self.allowed_engine_subcommands()
+        unreachable = sorted(set(acsa_engine.COMMANDS) - allowed - {"pty", "adapter"})
+        self.assertEqual(
+            unreachable,
+            [],
+            "these subcommands are registered but the IPC layer refuses them, so they "
+            f"are dead in a packaged app: {unreachable}. Add them to "
+            "ALLOWED_ENGINE_SUBCOMMANDS in .tauri/src/main.rs, or name the exclusion "
+            "in both places.",
+        )
+
+    def test_the_allowlist_was_actually_parsed(self):
+        # Guards the check above against a regex that quietly stopped matching: an
+        # empty set would otherwise make every subcommand look unreachable, and a
+        # too-greedy one would make them all look fine.
+        allowed = self.allowed_engine_subcommands()
+        self.assertIn("git", allowed)
+        self.assertIn("gh", allowed)
+        self.assertNotIn("pty", allowed)
+
     def test_the_freeze_list_was_actually_parsed(self):
         # Guards the check above against a regex that quietly stopped matching: a
         # set that came back empty would fail loudly, but a set that came back
