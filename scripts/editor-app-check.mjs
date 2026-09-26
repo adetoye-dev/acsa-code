@@ -76,6 +76,47 @@ const TAURI_STUB = `(() => {
   globalThis.EditContext = undefined;
   window.__engineCalls = [];
   window.__writes = [];
+  // What the repository page is given: a tree with staged and unstaged files, and
+  // a history whose second commit is a merge of two lines.
+  (() => {
+    const sha = (letter) => letter.repeat(40);
+    const at = (hoursAgo) => new Date(Date.now() - hoursAgo * 3600e3).toISOString();
+    const changed = (path, indexStatus, workTreeStatus, isStaged) => ({ path, indexStatus, workTreeStatus, isStaged });
+    window.__git = {
+      status: {
+        isGit: true,
+        branch: "dev",
+        ahead: 2,
+        behind: 1,
+        staged: [
+          changed("src/components/layout/IdeLayout.tsx", "M", " ", true),
+          changed("src/services/usePipeline.ts", "A", " ", true),
+        ],
+        unstaged: [
+          changed("src/components/dashboards/GitDashboard.tsx", " ", "M", false),
+          changed("core-engine/git_cli.py", " ", "M", false),
+          changed("docs/RELEASING.md", " ", "M", false),
+        ],
+      },
+      log: {
+        isGit: true,
+        head: sha("a"),
+        commits: [
+          { sha: sha("a"), short: "aaaaaaa", parents: [sha("b"), sha("c")], author: "Ada", date: at(1), subject: "Merge the sidebar rework" },
+          { sha: sha("b"), short: "bbbbbbb", parents: [sha("d")], author: "Ada", date: at(5), subject: "Tighten the rail highlight" },
+          { sha: sha("c"), short: "ccccccc", parents: [sha("d")], author: "Grace", date: at(9), subject: "Draw the commit graph" },
+          { sha: sha("d"), short: "ddddddd", parents: [sha("e")], author: "Ada", date: at(30), subject: "Read the history from the engine" },
+          { sha: sha("e"), short: "eeeeeee", parents: [], author: "Grace", date: at(72), subject: "First commit" },
+        ],
+        refs: [
+          { name: "dev", kind: "branch", target: sha("a"), current: true },
+          { name: "origin/dev", kind: "remote", target: sha("b"), current: false },
+          { name: "v0.2.0", kind: "tag", target: sha("d"), current: false },
+          { name: "main", kind: "branch", target: sha("e"), current: false },
+        ],
+      },
+    };
+  })();
   // What the engine answers for the two AI actions the editor can make. Set per
   // check, so a review or an inline edit is deterministic rather than a
   // question about which model happened to reply.
@@ -120,7 +161,14 @@ const TAURI_STUB = `(() => {
           const fn = DB[list && list[0]];
           return JSON.stringify({ ok: true, data: fn ? fn() : null });
         }
-        if (sub === "git") return JSON.stringify({ ok: true, data: { branch: "dev", files: [] } });
+        if (sub === "git") {
+          // A history with a merge in it, so the graph has two lanes and a join to
+          // draw — a straight line would pass without exercising any of that.
+          const action = list && list[0];
+          if (action === "status") return JSON.stringify({ ok: true, data: window.__git.status });
+          if (action === "log") return JSON.stringify({ ok: true, data: window.__git.log });
+          return JSON.stringify({ ok: true, data: { success: true } });
+        }
         if (sub === "indexer") return JSON.stringify({ ok: true, data: { indexed: true, totalSymbols: 0, profile: null } });
         if (sub === "ai") {
           const action = list && list[0];
@@ -894,6 +942,52 @@ await session.chord("z", 90);
 await sleep(600);
 check("an applied inline edit is one undo",
   (await editorText(session)) === "aa\nbb\ncc", JSON.stringify(await editorText(session)));
+
+// ── The repository page ──────────────────────────────────────────────────
+// Layout, in order: the commit box, then the changes it is about, then the
+// history. The box at the *bottom* of the panel was the thing you had to scroll
+// to find, and the graph is what the page was missing.
+await session.eval(`document.querySelector('[data-testid="nav-item-git"]').click()`);
+await sleep(1500);
+const repo = await session.eval(`(() => {
+  const box = document.querySelector('[data-testid="git-commit-message"]');
+  const changes = document.querySelector('[data-testid="git-changes"]');
+  const graph = document.querySelector('[data-testid="git-graph"]');
+  const rows = [...document.querySelectorAll('[data-testid^="git-graph-row-"]')];
+  if (!box || !changes || !graph) {
+    // Say what *is* on screen instead. A missing panel is usually a screen that
+    // never switched, and the test ids are the quickest way to see that.
+    return {
+      found: { box: Boolean(box), changes: Boolean(changes), graph: Boolean(graph) },
+      onScreen: {
+        back: Boolean(document.querySelector('[aria-label="Back to the editor"]')),
+        testids: [...document.querySelectorAll('[data-testid]')]
+          .map((node) => node.getAttribute('data-testid')).slice(0, 24),
+        text: (document.body.innerText || '').slice(0, 160),
+      },
+    };
+  }
+  const top = (el) => Math.round(el.getBoundingClientRect().top);
+  const widths = rows.map((row) => Math.round(row.querySelector('svg')?.width?.baseVal?.value ?? 0));
+  return {
+    found: { box: true, changes: true, graph: true },
+    order: [top(box), top(changes), top(graph)],
+    rows: rows.length,
+    widestRow: widths.length ? Math.max(...widths) : 0,
+    graphText: graph.textContent || "",
+  };
+})()`);
+check("the repository page puts the commit box above the changes and the graph below",
+  Boolean(repo.order) && repo.order[0] < repo.order[1] && repo.order[1] < repo.order[2],
+  JSON.stringify(repo.order ?? repo.onScreen ?? repo.found));
+check("the history is drawn as lanes, not a list",
+  // Two lanes' worth of pitch: the merge has to widen the graph past one line.
+  repo.rows === 5 && repo.widestRow >= 2 * 11,
+  `rows=${repo.rows} widest=${repo.widestRow}px`);
+check("its refs are badged onto the commits they point at",
+  /dev/.test(repo.graphText ?? "") && /v0\.2\.0/.test(repo.graphText ?? "") && /main/.test(repo.graphText ?? ""),
+  JSON.stringify((repo.graphText ?? "").slice(0, 120)));
+await session.screenshot("repository-page");
 
 // ── A surface that never arrives ─────────────────────────────────────────
 // `Suspense` reports nothing when a chunk stalls rather than fails: no error, no
