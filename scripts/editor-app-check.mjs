@@ -1607,6 +1607,34 @@ const changeDiff = await editorText(session);
 check("its diff is the change's own two sides, not the commit's left behind",
   changeDiff.includes("unstaged = 2") && !changeDiff.includes("railIconSize") && !changeDiff.includes("layoutGraph"),
   JSON.stringify(changeDiff.slice(0, 200)));
+
+// A re-read has to reach the diff on screen too: an agent writing to the file you
+// are looking at would otherwise leave a diff that no longer matches it.
+await session.eval(`(() => {
+  // The pair is [original, modified]; the second entry is the side that changed.
+  window.__git.changeSides["src/components/dashboards/GitDashboard.tsx"].unstaged[1] =
+    "export const unstaged = 2;\\nexport const writtenWhileYouLooked = true;\\n";
+  return true;
+})()`);
+const asksBefore = await session.eval(`window.__diffAsks.length`);
+await session.eval(`document.querySelector('[aria-label="Refresh"]').click()`);
+await sleep(700);
+const reread = await editorText(session);
+const rereadState = await session.eval(`({
+  stub: window.__git.changeSides["src/components/dashboards/GitDashboard.tsx"].unstaged.join("|"),
+  asks: window.__diffAsks.length,
+  lastAsk: window.__diffAsks[window.__diffAsks.length - 1],
+})`);
+check("re-reading the tree re-reads the diff of the file on screen",
+  reread.includes("writtenWhileYouLooked"),
+  JSON.stringify({
+    hasNew: reread.includes("writtenWhileYouLooked"),
+    length: reread.length,
+    tail: reread.slice(-140),
+    ...rereadState,
+    asksBefore,
+  }));
+
 // The landing view unmounts the moment something is selected, so its answer is
 // held above it. If that regressed, every glance at a file would cost three `gh`
 // calls and a few seconds.
