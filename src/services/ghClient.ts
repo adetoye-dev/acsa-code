@@ -22,7 +22,32 @@ export interface GhRun {
   updatedAt: string;
   /** Null while a run is still going: an unknown length is not a short one. */
   durationSeconds: number | null;
+  /** The commit the run was for, so a row can link to it. */
+  sha: string;
   url: string;
+}
+
+/**
+ * The branch's recent runs as a few numbers.
+ *
+ * `passRate` counts only finished runs that finished *one way or the other*:
+ * cancelled and skipped are neither a pass nor a failure, so they are counted in
+ * `other` instead of dragging a rate down to a health nobody measured. `null` for
+ * the rate or the average means there is nothing to average — the panel says "—"
+ * rather than a number it made up.
+ */
+export interface GhRunSummary {
+  /** The branch this describes, or empty when it describes the repository. */
+  branch: string;
+  total: number;
+  passed: number;
+  failed: number;
+  other: number;
+  passRate: number | null;
+  averageDurationSeconds: number | null;
+  latest: GhRun | null;
+  /** Oldest first, so a bar chart reads left to right. */
+  history: GhRun[];
 }
 
 export interface GhPullRequest {
@@ -72,6 +97,7 @@ export interface GhOverview {
   raw: string;
   repo: string;
   runs: GhRun[];
+  summary: GhRunSummary;
   pullRequests: GhPullRequest[];
   issues: GhIssue[];
   errors: Record<string, string>;
@@ -103,6 +129,17 @@ const EMPTY: Omit<GhOverview, "reason" | "detail"> = {
   raw: "",
   repo: "",
   runs: [],
+  summary: {
+    branch: "",
+    total: 0,
+    passed: 0,
+    failed: 0,
+    other: 0,
+    passRate: null,
+    averageDurationSeconds: null,
+    latest: null,
+    history: [],
+  },
   pullRequests: [],
   issues: [],
   errors: {},

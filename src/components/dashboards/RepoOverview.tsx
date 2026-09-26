@@ -42,6 +42,7 @@ import type {
   GhPullRequest,
   GhRun,
   GhRunLog,
+  GhRunSummary,
 } from "../../services/ghClient";
 
 interface RepoOverviewProps {
@@ -54,27 +55,67 @@ interface RepoOverviewProps {
   onRefresh: () => void;
 }
 
-/** How a run's outcome reads: an icon, its colour, and the word for it. */
-function runAppearance(run: GhRun): { icon: typeof CheckCircle2; tone: string; label: string } {
+/**
+ * How a run's outcome reads: an icon, its colour, the word for it, and the
+ * background its bar in the history gets.
+ *
+ * The bar colour is a value rather than a class assembled at the call site, so a
+ * conclusion nobody predicted cannot end up as a bar with no colour at all.
+ */
+function runAppearance(run: GhRun): {
+  icon: typeof CheckCircle2;
+  tone: string;
+  bar: string;
+  /** The value form, for a list row's meta line. */
+  label: string;
+  /** The sentence form, for the card's status line: "Successful", "Failed". */
+  word: string;
+} {
   if (run.status && run.status !== "completed") {
     return {
       icon: Loader2,
       tone: "text-sky-400",
+      bar: "bg-sky-500",
       label: run.status.replace(/_/g, " "),
+      word: "Running",
     };
   }
   switch ((run.conclusion || "").toLowerCase()) {
     case "success":
-      return { icon: CheckCircle2, tone: "text-emerald-400", label: "success" };
+      return {
+        icon: CheckCircle2,
+        tone: "text-emerald-400",
+        bar: "bg-emerald-500",
+        label: "success",
+        word: "Successful",
+      };
     case "failure":
     case "startup_failure":
     case "timed_out":
-      return { icon: XCircle, tone: "text-red-400", label: run.conclusion.replace(/_/g, " ") };
+      return {
+        icon: XCircle,
+        tone: "text-red-400",
+        bar: "bg-red-500",
+        label: run.conclusion.replace(/_/g, " "),
+        word: "Failed",
+      };
     case "cancelled":
-      return { icon: CircleSlash, tone: "text-amber-300", label: "cancelled" };
+      return {
+        icon: CircleSlash,
+        tone: "text-amber-300",
+        bar: "bg-amber-400",
+        label: "cancelled",
+        word: "Cancelled",
+      };
     default:
       // A conclusion nobody predicted is worth showing as-is rather than hiding.
-      return { icon: CircleDashed, tone: "text-zinc-400", label: run.conclusion || "unknown" };
+      return {
+        icon: CircleDashed,
+        tone: "text-zinc-400",
+        bar: "bg-zinc-500",
+        label: run.conclusion || "unknown",
+        word: run.conclusion === "skipped" ? "Skipped" : "Finished",
+      };
   }
 }
 
@@ -260,6 +301,203 @@ function RunLogPanel({
   );
 }
 
+/** A labelled value, the way the status widget lays out its columns. */
+function StatColumn({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="min-w-0 flex-1">
+      <div className="text-4xs font-semibold uppercase tracking-wider text-zinc-500">{label}</div>
+      <div className="mt-1 min-w-0 truncate text-2xs text-zinc-300">{children}</div>
+    </div>
+  );
+}
+
+/** One bar per run, oldest on the left, height by how long it took. */
+function HistoryBars({ summary }: { summary: GhRunSummary }) {
+  const longest = Math.max(
+    1,
+    ...summary.history.map((run) => run.durationSeconds ?? 0)
+  );
+  return (
+    // `h-6` belongs here rather than on a wrapper: the bars are percentage heights,
+    // and a percentage against a container with no height of its own computes to
+    // zero — which is a bar chart that renders as nothing.
+    <div className="flex h-6 items-end gap-[2px]" data-testid="gh-history-bars">
+      {summary.history.map((run) => {
+        const look = runAppearance(run);
+        // A run with no length yet (or which took no time) still gets a visible bar:
+        // a bar chart with gaps where the runs are reads as missing data.
+        const height = Math.max(0.3, (run.durationSeconds ?? 0) / longest);
+        return (
+          <button
+            key={`${run.id}-${run.createdAt}`}
+            type="button"
+            title={`${look.label} · ${durationLabel(run.durationSeconds) || "unknown length"} · ${relativeDate(run.createdAt)}`}
+            aria-label={`${look.label} run, ${relativeDate(run.createdAt)}`}
+            onClick={() => void openExternal(run.url)}
+            style={{ height: `${Math.round(height * 100)}%` }}
+            className={`w-[5px] shrink-0 rounded-sm ${look.bar}`}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * The branch's CI as a status widget: what the last run was, how long runs take,
+ * and how often they pass.
+ *
+ * The list below answers "what has been running"; this answers "how is this branch
+ * doing", which is the part no list of individual runs shows. Aggregates are the
+ * only thing here that is not already in the list, so the columns deliberately stay
+ * to one line each — a second copy of the list would be clutter.
+ */
+function RunStatsCard({
+  summary,
+  error,
+  actionsUrl,
+}: {
+  summary: GhRunSummary;
+  error?: string;
+  actionsUrl: string;
+}) {
+  const latest = summary.latest;
+  const look = latest ? runAppearance(latest) : null;
+  const scope = summary.branch ? `CI on ${summary.branch}` : "Recent runs";
+  const compareUrl = summary.branch ? `${actionsUrl}?query=branch%3A${encodeURIComponent(summary.branch)}` : actionsUrl;
+
+  if (error) {
+    return (
+      <div className="mx-2.5 mt-3 rounded-lg border border-hairline bg-black/20 px-2.5 py-2">
+        <div className="text-4xs font-semibold uppercase tracking-wider text-zinc-500">{scope}</div>
+        <SectionError message={error} />
+      </div>
+    );
+  }
+
+  if (!latest || !look) {
+    // Nothing has run on this branch. Saying so is the whole content of the card;
+    // columns and bars made of dashes would be chrome around an absence.
+    return (
+      <div className="mx-2.5 mt-3 rounded-lg border border-hairline bg-black/20 px-2.5 py-2">
+        <div className="flex items-center gap-2">
+          <Icon icon={CircleDashed} className="w-3.5 h-3.5 shrink-0 text-zinc-500" />
+          <span className="min-w-0 flex-1 truncate text-2xs text-zinc-400">
+            No workflow runs on {summary.branch || "this repository"} yet.
+          </span>
+          <button
+            type="button"
+            onClick={() => void openExternal(compareUrl)}
+            className="shrink-0 text-4xs text-zinc-500 transition-colors hover:text-zinc-200"
+          >
+            See all
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="mx-2.5 mt-3 overflow-hidden rounded-lg border border-hairline bg-black/20"
+      data-testid="gh-run-stats"
+    >
+      {/* What the last run did, in one line. */}
+      <div className="flex items-center gap-2 px-2.5 pt-2">
+        <Icon icon={look.icon} className={`w-3.5 h-3.5 shrink-0 ${look.tone}`} />
+        <span className="min-w-0 flex-1 truncate text-2xs text-zinc-200">
+          {look.word}
+          {summary.branch && <span className="text-zinc-500"> · {scope}</span>}
+        </span>
+        <span className="shrink-0 text-4xs text-zinc-500">{relativeDate(latest.createdAt)}</span>
+        <button
+          type="button"
+          onClick={() => void openExternal(compareUrl)}
+          className="shrink-0 text-4xs text-zinc-500 transition-colors hover:text-zinc-200"
+        >
+          See all
+        </button>
+      </div>
+
+      {/* The columns the status widget is read for. */}
+      <div className="flex gap-3 px-2.5 pb-2 pt-1.5">
+        <StatColumn label="Latest">{shortWhen(latest.createdAt)}</StatColumn>
+        <StatColumn label="Duration">{durationLabel(latest.durationSeconds) || "—"}</StatColumn>
+        <StatColumn label="Trigger">{latest.event || "—"}</StatColumn>
+        <StatColumn label="Commit">
+          {latest.sha ? (
+            <button
+              type="button"
+              onClick={() => void openExternal(`${latest.url.split("/actions/")[0]}/commit/${latest.sha}`)}
+              className="font-mono text-sky-300 transition-colors hover:text-sky-200"
+              title={latest.sha}
+            >
+              {latest.sha.slice(0, 7)}
+            </button>
+          ) : (
+            "—"
+          )}
+        </StatColumn>
+      </div>
+
+      {/* How the branch has been doing, which is what the list cannot say. */}
+      <div className="flex items-stretch gap-3 border-t border-hairline px-2.5 py-2" data-testid="gh-run-stats-band">
+        <div className="flex min-w-0 flex-[1.4] flex-col justify-center">
+          <div className="text-4xs font-semibold uppercase tracking-wider text-zinc-500">History</div>
+          <div className="mt-1 flex items-end gap-2">
+            <HistoryBars summary={summary} />
+            <span className="shrink-0 text-4xs text-zinc-500">
+              {summary.total} run{summary.total === 1 ? "" : "s"}
+            </span>
+          </div>
+        </div>
+        <div className="w-px shrink-0 bg-hairline" />
+        <div className="flex min-w-0 flex-1 flex-col justify-center">
+          <div className="text-4xs font-semibold uppercase tracking-wider text-zinc-500">
+            Average duration
+          </div>
+          <div className="mt-1 truncate text-2xs text-zinc-300">
+            {durationLabel(summary.averageDurationSeconds) || "—"}
+          </div>
+        </div>
+        <div className="w-px shrink-0 bg-hairline" />
+        <div className="flex min-w-0 flex-1 flex-col justify-center">
+          <div className="text-4xs font-semibold uppercase tracking-wider text-zinc-500">
+            Pass – fail
+          </div>
+          <div className="mt-1 truncate text-2xs">
+            {summary.passRate === null ? (
+              <span className="text-zinc-300" title="No finished runs to count yet.">
+                —
+              </span>
+            ) : (
+              <>
+                <span className="text-emerald-300">{Math.round(summary.passRate * 100)}%</span>
+                <span className="text-zinc-500"> – </span>
+                <span className="text-red-300">
+                  {100 - Math.round(summary.passRate * 100)}%
+                </span>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** A timestamp short enough for a column: `26 Sep, 01:16`. */
+function shortWhen(iso: string): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "—";
+  return at.toLocaleString(undefined, {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 /** A section that could not be read: the reason, not an empty list. */
 function SectionError({ message }: { message: string }) {
   return (
@@ -405,6 +643,12 @@ export function RepoOverview({
           <Icon icon={RefreshCw} className="w-3.5 h-3.5" />
         </button>
       </div>
+
+      <RunStatsCard
+        summary={data.summary}
+        error={data.errors.summary}
+        actionsUrl={actionsUrl}
+      />
 
       <SectionHeader title="Checks" href={actionsUrl}>
         <span className="text-4xs text-zinc-500">{data.runs.length} recent</span>

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { GhOverview } from "../../services/ghClient";
 
 const opened = vi.hoisted(() => ({ urls: [] as string[] }));
@@ -50,6 +50,7 @@ const RUN = {
   createdAt: new Date(Date.now() - 3 * 3600_000).toISOString(),
   updatedAt: new Date(Date.now() - 3 * 3600_000 + 487_000).toISOString(),
   durationSeconds: 487,
+  sha: "913d48b1473857d8f3e09176479d1417b3ad9562",
   url: "https://github.com/adetoye-dev/asca-code/actions/runs/36207865178",
 };
 
@@ -79,6 +80,37 @@ const PR = {
   changedFiles: 97,
 };
 
+/** A run as a history bar needs it: its own id, result, length and time. */
+const bar = (id: number, conclusion: string, seconds: number, at: string) => ({
+  ...RUN,
+  id,
+  conclusion,
+  durationSeconds: seconds,
+  createdAt: at,
+  updatedAt: at,
+  url: `https://github.com/adetoye-dev/asca-code/actions/runs/${id}`,
+});
+
+/** Four runs on dev, three of which passed, oldest first for the bars. */
+const HISTORY = [
+  bar(9001, "success", 300, "2026-09-25T10:00:00Z"),
+  bar(9002, "failure", 600, "2026-09-25T12:00:00Z"),
+  bar(9003, "success", 420, "2026-09-25T14:00:00Z"),
+  bar(9004, "success", 408, "2026-09-25T16:00:00Z"),
+];
+
+const SUMMARY = {
+  branch: "dev",
+  total: 4,
+  passed: 3,
+  failed: 1,
+  other: 0,
+  passRate: 0.75,
+  averageDurationSeconds: 432,
+  latest: RUN,
+  history: HISTORY,
+};
+
 const available = (over: Partial<GhOverview> = {}): GhOverview => ({
   success: true,
   available: true,
@@ -87,6 +119,7 @@ const available = (over: Partial<GhOverview> = {}): GhOverview => ({
   raw: "",
   repo: "adetoye-dev/asca-code",
   runs: [RUN],
+  summary: SUMMARY,
   pullRequests: [PR],
   issues: [],
   errors: {},
@@ -134,10 +167,13 @@ describe("the repository landing panel", () => {
   it("names the repository and each run's outcome, workflow, branch and length", () => {
     renderPanel(available());
     expect(screen.getByText("adetoye-dev/asca-code")).toBeTruthy();
-    expect(screen.getByText("release: 0.2.17")).toBeTruthy();
-    expect(screen.getByText("Release · v0.2.17 · success")).toBeTruthy();
+    // Scoped to the row: the status card above it shows the same run's length, and
+    // an unscoped query would be ambiguous rather than wrong.
+    const row = within(screen.getByTestId("gh-run-36207865178"));
+    expect(row.getByText("release: 0.2.17")).toBeTruthy();
+    expect(row.getByText("Release · v0.2.17 · success")).toBeTruthy();
     // 487 seconds is the 8m07s `gh run list` prints for this run.
-    expect(screen.getByText("8m 7s")).toBeTruthy();
+    expect(row.getByText("8m 7s")).toBeTruthy();
     expect(screen.getByText("#3")).toBeTruthy();
     expect(screen.getByText(/@adetoye-dev/)).toBeTruthy();
     expect(screen.getByText("CHANGES")).toBeTruthy();
@@ -246,5 +282,71 @@ describe("the repository landing panel", () => {
     expect(await screen.findByTestId("gh-log-message")).toBeTruthy();
     expect(screen.getByText(/no failed-step log/)).toBeTruthy();
     expect(screen.queryByTestId("gh-log-lines")).toBeNull();
+  });
+
+  it("shows the branch's CI as a status card, with the columns and the aggregates", async () => {
+    renderPanel(available());
+    // Everything inside the card, so the list row below it (same run, same
+    // duration) cannot make a query ambiguous.
+    const card = within(await screen.findByTestId("gh-run-stats"));
+
+    // What the last run did, and which branch this is about.
+    expect(card.getByText(/Successful/)).toBeTruthy();
+    expect(card.getByText(/CI on dev/)).toBeTruthy();
+    // The columns the status widget is read for.
+    for (const label of ["Latest", "Duration", "Trigger", "Commit"]) {
+      expect(card.getByText(label)).toBeTruthy();
+    }
+    expect(card.getByText("push")).toBeTruthy();
+    expect(card.getByText("8m 7s")).toBeTruthy();
+    expect(card.getByText("913d48b")).toBeTruthy();
+    // And the aggregates no list of runs shows.
+    expect(card.getByText("4 runs")).toBeTruthy();
+    expect(card.getByText("7m 12s")).toBeTruthy();
+    expect(card.getByText("75%")).toBeTruthy();
+    expect(card.getByText("25%")).toBeTruthy();
+    expect(screen.getByTestId("gh-history-bars").children.length).toBe(4);
+  });
+
+  it("opens the run a history bar stands for, and the commit besides it", async () => {
+    renderPanel(available());
+    await screen.findByTestId("gh-history-bars");
+    const bars = screen.getByTestId("gh-history-bars").children;
+    fireEvent.click(bars[bars.length - 1]);
+    expect(opened.urls.at(-1)).toBe(HISTORY[HISTORY.length - 1].url);
+
+    fireEvent.click(screen.getByText("913d48b"));
+    expect(opened.urls.at(-1)).toBe(
+      "https://github.com/adetoye-dev/asca-code/commit/913d48b1473857d8f3e09176479d1417b3ad9562"
+    );
+  });
+
+  it("says when a branch has had no runs, instead of a card of dashes", async () => {
+    renderPanel(
+      available({
+        summary: { ...SUMMARY, branch: "release", total: 0, latest: null, history: [] },
+      })
+    );
+    expect(await screen.findByText(/No workflow runs on release yet/)).toBeTruthy();
+    expect(screen.queryByTestId("gh-run-stats")).toBeNull();
+  });
+
+  it("says which part of the summary it could not read", async () => {
+    renderPanel(available({ errors: { summary: "HTTP 500: Internal Server Error" } }));
+    expect(await screen.findByText(/could not be read/)).toBeTruthy();
+    // No columns to read, because there is nothing to put in them.
+    expect(screen.queryByTestId("gh-run-stats")).toBeNull();
+  });
+
+  it("leaves the rate as a dash when nothing finished either way", async () => {
+    renderPanel(
+      available({
+        summary: { ...SUMMARY, passRate: null, averageDurationSeconds: null },
+      })
+    );
+    await screen.findByTestId("gh-run-stats");
+    // The average has no answer either, and neither is rendered as a zero.
+    expect(screen.queryByText("0%")).toBeNull();
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
   });
 });
