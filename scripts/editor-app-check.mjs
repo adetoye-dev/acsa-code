@@ -158,9 +158,23 @@ const TAURI_STUB = `(() => {
         unstaged: [
           changed("src/components/dashboards/GitDashboard.tsx", " ", "M", false),
           changed("core-engine/git_cli.py", " ", "M", false),
-          changed("docs/RELEASING.md", " ", "M", false),
+          // A rename, which is one entry with two names: the row has to show where
+          // the file came from, and the diff has to be asked about both.
+          {
+            path: "docs/GUIDE.md",
+            fromPath: "docs/RELEASING.md",
+            indexStatus: " ",
+            workTreeStatus: "R",
+            isStaged: false,
+          },
         ],
+        conflicted: [],
+        operation: "",
       },
+      branches: [
+        { name: "dev", current: true },
+        { name: "main", current: false },
+      ],
       log: {
         isGit: true,
         head: sha("a"),
@@ -263,6 +277,9 @@ const TAURI_STUB = `(() => {
     };
     // Where a click that hands a URL to the OS is recorded.
     window.__opens = [];
+    // Every diff-file request, so a check can prove the page asked about both
+    // names of a rename rather than only the new one.
+    window.__diffAsks = [];
   })();
   // What the engine answers for the two AI actions the editor can make. Set per
   // check, so a review or an inline edit is deterministic rather than a
@@ -324,7 +341,49 @@ const TAURI_STUB = `(() => {
           }
           if (action === "diff-file") {
             const payload = JSON.parse((list && list[1]) || "{}");
+            window.__diffAsks.push({
+              filePath: payload.filePath,
+              fromPath: payload.fromPath || "",
+              staged: Boolean(payload.staged),
+            });
             return JSON.stringify({ ok: true, data: window.__git.diffFile(payload.filePath, payload.staged) });
+          }
+          if (action === "branches") {
+            return JSON.stringify({ ok: true, data: { branches: window.__git.branches } });
+          }
+          if (action === "checkout") {
+            // A checkout really moves the repository: the branch changes and so do
+            // the changes, which is what the page has to notice by itself.
+            const payload = JSON.parse((list && list[1]) || "{}");
+            window.__git.status.branch = String(payload.branch || "");
+            window.__git.branches = window.__git.branches.map((b) => ({
+              name: b.name,
+              current: b.name === payload.branch,
+            }));
+            return JSON.stringify({ ok: true, data: { success: true, output: "Switched branch." } });
+          }
+          if (action === "resolve-all") {
+            // Marking resolved is git add: the file leaves the conflict group and
+            // appears in the index.
+            const resolving = window.__git.status.conflicted || [];
+            if (resolving.length === 0) {
+              return JSON.stringify({ ok: true, data: { success: true, message: "Nothing left to resolve." } });
+            }
+            window.__git.status.staged = [
+              ...(window.__git.status.staged || []),
+              ...resolving.map((f) => ({ ...f, isStaged: true })),
+            ];
+            window.__git.status.conflicted = [];
+            window.__git.status.operation = "";
+            return JSON.stringify({
+              ok: true,
+              data: {
+                success: true,
+                // Concatenation, not a template literal: this source lives inside
+                // one, and a nested backtick would end it.
+                message: "Marked " + resolving.length + " file resolved.",
+              },
+            });
           }
           return JSON.stringify({ ok: true, data: { success: true } });
         }
@@ -425,6 +484,13 @@ async function waitFor(url, label, attempts = 60) {
 class Session {
   constructor(ws) {
     this.ws = ws; this.id = 0; this.pending = new Map(); this.errors = []; this.console = [];
+    /**
+     * What the harness was doing when an error was thrown. A bare error list
+     * says a page is broken somewhere; the phase says which part of the run to
+     * look at, which matters because the same exception can come from half a
+     * dozen interactions.
+     */
+    this.phase = "boot";
     ws.onmessage = (m) => {
       const msg = JSON.parse(m.data);
       if (msg.id) {
@@ -450,11 +516,19 @@ class Session {
       }
       if (msg.method === "Runtime.exceptionThrown") {
         const details = msg.params.exceptionDetails;
-        const head = (details?.exception?.description || details?.text || "exception").split("\n")[0];
+        // The whole description, not just its first line: Vite has already bundled
+        // Monaco into one chunk, so the CDP frames are useless and the stack text is
+        // the only thing that says *where* an error came from.
+        const description = String(details?.exception?.description || details?.text || "exception");
+        const head = description
+          .split("\n")
+          .slice(0, 6)
+          .map((line) => line.trim())
+          .join("\n      ");
         const frames = (details?.stackTrace?.callFrames || [])
           .slice(0, 8)
           .map((f) => `${f.functionName || "?"} @ ${String(f.url).replace(/^http:\/\/127\.0\.0\.1:\d+/, "")}:${f.lineNumber + 1}:${f.columnNumber + 1}`);
-        this.errors.push([head, ...frames].join("\n      "));
+        this.errors.push(`[${this.phase}] ` + [head, ...frames].join("\n      "));
       }
     };
   }
@@ -798,6 +872,7 @@ if (!(await stubInstalled(session))) {
   process.exit(1);
 }
 
+session.phase = "the empty editor";
 // ── The empty editor, before anything is open ────────────────────────────
 // One panel, with the project's commands in it and the shortcuts under one
 // divider — the merge, in the state a user actually lands on.
@@ -1151,6 +1226,7 @@ await sleep(600);
 check("an applied inline edit is one undo",
   (await editorText(session)) === "aa\nbb\ncc", JSON.stringify(await editorText(session)));
 
+session.phase = "the repository page";
 // ── The repository page ──────────────────────────────────────────────────
 // Layout, in order: the commit box, then the changes it is about, then the
 // history. The box at the *bottom* of the panel was the thing you had to scroll
@@ -1197,6 +1273,108 @@ check("its refs are badged onto the commits they point at",
   JSON.stringify((repo.graphText ?? "").slice(0, 120)));
 await session.screenshot("repository-page");
 
+session.phase = "the conflict and rename paths";
+// ── A renamed file, a merge conflict, and a branch that moved ────────────
+// Three ways this page used to describe something that was not there: a rename
+// that diffed as empty, a conflict offered up for committing, and a page that
+// never heard about a checkout it did not perform.
+
+session.phase = "the rename row";
+// A rename is two names, and the engine needs both or the original side is empty.
+await session.eval(`document.querySelector('[data-testid="git-file-docs/GUIDE.md"]').click()`);
+await sleep(700);
+const renameRow = await session.eval(`(() => {
+  const row = document.querySelector('[data-testid="git-file-docs/GUIDE.md"]');
+  const ask = window.__diffAsks[window.__diffAsks.length - 1];
+  return {
+    row: row ? (row.textContent || '').replace(/\\s+/g, ' ').trim() : null,
+    ask: ask || null,
+  };
+})()`);
+check("a renamed row shows where the file came from",
+  Boolean(renameRow.row) && renameRow.row.includes("RELEASING.md"),
+  JSON.stringify(renameRow.row));
+check("the diff is asked about both names of a rename",
+  renameRow.ask?.filePath === "docs/GUIDE.md" && renameRow.ask?.fromPath === "docs/RELEASING.md",
+  JSON.stringify(renameRow.ask));
+
+session.phase = "switching to a conflict";
+// Mid-merge: the conflict is its own group, the operation is named, and the commit
+// button refuses — which is what git would do anyway, less kindly.
+const originalStatus = await session.eval("JSON.stringify(window.__git.status)");
+await session.eval(`(() => {
+  const status = window.__git.status;
+  status.staged = [];
+  status.unstaged = [];
+  status.conflicted = [{ path: "f.txt", fromPath: "", indexStatus: "U", workTreeStatus: "U", isStaged: false }];
+  status.operation = "merge";
+  return true;
+})()`);
+await session.eval(`document.querySelector('[aria-label="Refresh"]').click()`);
+await sleep(700);
+const mergeState = await session.eval(`(() => {
+  const operation = document.querySelector('[data-testid="git-operation"]');
+  const commit = document.querySelector('[data-testid="git-commit"]');
+  return {
+    banner: operation ? operation.textContent : null,
+    rows: [...document.querySelectorAll('[data-testid^="git-file-"]')].map((n) => n.getAttribute('data-testid')),
+    commitDisabled: commit ? commit.hasAttribute("disabled") : null,
+    body: (document.body.innerText || '').slice(0, 2500),
+  };
+})()`);
+check("a conflict is its own group and the operation is named",
+  mergeState.rows.includes("git-file-f.txt") &&
+    (mergeState.banner || "").includes("Merging") &&
+    // Case-insensitive: the group header is uppercased by CSS, and innerText
+    // reports what is rendered, not what the source says.
+    /merge conflicts · 1/i.test(mergeState.body),
+  JSON.stringify({ banner: mergeState.banner, rows: mergeState.rows }));
+check("the commit button refuses while a conflict is unresolved",
+  mergeState.commitDisabled === true &&
+    (mergeState.banner || "").includes("1 file still has conflicts"),
+  JSON.stringify({ disabled: mergeState.commitDisabled, banner: mergeState.banner }));
+await session.screenshot("repository-merge-conflict");
+
+session.phase = "resolving the conflict";
+// One click for all of them, and the file lands in the index where it belongs.
+await session.eval(`document.querySelector('[title="Mark resolved all"]').click()`);
+await sleep(800);
+const resolved = await session.eval(`(() => ({
+  rows: [...document.querySelectorAll('[data-testid^="git-file-"]')].map((n) => n.getAttribute('data-testid')),
+  body: (document.body.innerText || '').slice(0, 900),
+}))()`);
+check("marking them resolved clears the group and leaves the file staged",
+  resolved.rows.includes("git-file-f.txt") && !/merge conflicts/i.test(resolved.body),
+  JSON.stringify(resolved));
+
+// Put the fixture back, as if the conflict had never happened.
+await session.eval(`(window.__git.status = JSON.parse(${JSON.stringify(originalStatus)}), true)`);
+await session.eval(`document.querySelector('[aria-label="Refresh"]').click()`);
+await sleep(600);
+
+session.phase = "the titlebar checkout";
+// The checkout happens in the titlebar, so the page has to notice it by itself.
+const statusCallsBefore = await session.eval(
+  `window.__engineCalls.filter((call) => call.endsWith(":git:status")).length`
+);
+await session.eval(`document.querySelector('[title^="Git Branch:"]').click()`);
+await sleep(400);
+await session.eval(`(() => {
+  const button = [...document.querySelectorAll("button")]
+    .find((node) => (node.textContent || "").trim() === "main");
+  if (!button) throw new Error("no main branch in the dropdown");
+  button.click();
+  return true;
+})()`);
+await sleep(1200);
+const afterCheckout = await session.eval(`({
+  branch: (document.querySelector('[data-testid="git-branch"]') || {}).textContent || null,
+  statusCalls: window.__engineCalls.filter((call) => call.endsWith(":git:status")).length,
+})`);
+check("a checkout from the titlebar reaches the page without a reload",
+  afterCheckout.branch === "main" && afterCheckout.statusCalls > statusCallsBefore,
+  JSON.stringify({ ...afterCheckout, before: statusCallsBefore }));
+
 /** The panel's refresh control, whichever state it is currently in. */
 const clickRefresh = (s) =>
   s.eval(`(() => {
@@ -1207,6 +1385,7 @@ const clickRefresh = (s) =>
     return true;
   })()`);
 
+session.phase = "the repository landing state";
 // ── The landing state: what the remote knows ─────────────────────────────
 // Nothing local is selected yet, so the pane answers the questions that are not
 // local: this branch's checks, the open pull requests, what is assigned to you.
@@ -1283,6 +1462,7 @@ check("an unreadable list says so while the readable ones stay",
   JSON.stringify(partial.body.slice(0, 240)));
 await session.screenshot("repository-gh-partial");
 
+session.phase = "the commit view";
 // ── Opening a commit ─────────────────────────────────────────────────────
 // The graph was a list you could read but not open: the right pane only ever
 // showed a working-tree change. Clicking a commit has to fill that pane with the
@@ -1361,6 +1541,7 @@ check("selecting a file does not re-ask GitHub for an answer it already has",
   afterSelecting.ghCalls === partial.ghCalls,
   `${partial.ghCalls} calls before selecting, ${afterSelecting.ghCalls} after`);
 
+session.phase = "a stalled surface";
 // ── A surface that never arrives ─────────────────────────────────────────
 // `Suspense` reports nothing when a chunk stalls rather than fails: no error, no
 // timeout, nothing to click, and the surface stays "loading" forever. That is
