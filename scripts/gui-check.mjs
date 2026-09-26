@@ -155,7 +155,20 @@ try {
       const r = svg.getBoundingClientRect();
       return +(r.left - left + r.width / 2).toFixed(1);
     });
-    return { collapsed: Number.parseInt(nav.style.width, 10), centres: icons };
+    // The collapsed highlight, measured while collapsed: it has to be one square,
+    // and its corners have to stay gentle rather than the lozenge a 12px radius
+    // on a 36px row reads as.
+    const row = nav.querySelector('[data-testid^="nav-item-"]');
+    const rowBox = row.getBoundingClientRect();
+    return {
+      collapsed: Number.parseInt(nav.style.width, 10),
+      centres: icons,
+      highlight: {
+        width: +rowBox.width.toFixed(1),
+        height: +rowBox.height.toFixed(1),
+        radius: Number.parseFloat(getComputedStyle(row).borderTopLeftRadius),
+      },
+    };
   })()`);
   await session.move(28, 500);
   await sleep(600);
@@ -173,6 +186,17 @@ try {
   const aligned = (list) => list.every((c) => Math.abs(c - 28) <= 0.6);
   check("sidebar icons sit on the centre line when collapsed", aligned(geometry.centres), `centres ${geometry.centres.join(", ")}`);
   check("sidebar icons still sit on it when expanded", aligned(expanded.centres) && expanded.width > 100, `width ${expanded.width}, centres ${expanded.centres.join(", ")}`);
+
+  // The collapsed highlight is one square — not a rounded rectangle that happens
+  // to have equal sides today — and its radius stays gentle. Both were asked for
+  // by eye, and both are one class away from silently going back.
+  const highlight = geometry.highlight;
+  check("the collapsed highlight is one square",
+    Math.abs(highlight.width - highlight.height) <= 0.5,
+    `${highlight.width}×${highlight.height}`);
+  check("the highlight's corners are less rounded than the rail used to be",
+    highlight.radius >= 6 && highlight.radius <= 10,
+    `radius ${highlight.radius}px`);
 
   // 2b. The rail is big enough to read, and the brand outranks it.
   //     `Icon` writes its size as an inline style, so a `w-8 h-8` class on a rail

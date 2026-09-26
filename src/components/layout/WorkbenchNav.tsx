@@ -84,7 +84,7 @@ export const NAV_ICON_PAD_LEFT = NAV_COLLAPSED_WIDTH / 2 - 6 - NAV_ICON_SIZE / 2
  * — one square either way. Its distance from `NAV_ICON_SIZE` is the gutter: the
  * smaller this is, the tighter the highlight hugs the glyph.
  */
-export const NAV_ROW_HEIGHT = 32;
+export const NAV_ROW_HEIGHT = 36;
 /**
  * The brand mark's box, and the padding that puts its *centre* on the column's
  * line rather than its edge.
@@ -266,7 +266,7 @@ export function WorkbenchNav({
                 ? { paddingLeft: NAV_BRAND_PAD_LEFT }
                 : { width: NAV_BRAND_SIZE }),
             }}
-            className={`flex shrink-0 items-center rounded-xl transition-colors hover:bg-white/5 ${
+            className={`flex shrink-0 items-center rounded-lg transition-colors hover:bg-white/5 ${
               expanded
                 ? "mx-0.5 w-[calc(100%-0.25rem)] gap-3 pr-2.5"
                 : "mx-auto justify-center"
@@ -274,7 +274,7 @@ export function WorkbenchNav({
           >
             {/* The brand is still the largest mark in the rail — that is what makes
                 it the identity rather than another row — but it is sized to the
-                rows it sits above instead of above them: 32px, the same box as a
+                rows it sits above instead of above them: 32px, just under a
                 highlight, and well over half again the icons' ink, because the Apex
                 artwork carries ~23% internal padding (its ink spans 788 of a 1024
                 box) while a lucide glyph only fills about three quarters of its own.
@@ -319,7 +319,7 @@ export function WorkbenchNav({
                 aria-label={item.label}
                 title={`${item.label}${item.shortcut ? ` (${item.shortcut})` : ""}`}
                 data-testid={`nav-item-${item.id}`}
-                className={`flex shrink-0 items-center rounded-xl text-left transition-colors ${
+                className={`flex shrink-0 items-center rounded-lg text-left transition-colors ${
                   expanded
                     ? "mx-1.5 w-[calc(100%-0.75rem)] gap-3 pr-2.5"
                     : "mx-auto justify-center"
@@ -394,7 +394,7 @@ function Row({
       title={label}
       aria-label={label}
       data-testid={testId}
-      className={`flex shrink-0 items-center rounded-xl text-left text-zinc-400 transition-colors hover:bg-white/5 hover:text-zinc-100 ${
+      className={`flex shrink-0 items-center rounded-lg text-left text-zinc-400 transition-colors hover:bg-white/5 hover:text-zinc-100 ${
         expanded ? "mx-1.5 w-[calc(100%-0.75rem)] gap-3 pr-2.5" : "mx-auto justify-center"
       }`}
       style={{
