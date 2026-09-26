@@ -304,37 +304,6 @@ export function GitDashboard({
     void fetchLog();
   }, [fetchStatus, fetchLog]);
 
-  /**
-   * The workspace moved under the page — a checkout from the titlebar, an agent
-   * writing files in the chat, the file tree's own refresh — so the data is read
-   * again. Only the data: the open file, the diff beside it and a half-typed
-   * commit message belong to the person using the page, not to a refresh.
-   */
-  useEffect(() => {
-    if (workspaceRevision === 0) return;
-    void fetchStatus();
-    void fetchLog();
-  }, [workspaceRevision, fetchStatus, fetchLog]);
-
-  /**
-   * Coming back to the window re-reads the working tree, because the likeliest
-   * reason this page is wrong is that something happened while it was in the
-   * background — a terminal in another window, an editor outside the app. The
-   * remote half is network-bound, so it waits until what is on screen is old
-   * enough to be worth asking about again.
-   */
-  useEffect(() => {
-    const onFocus = () => {
-      void fetchStatus();
-      void fetchLog();
-      if (overviewCheckedAt && Date.now() - overviewCheckedAt > 10 * 60_000) {
-        refreshOverview();
-      }
-    };
-    window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
-  }, [fetchStatus, fetchLog, overviewCheckedAt, refreshOverview]);
-
   /** A pending post-push re-read has to die with the page. */
   useEffect(
     () => () => {
@@ -365,6 +334,85 @@ export function GitDashboard({
     },
     [call]
   );
+
+  /**
+   * The open selection, as a ref.
+   *
+   * The refresh callbacks below must not be re-created when the selection changes:
+   * the effects that depend on them would then re-run on every click, which is a
+   * status and a history read per file. The ref is written by an effect, so it is
+   * current for anything that runs after a render.
+   */
+  const selectionRef = useRef<Selection | null>(null);
+  useEffect(() => {
+    selectionRef.current = selected;
+  }, [selected]);
+
+  /**
+   * A re-read of the status is only half a refresh: what is on screen has to stay
+   * true to it.
+   *
+   * A selected change whose file is still changed gets its diff read again — an
+   * agent may have written to that file since, and a diff that no longer matches
+   * the file is exactly what this page must not show — following the file between
+   * the staged and unstaged groups if it moved. A selected change whose file is no
+   * longer changed is dropped rather than left behind, still labelled with a change
+   * that has been committed from under it.
+   */
+  const reconcileSelection = useCallback(
+    async (status: GitResponse) => {
+      const open = selectionRef.current;
+      if (open?.kind !== "change") return;
+      const fresh = [...(status.staged || []), ...(status.unstaged || [])].find(
+        (file) => file.path === open.file.path
+      );
+      if (!fresh) {
+        setSelected(null);
+        setDiff(null);
+        return;
+      }
+      const stagedNow = (status.staged || []).some((file) => file.path === fresh.path);
+      await preview(fresh, stagedNow === open.staged ? open.staged : stagedNow);
+    },
+    [preview]
+  );
+
+  /** Re-read the working tree, and make what is on screen true to it. */
+  const readWorkspace = useCallback(async () => {
+    const status = await fetchStatus();
+    await reconcileSelection(status);
+  }, [fetchStatus, reconcileSelection]);
+
+  /**
+   * The workspace moved under the page — a checkout from the titlebar, an agent
+   * writing files in the chat, the file tree's own refresh — so the data is read
+   * again. Only the data: the open file, a half-typed commit message and the
+   * scroll position belong to the person using the page, not to a refresh.
+   */
+  useEffect(() => {
+    if (workspaceRevision === 0) return;
+    void readWorkspace();
+    void fetchLog();
+  }, [workspaceRevision, readWorkspace, fetchLog]);
+
+  /**
+   * Coming back to the window re-reads the working tree, because the likeliest
+   * reason this page is wrong is that something happened while it was in the
+   * background — a terminal in another window, an editor outside the app. The
+   * remote half is network-bound, so it waits until what is on screen is old
+   * enough to be worth asking about again.
+   */
+  useEffect(() => {
+    const onFocus = () => {
+      void readWorkspace();
+      void fetchLog();
+      if (overviewCheckedAt && Date.now() - overviewCheckedAt > 10 * 60_000) {
+        refreshOverview();
+      }
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [readWorkspace, fetchLog, overviewCheckedAt, refreshOverview]);
 
   /**
    * Open a commit: its header and files, then the first file's diff.
@@ -465,19 +513,11 @@ export function GitDashboard({
           }, 8000);
         }
       }
-      if (selected?.kind === "change") {
-        const stillChanged = [...(status.staged || []), ...(status.unstaged || [])].some(
-          (file) => file.path === selected.file.path
-        );
-        if (!stillChanged) {
-          setSelected(null);
-          setDiff(null);
-        }
-      }
+      await reconcileSelection(status);
       setBusy(null);
       return true;
     },
-    [call, fetchStatus, fetchLog, onWorkspaceChanged, overview, selected]
+    [call, fetchStatus, fetchLog, onWorkspaceChanged, overview, reconcileSelection]
   );
 
   const commit = useCallback(async () => {
@@ -542,7 +582,10 @@ export function GitDashboard({
               title="Refresh"
               aria-label="Refresh"
               disabled={isLoading}
-              onClick={() => void fetchStatus()}
+              onClick={() => {
+                void readWorkspace();
+                void fetchLog();
+              }}
               className="rounded-md p-1.5 text-zinc-400 transition-colors hover:bg-white/5 hover:text-zinc-100 disabled:opacity-40"
             >
               <Icon icon={RefreshCw} className={`w-3.5 h-3.5 ${isLoading ? "animate-spin" : ""}`} />

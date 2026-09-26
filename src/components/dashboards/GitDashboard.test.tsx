@@ -205,4 +205,57 @@ describe("the source control page", () => {
     await waitFor(() => expect(engine.calls).toContain("status"));
     expect(engine.calls).toContain("log");
   });
+
+  it("re-reads the diff of the file it is showing when the tree is re-read", async () => {
+    render(<GitDashboard projectCwd="/work/acsa-code" />);
+    fireEvent.click(await screen.findByTestId("git-file-src/b.ts"));
+    await waitFor(() => expect(screen.getByTestId("diff-sides").textContent).toBe("before → after"));
+
+    // The file changed under the page — an agent wrote to it, or an editor outside
+    // the app — and the diff on screen no longer matches it.
+    engine.diff = { success: true, originalContent: "before", modifiedContent: "after, again" };
+    fireEvent.click(screen.getByLabelText("Refresh"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("diff-sides").textContent).toBe("before → after, again")
+    );
+    // Same file, so the pane stays where it was.
+    expect(screen.getByTestId("diff-path").textContent).toBe("src/b.ts");
+  });
+
+  it("drops the diff of a file that is no longer changed", async () => {
+    render(<GitDashboard projectCwd="/work/acsa-code" />);
+    fireEvent.click(await screen.findByTestId("git-file-src/b.ts"));
+    await waitFor(() => expect(screen.getByTestId("diff-path")).toBeTruthy());
+
+    // Committed from under it: the file is in neither group any more.
+    engine.overrides.status = { staged: [], unstaged: [], conflicted: [] };
+    fireEvent.click(screen.getByLabelText("Refresh"));
+
+    await waitFor(() => expect(screen.queryByTestId("diff-path")).toBeNull());
+    // And nothing is claimed to be selected, so the page offers the landing view.
+    expect(screen.getByText(/Pick a file on the left/)).toBeTruthy();
+  });
+
+  it("follows the file when it moves between the groups", async () => {
+    engine.overrides.status = {
+      unstaged: [{ path: "src/b.ts", indexStatus: " ", workTreeStatus: "M", isStaged: false }],
+    };
+    render(<GitDashboard projectCwd="/work/acsa-code" />);
+    fireEvent.click(await screen.findByTestId("git-file-src/b.ts"));
+    await waitFor(() => expect(screen.getByTestId("diff-path")).toBeTruthy());
+
+    // Something staged it: the same change is now the staged side.
+    engine.overrides.status = {
+      staged: [{ path: "src/b.ts", indexStatus: "M", workTreeStatus: " ", isStaged: true }],
+      unstaged: [],
+    };
+    fireEvent.click(screen.getByLabelText("Refresh"));
+
+    await waitFor(() => {
+      const ask = engine.payloads.filter((p) => p.action === "diff-file").at(-1);
+      expect(ask?.body.staged).toBe(true);
+    });
+    expect(screen.getByTestId("diff-path").textContent).toBe("src/b.ts");
+  });
 });
