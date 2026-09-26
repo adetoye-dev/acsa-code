@@ -71,6 +71,48 @@ def _text_only(original: str, modified: str) -> tuple[str, str]:
     return original, modified
 
 
+# The paths git writes while an operation is stopped half-way. `--git-path` prints
+# them whether or not they exist, so one call answers "what is going on here" and
+# the existence checks afterwards cost nothing.
+_OPERATION_MARKERS = [
+    ("rebase", "rebase-merge"),
+    ("rebase", "rebase-apply"),
+    ("merge", "MERGE_HEAD"),
+    ("cherry-pick", "CHERRY_PICK_HEAD"),
+    ("revert", "REVERT_HEAD"),
+]
+
+
+def _operation(cwd: str) -> str:
+    """`merge`, `rebase`, `cherry-pick`, `revert`, or "" when nothing is in flight."""
+    args = ["rev-parse"]
+    for _, marker in _OPERATION_MARKERS:
+        args += ["--git-path", marker]
+    ok, out, _ = _run(cwd, args, 10)
+    if not ok:
+        return ""
+    paths = [line.strip() for line in out.splitlines() if line.strip()]
+    for (name, _), path in zip(_OPERATION_MARKERS, paths):
+        if path and Path(cwd, path).exists():
+            return name
+    return ""
+
+
+def _split_rename(raw: str) -> tuple[str, str] | None:
+    """`old -> new` from a rename or copy line, or None for a plain path."""
+    if " -> " not in raw:
+        return None
+    old, _, new = raw.partition(" -> ")
+    return old.strip(), new.strip()
+
+
+def _is_unmerged(index_status: str, worktree_status: str) -> bool:
+    """Git's own marks for a conflict: `UU`, `AA`, `DD`, `AU`, `UA`, `DU`, `UD`."""
+    if index_status == "U" or worktree_status == "U":
+        return True
+    return (index_status, worktree_status) in (("A", "A"), ("D", "D"))
+
+
 def _file(payload: dict) -> str:
     return str(payload.get("filePath") or "").strip()
 
@@ -93,17 +135,31 @@ def parse_status(stdout: str) -> dict:
 
     staged: list[dict] = []
     unstaged: list[dict] = []
+    conflicted: list[dict] = []
     files: list[dict] = []
     for line in lines[1:]:
         if not line.strip() or len(line) < 3:
             continue
         index_status, worktree_status = line[0], line[1]
+        raw_path = line[3:].strip()
+        # A rename is one entry for two names. Keeping git's combined
+        # `old.py -> new.py` as the path meant stage, discard and diff all asked
+        # git about a file with an arrow in its name: they failed, and a renamed
+        # file showed an empty diff.
+        renamed = _split_rename(raw_path)
         item = {
-            "path": line[3:].strip(),
+            "path": renamed[1] if renamed else raw_path,
+            "fromPath": renamed[0] if renamed else "",
             "indexStatus": index_status,
             "workTreeStatus": worktree_status,
         }
         files.append({**item, "isStaged": index_status not in (" ", "?")})
+        if _is_unmerged(index_status, worktree_status):
+            # Neither group: an unresolved conflict is not a staged change to be
+            # committed and not a working-tree change to be discarded. Listed under
+            # staged, the commit button offered to commit it and git refused.
+            conflicted.append({**item, "isStaged": False})
+            continue
         if index_status not in (" ", "?"):
             staged.append({**item, "isStaged": True})
         if worktree_status != " " or index_status == "?":
@@ -116,15 +172,29 @@ def parse_status(stdout: str) -> dict:
         "behind": behind,
         "staged": staged,
         "unstaged": unstaged,
+        "conflicted": conflicted,
         "files": files,
     }
 
 
 def status(payload: dict) -> dict:
-    ok, stdout, _ = _run(_cwd(payload), ["status", "--porcelain=v1", "-b"])
+    cwd = _cwd(payload)
+    ok, stdout, _ = _run(cwd, ["status", "--porcelain=v1", "-b"])
     if not ok:
-        return {"isGit": False, "branch": "none", "staged": [], "unstaged": [], "files": []}
-    return parse_status(stdout)
+        return {
+            "isGit": False,
+            "branch": "none",
+            "staged": [],
+            "unstaged": [],
+            "conflicted": [],
+            "operation": "",
+            "files": [],
+        }
+    parsed = parse_status(stdout)
+    # The porcelain header says files are unmerged, never *what* is half-finished,
+    # so the operation is asked for separately.
+    parsed["operation"] = _operation(cwd)
+    return parsed
 
 
 # `git log` and `for-each-ref` output is read back with control characters rather
@@ -270,8 +340,9 @@ def parse_commit_files(name_status: str, numstat: str) -> list[dict]:
 
     Both come out of the same diff walk in the same order, so they line up
     one-to-one — which is cheaper and far more predictable than parsing either
-    into a format git does not emit. Both are asked for with `--no-renames` so the
-    pairing cannot drift; the cost is that a rename reads as an add and a delete.
+    into a format git does not emit. Both are asked for with `--find-renames`, so a
+    rename is one line with two paths on each; suppressing that (the previous
+    `--no-renames`) showed one change as two rows and left an empty side.
 
     A binary file has no counts (`-` rather than digits), so its additions and
     deletions are `None` rather than a misleading zero.
@@ -283,6 +354,10 @@ def parse_commit_files(name_status: str, numstat: str) -> list[dict]:
     for index, parts in enumerate(statuses):
         if len(parts) < 2:
             continue
+        # A rename or a copy is the one status with two paths on the line:
+        # `R100<TAB>old<TAB>new`.
+        letter = (parts[0] or "M")[:1]
+        from_path = parts[1] if letter in ("R", "C") and len(parts) >= 3 else ""
         additions = deletions = None
         if index < len(stats) and len(stats[index]) >= 3:
             added, removed = stats[index][0].strip(), stats[index][1].strip()
@@ -291,7 +366,8 @@ def parse_commit_files(name_status: str, numstat: str) -> list[dict]:
         files.append(
             {
                 "path": parts[-1],
-                "status": (parts[0] or "M")[:1],
+                "fromPath": from_path,
+                "status": letter,
                 "additions": additions,
                 "deletions": deletions,
             }
@@ -318,9 +394,11 @@ def commit_info(payload: dict) -> dict:
 
     # `--name-status` and `--no-patch` cannot be combined, and neither can the file
     # list be asked for with the patch suppressed — an empty `--format=` is what
-    # keeps the message out while leaving the file list intact.
-    ok_names, names, _ = _run(cwd, ["show", "--no-renames", "--name-status", "--format=", sha])
-    ok_stats, stats, _ = _run(cwd, ["show", "--no-renames", "--numstat", "--format=", sha])
+    # keeps the message out while leaving the file list intact. Rename detection is
+    # requested explicitly: it is what makes a moved file one row with two names
+    # instead of an add and a delete that each look half-empty.
+    ok_names, names, _ = _run(cwd, ["show", "--find-renames", "--name-status", "--format=", sha])
+    ok_stats, stats, _ = _run(cwd, ["show", "--find-renames", "--numstat", "--format=", sha])
 
     return {
         "success": True,
@@ -339,7 +417,9 @@ def commit_file(payload: dict) -> dict:
     cwd = _cwd(payload)
     sha = str(payload.get("sha") or "HEAD").strip() or "HEAD"
     path = _file(payload)
-    ok_before, before, _ = _run(cwd, ["show", f"{sha}^:{path}"])
+    # A renamed file's previous side lives under its old name.
+    from_path = str(payload.get("fromPath") or "").strip() or path
+    ok_before, before, _ = _run(cwd, ["show", f"{sha}^:{from_path}"])
     ok_after, after, _ = _run(cwd, ["show", f"{sha}:{path}"])
     original, modified = _text_only(before if ok_before else "", after if ok_after else "")
     return {
@@ -350,27 +430,37 @@ def commit_file(payload: dict) -> dict:
 
 
 def diff_file(payload: dict) -> dict:
-    """Return the two sides of a file so the editor can show a real diff."""
+    """The two sides of a file, as the label over them promises.
+
+    The pane says which pair it is showing — "HEAD vs index" for a staged change,
+    "index vs working tree" for an unstaged one — so the sides have to be those.
+    The unstaged side used to be read from HEAD, which meant a file with something
+    already staged showed that staged work as if it were still outstanding: the
+    diff contradicted its own label, and `discard` (which restores from the index)
+    then threw away less than the diff appeared to cover.
+
+    A rename is two names, so the side that predates it is read from `fromPath`
+    and the side that has it from `path`. An empty side means the file is new (or
+    gone) on that side, which is what makes a new file read as an addition.
+    """
     cwd, file_path = _cwd(payload), _file(payload)
+    from_path = str(payload.get("fromPath") or "").strip() or file_path
     staged = bool(payload.get("staged"))
 
-    # HEAD side: the index when the change is staged, otherwise HEAD itself.
-    original_args = (
-        ["show", f":{file_path}"] if staged else ["show", f"HEAD:{file_path}"]
-    )
-    ok, original, _ = _run(cwd, original_args)
-    if not ok:
-        original = ""
-
     if staged:
-        # Staged means "HEAD vs index"; an empty side means a new file.
-        ok_head, head_content, _ = _run(cwd, ["show", f"HEAD:{file_path}"])
-        original, modified = (head_content if ok_head else ""), original
+        ok_head, head_content, _ = _run(cwd, ["show", f"HEAD:{from_path}"])
+        ok_index, index_content, _ = _run(cwd, ["show", f":{file_path}"])
+        original = head_content if ok_head else ""
+        modified = index_content if ok_index else ""
     else:
+        # An untracked file has no index entry at all, so its "before" is empty
+        # rather than missing.
+        ok_index, index_content, _ = _run(cwd, ["show", f":{from_path}"])
         try:
             modified = Path(cwd, file_path).read_text(encoding="utf-8", errors="replace")
         except OSError:
             modified = ""
+        original = index_content if ok_index else ""
 
     original, modified = _text_only(original, modified)
     return {"success": True, "originalContent": original, "modifiedContent": modified}
@@ -411,6 +501,37 @@ def discard(payload: dict) -> dict:
     if ok:
         return {"success": True, "output": stdout.strip()}
     return {"success": False, "error": (stderr or "Could not discard changes.").strip()}
+
+
+def conflicted_paths(cwd: str) -> list[str]:
+    """The paths git still counts as unmerged."""
+    ok, out, _ = _run(cwd, ["diff", "--name-only", "--diff-filter=U"])
+    return [line.strip() for line in out.splitlines() if line.strip()] if ok else []
+
+
+def resolve_all(payload: dict) -> dict:
+    """Mark every conflicted file resolved — and nothing else.
+
+    `git add` is what "resolved" means to git, but only for the unmerged paths: a
+    blanket `add -A` would sweep unrelated work into the index at exactly the
+    moment the user is least able to review it, and the commit that follows would
+    contain changes they never chose. Mid-conflict is also the one time clicking
+    twelve files is genuinely worse than one button.
+    """
+    cwd = _cwd(payload)
+    paths = conflicted_paths(cwd)
+    if not paths:
+        return {"success": True, "message": "Nothing left to resolve."}
+    ok, stdout, stderr = _run(cwd, ["add", "--", *paths])
+    if not ok:
+        return {
+            "success": False,
+            "error": (stderr or stdout or "Could not mark them resolved.").strip(),
+        }
+    return {
+        "success": True,
+        "message": f"Marked {len(paths)} file{'s' if len(paths) != 1 else ''} resolved.",
+    }
 
 
 def stage_all(payload: dict) -> dict:
@@ -510,6 +631,7 @@ COMMANDS = {
     "log": log,
     "commit-info": commit_info,
     "commit-file": commit_file,
+    "resolve-all": resolve_all,
     "checkout": checkout,
     "pull": pull,
     "push": push,

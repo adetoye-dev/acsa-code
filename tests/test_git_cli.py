@@ -57,9 +57,37 @@ class ParseStatusTests(unittest.TestCase):
         self.assertEqual(parsed["staged"], [])
         self.assertEqual(parsed["unstaged"], [])
 
-    def test_renames_keep_the_path(self):
+    def test_a_rename_carries_both_names(self):
+        # `path` is where the file is now and `fromPath` where it was: every later
+        # action asks git about one of them, and the actor of a rename is the pair.
         parsed = git_cli.parse_status("## dev\nR  old.py -> new.py\n")
-        self.assertEqual([f["path"] for f in parsed["files"]], ["old.py -> new.py"])
+        entry = parsed["files"][0]
+        self.assertEqual(entry["path"], "new.py")
+        self.assertEqual(entry["fromPath"], "old.py")
+        self.assertEqual(parsed["staged"][0]["path"], "new.py")
+
+    def test_unmerged_files_are_their_own_group(self):
+        """A conflict is not a staged change, and not a working-tree change.
+
+        Under "staged", the commit button offered to commit a file full of conflict
+        markers and git answered with an error the page did not explain.
+        """
+        parsed = git_cli.parse_status("## dev\nUU src/one.ts\n M src/two.ts\n")
+        self.assertEqual([f["path"] for f in parsed["conflicted"]], ["src/one.ts"])
+        self.assertEqual(parsed["conflicted"][0]["workTreeStatus"], "U")
+        self.assertEqual([f["path"] for f in parsed["staged"]], [])
+        self.assertEqual([f["path"] for f in parsed["unstaged"]], ["src/two.ts"])
+        # It is still a changed file, so a tree decoration can find it.
+        self.assertEqual([f["path"] for f in parsed["files"]], ["src/one.ts", "src/two.ts"])
+
+    def test_both_added_and_both_deleted_count_as_conflicts(self):
+        parsed = git_cli.parse_status("## dev\nAA added.ts\nDD gone.ts\n")
+        self.assertEqual([f["path"] for f in parsed["conflicted"]], ["added.ts", "gone.ts"])
+        self.assertEqual(parsed["staged"], [])
+
+    def test_an_added_file_has_no_previous_name(self):
+        parsed = git_cli.parse_status("## dev\nA  added.ts\n")
+        self.assertEqual(parsed["staged"][0]["fromPath"], "")
 
 
 class ResponseShapeTests(unittest.TestCase):
@@ -197,12 +225,29 @@ class ParseCommitTests(unittest.TestCase):
         self.assertEqual(
             files,
             [
-                {"path": ".tauri/Cargo.lock", "status": "M", "additions": 1, "deletions": 1},
-                {"path": "src/new.ts", "status": "A", "additions": 42, "deletions": 0},
-                {"path": "docs/old.md", "status": "D", "additions": 0, "deletions": 17},
+                # Compared whole, `fromPath` included: an accidental extra or
+                # missing key is the kind of shape change a caller breaks on.
+                {"path": ".tauri/Cargo.lock", "fromPath": "", "status": "M", "additions": 1, "deletions": 1},
+                {"path": "src/new.ts", "fromPath": "", "status": "A", "additions": 42, "deletions": 0},
+                {"path": "docs/old.md", "fromPath": "", "status": "D", "additions": 0, "deletions": 17},
             ],
         )
 
+    def test_a_rename_in_a_commit_is_one_row_with_two_names(self):
+        files = git_cli.parse_commit_files(
+            "R100\told.py\tnew.py\n", "0\t0\told.py => new.py\n"
+        )
+        self.assertEqual(
+            files,
+            [
+                {"path": "new.py", "fromPath": "old.py", "status": "R", "additions": 0, "deletions": 0},
+            ],
+        )
+
+    def test_a_copy_in_a_commit_keeps_its_source(self):
+        files = git_cli.parse_commit_files("C75\tsrc/a.ts\tsrc/b.ts\n", "3\t0\tsrc/a.ts => src/b.ts\n")
+        self.assertEqual(files[0]["fromPath"], "src/a.ts")
+        self.assertEqual(files[0]["path"], "src/b.ts")
     def test_a_binary_file_has_no_counts_rather_than_zeroes(self):
         # `-` is what git prints for a binary; reporting it as 0/0 would claim the
         # panel knows something it does not.
@@ -290,6 +335,163 @@ class BinaryRepositoryTests(unittest.TestCase):
         self.assertTrue(sides["success"])
         self.assertEqual(sides["originalContent"], "")
         self.assertEqual(sides["modifiedContent"], "")
+
+
+class DiffSidesTests(unittest.TestCase):
+    """Which two things the diff pane is comparing.
+
+    Both failures here were found by running the engine against a real repository:
+    a rename asked git about a file with an arrow in its name, and the unstaged
+    side read HEAD, so a partly-staged file showed work that was already staged.
+    """
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="acsa-git-sides-")).resolve()
+        git(self.root, "init", "-q")
+        git(self.root, "config", "user.email", "t@local")
+        git(self.root, "config", "user.name", "t")
+        (self.root / "old.py").write_text("one\ntwo\n", encoding="utf-8")
+        (self.root / "other.txt").write_text("settled\n", encoding="utf-8")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-qm", "base")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_a_staged_rename_diffs_the_old_name_against_the_new_one(self):
+        git(self.root, "mv", "old.py", "new.py")
+        status = git_cli.status({"cwd": str(self.root)})
+        entry = status["staged"][0]
+        sides = git_cli.diff_file(
+            {
+                "cwd": str(self.root),
+                "filePath": entry["path"],
+                "fromPath": entry["fromPath"],
+                "staged": True,
+            }
+        )
+        # Both sides real: reading only the new name gave an empty original, which
+        # made a rename look like a brand-new file.
+        self.assertEqual(sides["originalContent"], "one\ntwo\n")
+        self.assertEqual(sides["modifiedContent"], "one\ntwo\n")
+
+    def test_the_combined_rename_path_is_not_a_path_any_more(self):
+        # The old shape handed `old.py -> new.py` to `git show`, which failed
+        # silently and rendered "nothing to compare" for a changed file.
+        git(self.root, "mv", "old.py", "new.py")
+        entry = git_cli.status({"cwd": str(self.root)})["staged"][0]
+        self.assertEqual(entry["path"], "new.py")
+        self.assertEqual(entry["fromPath"], "old.py")
+
+    def test_an_unstaged_change_compares_the_index_not_head(self):
+        # Committed, staged, then edited again: the unstaged half is two → three,
+        # and HEAD (one) must not appear on either side.
+        (self.root / "old.py").write_text("two\n", encoding="utf-8")
+        git(self.root, "add", "old.py")
+        (self.root / "old.py").write_text("three\n", encoding="utf-8")
+        self.assertEqual(git_cli.status({"cwd": str(self.root)})["unstaged"][0]["indexStatus"], "M")
+
+        sides = git_cli.diff_file({"cwd": str(self.root), "filePath": "old.py", "staged": False})
+        self.assertEqual(sides["originalContent"], "two\n")
+        self.assertEqual(sides["modifiedContent"], "three\n")
+
+    def test_an_untracked_file_has_an_empty_before(self):
+        (self.root / "fresh.txt").write_text("brand new\n", encoding="utf-8")
+        sides = git_cli.diff_file({"cwd": str(self.root), "filePath": "fresh.txt", "staged": False})
+        self.assertEqual(sides["originalContent"], "")
+        self.assertEqual(sides["modifiedContent"], "brand new\n")
+
+    def test_a_committed_rename_reads_as_a_rename_not_an_add_and_a_delete(self):
+        """The whole path: git's rename detection, the parse, and both diff sides.
+
+        With `--no-renames` this was two rows — an add with an empty original and a
+        delete with an empty modified — for one file that had only moved.
+        """
+        git(self.root, "mv", "other.txt", "renamed.txt")
+        git(self.root, "commit", "-qm", "move it")
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(self.root), check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+        info = git_cli.commit_info({"cwd": str(self.root), "sha": sha})
+        self.assertEqual([f["path"] for f in info["files"]], ["renamed.txt"])
+        entry = info["files"][0]
+        self.assertEqual(entry["status"], "R")
+        self.assertEqual(entry["fromPath"], "other.txt")
+
+        sides = git_cli.commit_file(
+            {
+                "cwd": str(self.root),
+                "sha": sha,
+                "filePath": entry["path"],
+                "fromPath": entry["fromPath"],
+            }
+        )
+        self.assertEqual(sides["originalContent"], "settled\n")
+        self.assertEqual(sides["modifiedContent"], "settled\n")
+
+class ConflictTests(unittest.TestCase):
+    """A real merge, stopped on a conflict."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="acsa-git-conflict-")).resolve()
+        git(self.root, "init", "-q")
+        git(self.root, "config", "user.email", "t@local")
+        git(self.root, "config", "user.name", "t")
+        (self.root / "f.txt").write_text("base\n", encoding="utf-8")
+        (self.root / "untouched.txt").write_text("mine\n", encoding="utf-8")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-qm", "base")
+        git(self.root, "checkout", "-q", "-b", "other")
+        (self.root / "f.txt").write_text("theirs\n", encoding="utf-8")
+        git(self.root, "commit", "-qam", "theirs")
+        git(self.root, "checkout", "-q", "-")
+        (self.root / "f.txt").write_text("ours\n", encoding="utf-8")
+        git(self.root, "commit", "-qam", "ours")
+        # A merge that conflicts (and one unrelated edit, to prove the bulk action
+        # does not sweep it up).
+        subprocess.run(
+            ["git", "merge", "other"], cwd=str(self.root), capture_output=True, text=True
+        )
+        (self.root / "untouched.txt").write_text("mine, edited mid-conflict\n", encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_the_conflict_is_its_own_group_and_the_operation_is_named(self):
+        status = git_cli.status({"cwd": str(self.root)})
+        self.assertEqual([f["path"] for f in status["conflicted"]], ["f.txt"])
+        self.assertEqual(status["staged"], [])
+        self.assertEqual(status["operation"], "merge")
+        # The unrelated edit is what the commit button should still be about.
+        self.assertEqual([f["path"] for f in status["unstaged"]], ["untouched.txt"])
+
+    def test_the_conflicted_file_still_has_a_readable_diff(self):
+        sides = git_cli.diff_file({"cwd": str(self.root), "filePath": "f.txt", "staged": False})
+        # The markers are in the working tree, which is what a person resolves.
+        self.assertIn("<<<<<<<", sides["modifiedContent"])
+
+    def test_resolving_all_stages_the_conflict_and_nothing_else(self):
+        result = git_cli.resolve_all({"cwd": str(self.root)})
+        self.assertTrue(result["success"])
+        self.assertIn("1 file", result["message"])
+
+        status = git_cli.status({"cwd": str(self.root)})
+        self.assertEqual(status["conflicted"], [])
+        self.assertEqual([f["path"] for f in status["staged"]], ["f.txt"])
+        # The unrelated work is exactly where it was.
+        self.assertEqual([f["path"] for f in status["unstaged"]], ["untouched.txt"])
+
+    def test_nothing_left_to_resolve_says_so_rather_than_failing(self):
+        git_cli.resolve_all({"cwd": str(self.root)})
+        again = git_cli.resolve_all({"cwd": str(self.root)})
+        self.assertTrue(again["success"])
+        self.assertEqual(again["message"], "Nothing left to resolve.")
+
+    def test_the_operation_is_empty_in_a_repository_at_rest(self):
+        git(self.root, "merge", "--abort")
+        self.assertEqual(git_cli.status({"cwd": str(self.root)})["operation"], "")
 
 
 if __name__ == "__main__":
