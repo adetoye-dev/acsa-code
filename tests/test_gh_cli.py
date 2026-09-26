@@ -234,6 +234,10 @@ class OverviewStateTests(unittest.TestCase):
     def test_a_successful_read_parses_all_three_lists(self):
         def run(args, *rest, **kwargs):
             joined = " ".join(args)
+            # The overview asks git which branch it is describing, then gh for the
+            # list, the branch's runs, the pull requests and the issues.
+            if args[0] == "git":
+                return True, "dev\n", ""
             if "run" in args:
                 return True, __import__("json").dumps(REAL_RUNS), ""
             if "pr" in args:
@@ -252,6 +256,8 @@ class OverviewStateTests(unittest.TestCase):
 
     def test_pull_requests_failing_does_not_take_the_checks_with_it(self):
         def run(args, *rest, **kwargs):
+            if args[0] == "git":
+                return True, "dev\n", ""
             if "run" in args:
                 return True, __import__("json").dumps(REAL_RUNS), ""
             if "pr" in args:
@@ -276,8 +282,13 @@ class OverviewStateTests(unittest.TestCase):
         for wanted in ("0", "-3", "nonsense", "9999", 3):
             result = self._overview(run=run, limit=wanted)
             self.assertEqual(result["success"], True)
-        # Only the runs query is read for the limit; three gh calls per overview.
-        limits = [args.split("-L ")[1].split(" ")[0] for args in seen if " run " in f" {args} "]
+        # The *list* query is the one the caller's limit governs; the summary's own
+        # branch query has a fixed depth of its own and is excluded here.
+        limits = [
+            args.split("-L ")[1].split(" ")[0]
+            for args in seen
+            if " run " in f" {args} " and " -b " not in f" {args} "
+        ]
         self.assertEqual(limits, ["1", "1", str(gh_cli.DEFAULT_LIMIT), str(gh_cli.MAX_LIMIT), "3"])
 
 # Two lines of `gh run view --log` output, copied from a real run: a tab between
@@ -394,6 +405,143 @@ class RunLogStateTests(unittest.TestCase):
             self.assertTrue(result["available"])
             self.assertEqual(len(result["lines"]), min(50, max(gh_cli.MIN_TAIL, min(gh_cli.MAX_TAIL, wanted if isinstance(wanted, int) else gh_cli.DEFAULT_TAIL))))
         self.assertEqual(len(seen), 3)
+
+
+class SummarizeRunsTests(unittest.TestCase):
+    """The numbers beside a branch, and the cases where there are none."""
+
+    def _run(self, status="completed", conclusion="success", minutes=8, **over):
+        run = {
+            "status": status,
+            "conclusion": conclusion,
+            "durationSeconds": minutes * 60,
+            "createdAt": "2026-09-26T01:00:00Z",
+        }
+        run.update(over)
+        return run
+
+    def test_a_pass_rate_counts_only_runs_that_finished(self):
+        runs = [
+            self._run(),
+            self._run(conclusion="failure"),
+            self._run(conclusion="cancelled"),
+            self._run(conclusion="skipped"),
+            # Still going: nobody's outcome yet.
+            self._run(status="in_progress", conclusion="", durationSeconds=None),
+        ]
+        summary = gh_cli.summarize_runs(runs, "dev")
+        self.assertEqual(summary["branch"], "dev")
+        self.assertEqual((summary["passed"], summary["failed"]), (1, 1))
+        # Cancelled and skipped are neither, so they are counted apart rather than
+        # dragging the rate down to a health nobody measured.
+        self.assertEqual(summary["other"], 2)
+        self.assertEqual(summary["passRate"], 0.5)
+        self.assertEqual(summary["total"], 5)
+
+    def test_the_average_ignores_the_runs_with_no_duration(self):
+        runs = [self._run(minutes=10), self._run(minutes=8), self._run(minutes=0, durationSeconds=None)]
+        self.assertEqual(gh_cli.summarize_runs(runs)["averageDurationSeconds"], 9 * 60)
+
+    def test_no_answer_is_not_zero(self):
+        empty = gh_cli.summarize_runs([])
+        self.assertIsNone(empty["passRate"])
+        self.assertIsNone(empty["averageDurationSeconds"])
+        self.assertIsNone(empty["latest"])
+        self.assertEqual(empty["history"], [])
+        # Every run cancelled: a rate would be a division by nothing.
+        cancelled = gh_cli.summarize_runs([self._run(conclusion="cancelled")])
+        self.assertIsNone(cancelled["passRate"])
+
+    def test_the_latest_is_the_newest_and_the_history_reads_oldest_first(self):
+        runs = [self._run(conclusion="failure"), self._run(conclusion="success")]
+        summary = gh_cli.summarize_runs(runs)
+        self.assertEqual(summary["latest"]["conclusion"], "failure")
+        # A bar chart reads left to right, so the history is the other way round.
+        self.assertEqual([r["conclusion"] for r in summary["history"]], ["success", "failure"])
+
+
+class BranchSummaryTests(unittest.TestCase):
+    """Which runs the summary describes, and what it does when it cannot tell."""
+
+    def _overview(self, run, branch="dev"):
+        payload = {"cwd": "."}
+        with mock.patch.object(gh_cli, "_gh_path", lambda: "/usr/bin/gh"), mock.patch.object(
+            gh_cli, "_remote_url", lambda cwd: "https://github.com/acme/api.git"
+        ), mock.patch.object(gh_cli, "_current_branch", lambda cwd: branch), mock.patch.object(
+            gh_cli, "_run", run
+        ):
+            return gh_cli.overview(payload)
+
+    def _json_runner(self, branch_runs, listed=None):
+        """What `gh` answers: the list, then the branch's runs."""
+        calls: list[list[str]] = []
+
+        def run(args, *rest, **kwargs):
+            calls.append(list(args))
+            if "-b" in args:
+                return True, __import__("json").dumps(branch_runs), ""
+            return True, __import__("json").dumps(listed or branch_runs), ""
+
+        run.calls = calls  # type: ignore[attr-defined]
+        return run
+
+    def test_the_summary_describes_the_branch_it_was_asked_about(self):
+        run = self._json_runner(REAL_RUNS)
+        result = self._overview(run)
+        self.assertEqual(result["summary"]["branch"], "dev")
+        # And the runs query really carried the branch, rather than being filtered
+        # here from whatever happened to come back.
+        branch_calls = [call for call in run.calls if "-b" in call]
+        self.assertEqual(len(branch_calls), 1)
+        self.assertIn("dev", branch_calls[0])
+        # The list itself stays the repository's runs, with its own limit.
+        self.assertEqual(len(result["runs"]), len(REAL_RUNS))
+
+    def test_a_detached_head_summarizes_the_runs_the_list_shows(self):
+        run = self._json_runner(REAL_RUNS)
+        result = self._overview(run, branch="")
+        self.assertEqual(result["summary"]["branch"], "")
+        self.assertEqual(result["summary"]["total"], len(REAL_RUNS))
+        # Nothing was asked about a branch, because there is none to name.
+        self.assertEqual([call for call in run.calls if "-b" in call], [])
+
+    def test_a_branch_query_that_fails_does_not_take_the_panel_with_it(self):
+        def run(args, *rest, **kwargs):
+            if "-b" in args:
+                return False, "", "HTTP 500: Internal Server Error"
+            return True, __import__("json").dumps(REAL_RUNS), ""
+
+        result = self._overview(run)
+        self.assertTrue(result["available"])
+        self.assertEqual(len(result["runs"]), 2)
+        self.assertIn("summary", result["errors"])
+        # The summary falls back to what the list shows, and says it is not a branch.
+        self.assertEqual(result["summary"]["branch"], "")
+
+    def test_the_branch_helper_asks_git_and_rejects_a_detached_head(self):
+        asked: list[list[str]] = []
+
+        def run(args, *rest, **kwargs):
+            asked.append(list(args))
+            return True, "dev\n", ""
+
+        with mock.patch.object(gh_cli, "_run", run):
+            self.assertEqual(gh_cli._current_branch("."), "dev")
+        # The argv has to name git itself: this module runs the command as given.
+        self.assertEqual(asked[0][:2], ["git", "rev-parse"])
+
+        with mock.patch.object(gh_cli, "_run", lambda *a, **k: (True, "HEAD\n", "")):
+            self.assertEqual(gh_cli._current_branch("."), "")
+
+        with mock.patch.object(gh_cli, "_run", lambda *a, **k: (False, "", "not a repository")):
+            self.assertEqual(gh_cli._current_branch("."), "")
+
+
+class RunShaTests(unittest.TestCase):
+    def test_each_run_carries_the_commit_it_was_for(self):
+        runs = gh_cli.parse_runs(REAL_RUNS)
+        self.assertEqual(runs[0]["sha"], "913d48b1473857d8f3e09176479d1417b3ad9562")
+        self.assertEqual(runs[1]["sha"], "913d48b1473857d8f3e09176479d1417b3ad9562")
 
 
 if __name__ == "__main__":

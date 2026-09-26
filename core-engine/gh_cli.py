@@ -52,8 +52,12 @@ LOG_LINE_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?
 # output is laid out for people, and parsing it means guessing at column widths.
 RUN_FIELDS = (
     "databaseId,displayTitle,workflowName,status,conclusion,"
-    "headBranch,event,createdAt,updatedAt,url"
+    "headBranch,event,createdAt,updatedAt,url,headSha"
 )
+
+# How many of the branch's runs the summary describes. Deep enough for a pass rate
+# to mean something, shallow enough that one `gh` call answers it.
+STATS_LIMIT = 20
 PR_FIELDS = (
     "number,title,author,isDraft,reviewDecision,headRefName,"
     "createdAt,updatedAt,url,additions,deletions,changedFiles"
@@ -228,6 +232,8 @@ def parse_runs(payload: list) -> list[dict]:
                 "event": str(item.get("event") or ""),
                 "createdAt": created,
                 "updatedAt": updated,
+                # The commit the run was for, so a row can link to it.
+                "sha": str(item.get("headSha") or ""),
                 # A run still going has no length yet — its `updatedAt` is the last
                 # update, and reporting that as a duration would understate it by
                 # more every second.
@@ -441,6 +447,59 @@ def _unavailable_log(reason: str, detail: str, raw: str = "") -> dict:
     }
 
 
+# What a finished run's conclusion means for a pass rate. A cancelled run is
+# neither: it did not pass and nothing was tested to fail, so it is counted apart
+# rather than being folded in as a failure and reporting a health nobody measured.
+PASSING_CONCLUSIONS = ("success",)
+FAILING_CONCLUSIONS = ("failure", "startup_failure", "timed_out")
+
+
+def _current_branch(cwd: str) -> str:
+    """The branch the working tree is on, or "" when there is no answer.
+
+    A detached HEAD answers `HEAD`, which is not a branch any run was made on, and
+    an empty answer means the summary describes the repository rather than a branch.
+    """
+    ok, out, _ = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd, 10)
+    name = out.strip() if ok else ""
+    return "" if name in ("", "HEAD") else name
+
+
+def summarize_runs(runs: list[dict], branch: str = "") -> dict:
+    """The recent runs as the few numbers worth putting beside a branch.
+
+    Everything here is derived, and every derivation has a case where it has no
+    answer: a rate over runs that have not finished would be a guess, and an average
+    of no durations is `None` rather than zero — the panel says "—" instead of a
+    number it made up.
+    """
+    completed = [run for run in runs if str(run.get("status") or "") == "completed"]
+    passed = [run for run in completed if run.get("conclusion") in PASSING_CONCLUSIONS]
+    failed = [run for run in completed if run.get("conclusion") in FAILING_CONCLUSIONS]
+    decided = len(passed) + len(failed)
+    durations = [
+        run["durationSeconds"]
+        for run in completed
+        if isinstance(run.get("durationSeconds"), int)
+    ]
+    return {
+        "branch": branch,
+        "total": len(runs),
+        "passed": len(passed),
+        "failed": len(failed),
+        # Finished runs that were neither: cancelled, skipped, neutral.
+        "other": len(completed) - decided,
+        "passRate": (len(passed) / decided) if decided else None,
+        "averageDurationSeconds": (
+            sum(durations) // len(durations) if durations else None
+        ),
+        # Newest first, as `gh run list` gives them.
+        "latest": runs[0] if runs else None,
+        # Oldest first, so a bar chart reads left to right.
+        "history": list(reversed(runs)),
+    }
+
+
 def _unavailable(reason: str, detail: str, repo: str = "", raw: str = "") -> dict:
     """A state the panel can explain, not an error it has to interpret."""
     return {
@@ -451,6 +510,7 @@ def _unavailable(reason: str, detail: str, repo: str = "", raw: str = "") -> dic
         "raw": raw,
         "repo": repo,
         "runs": [],
+        "summary": summarize_runs([]),
         "pullRequests": [],
         "issues": [],
         "errors": {},
@@ -496,6 +556,30 @@ def overview(payload: dict) -> dict:
 
     errors: dict[str, str] = {}
 
+    # The summary describes *this branch* — "is my branch green" is the question a
+    # checks widget answers — while the list below stays the repository's recent
+    # runs, because a red `main` while you are on `dev` is worth seeing too. Without
+    # a branch to ask about (a detached HEAD), the summary falls back to the same
+    # runs the list shows and says so by carrying an empty branch.
+    branch = _current_branch(cwd)
+    summary_runs: list = []
+    summary_branch = ""
+    if branch:
+        ok_branch, branch_raw, branch_error = _gh_json(
+            slug, ["run", "list", "-b", branch, "-L", str(STATS_LIMIT), "--json", RUN_FIELDS]
+        )
+        if ok_branch:
+            summary_runs = parse_runs(branch_raw)
+            summary_branch = branch
+        else:
+            # A failed summary is one section failing, not the panel: the list above
+            # it is still true, and the panel says which part it could not read.
+            errors["summary"] = branch_error
+    if not summary_branch:
+        # Nothing to describe but the repository itself — a detached HEAD, say — so
+        # the summary covers the runs the list is showing.
+        summary_runs = parse_runs(raw_runs)
+
     ok_prs, raw_prs, pr_error = _gh_json(
         slug, ["pr", "list", "-L", str(limit), "--json", PR_FIELDS]
     )
@@ -521,6 +605,7 @@ def overview(payload: dict) -> dict:
         "raw": "",
         "repo": slug,
         "runs": parse_runs(raw_runs),
+        "summary": summarize_runs(summary_runs, summary_branch),
         "pullRequests": parse_pull_requests(raw_prs),
         "issues": parse_issues(raw_issues),
         "errors": errors,
