@@ -6,14 +6,15 @@
  * needs comes from `layoutGraph`, so the drawing here is one row tall and has no
  * knowledge of the rows around it — which is what keeps 60 commits cheap.
  *
- * The rows are read-only on purpose. Opening a commit's diff belongs to the right
- * pane and is not built yet, and a row that highlights on hover but does nothing
- * when clicked is worse than one that does not pretend.
+ * A row is a button: clicking it opens that commit in the right pane. A row that
+ * highlighted on hover and did nothing when clicked was worse than one that did
+ * not pretend, which is why this came with the pane that answers it.
  */
 import { useState } from "react";
 import { ChevronDown, ChevronRight, GitCommitHorizontal, RefreshCw } from "lucide-react";
 import { Icon } from "../ui/Icon";
 import { layoutGraph, type GitCommit, type GitRef } from "../../services/gitGraph";
+import { relativeDate } from "../../services/relativeTime";
 
 /** The row height has to be the row's *actual* height, or the lanes don't meet. */
 const ROW_HEIGHT = 24;
@@ -42,32 +43,6 @@ const LANE_COLORS = [
 const laneColor = (lane: number) => LANE_COLORS[lane % LANE_COLORS.length];
 /** Lanes sit on a fixed pitch, so the last one needs half a lane of padding. */
 const centerOf = (lane: number) => lane * LANE_WIDTH + LANE_WIDTH / 2;
-
-function relativeDate(iso: string): string {
-  const then = Date.parse(iso);
-  if (Number.isNaN(then)) return "";
-  const seconds = Math.max(0, (Date.now() - then) / 1000);
-  const steps: [number, string][] = [
-    [60, "s"],
-    [60, "m"],
-    [24, "h"],
-    [7, "d"],
-    [4.35, "w"],
-    [12, "mo"],
-  ];
-  let value = seconds;
-  let unit = "s";
-  for (const [size, name] of steps) {
-    if (value < size) {
-      unit = name;
-      break;
-    }
-    value /= size;
-    unit = name;
-  }
-  if (unit === "s" && seconds < 45) return "just now";
-  return `${Math.floor(value)}${unit} ago`;
-}
 
 /* The prop is `badge`, not `ref`: React intercepts a prop literally named `ref`
    and hands the component an element ref instead, so the badge arrived
