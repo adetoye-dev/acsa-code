@@ -493,6 +493,113 @@ class ConflictTests(unittest.TestCase):
         git(self.root, "merge", "--abort")
         self.assertEqual(git_cli.status({"cwd": str(self.root)})["operation"], "")
 
+class UnquotePathTests(unittest.TestCase):
+    """Git's quoted paths, undone.
+
+    Every string here is what `git status --porcelain=v1` actually printed for a
+    file with that name, tab-escapes and all, in a throwaway repository.
+    """
+
+    def test_an_unquoted_path_is_left_alone(self):
+        self.assertEqual(git_cli.unquote_path("src/plain.py"), "src/plain.py")
+        # A quote in the middle does not make it a quoted path.
+        self.assertEqual(git_cli.unquote_path('a"b.py'), 'a"b.py')
+
+    def test_a_non_ascii_name_is_octal_bytes_not_letters(self):
+        # "caf\303\251.py" → café.py: the two escapes are one character once the
+        # bytes are decoded together, which is the part a naive decoder gets wrong.
+        self.assertEqual(git_cli.unquote_path('"caf\\303\\251.py"'), "café.py")
+
+    def test_the_named_escapes(self):
+        self.assertEqual(git_cli.unquote_path('"tab\\there.py"'), "tab\there.py")
+        self.assertEqual(git_cli.unquote_path('"new\\nline.py"'), "new\nline.py")
+        self.assertEqual(git_cli.unquote_path('"ctrl\\001char.py"'), "ctrl\x01char.py")
+        self.assertEqual(git_cli.unquote_path('"del\\177char.py"'), "del\x7fchar.py")
+
+    def test_a_quote_or_backslash_inside_the_name(self):
+        self.assertEqual(git_cli.unquote_path('"a\\"b.py"'), 'a"b.py')
+        self.assertEqual(git_cli.unquote_path('"back\\\\slash.py"'), "back\\slash.py")
+
+    def test_an_escape_git_does_not_write_is_kept_visible(self):
+        # Better a visibly odd path than a silently mangled one.
+        self.assertEqual(git_cli.unquote_path('"a\\qb.py"'), "a\\qb.py")
+
+
+class QuotedStatusTests(unittest.TestCase):
+    def test_a_quoted_path_in_status_is_unquoted(self):
+        parsed = git_cli.parse_status('## dev\n?? "caf\\303\\251.py"\n')
+        self.assertEqual([f["path"] for f in parsed["files"]], ["café.py"])
+        self.assertEqual([f["path"] for f in parsed["unstaged"]], ["café.py"])
+
+    def test_both_sides_of_a_quoted_rename(self):
+        parsed = git_cli.parse_status('## dev\nR  "caf\\303\\251.py" -> "caf\\303\\251-2.py"\n')
+        entry = parsed["staged"][0]
+        self.assertEqual(entry["path"], "café-2.py")
+        self.assertEqual(entry["fromPath"], "café.py")
+
+    def test_a_quoted_path_in_a_commit(self):
+        files = git_cli.parse_commit_files('M\t"caf\\303\\251.py"\n', "1\t0\t\"caf\\303\\251.py\"\n")
+        self.assertEqual(files[0]["path"], "café.py")
+        renamed = git_cli.parse_commit_files(
+            'R100\t"caf\\303\\251.py"\t"caf\\303\\251-2.py"\n', "0\t0\tx\n"
+        )
+        self.assertEqual(renamed[0]["path"], "café-2.py")
+        self.assertEqual(renamed[0]["fromPath"], "café.py")
+
+
+class QuotedPathRepositoryTests(unittest.TestCase):
+    """The same names, through real git: this is what used to fail."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="acsa-git-quoted-")).resolve()
+        git(self.root, "init", "-q")
+        git(self.root, "config", "user.email", "t@local")
+        git(self.root, "config", "user.name", "t")
+        # Pinned on purpose: the default is on, but a machine that turned it off
+        # would make this test pass without exercising anything.
+        git(self.root, "config", "core.quotePath", "true")
+        self.name = "café.py"
+        (self.root / self.name).write_text("one\n", encoding="utf-8")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-qm", "base")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_status_reports_the_name_a_person_can_type(self):
+        (self.root / self.name).write_text("one\ntwo\n", encoding="utf-8")
+        status = git_cli.status({"cwd": str(self.root)})
+        self.assertEqual([f["path"] for f in status["unstaged"]], [self.name])
+
+    def test_staging_and_diffing_it_works(self):
+        (self.root / self.name).write_text("one\ntwo\n", encoding="utf-8")
+        entry = git_cli.status({"cwd": str(self.root)})["unstaged"][0]
+
+        staged = git_cli.stage({"cwd": str(self.root), "filePath": entry["path"]})
+        self.assertTrue(staged["success"], staged.get("error"))
+
+        status = git_cli.status({"cwd": str(self.root)})
+        self.assertEqual([f["path"] for f in status["staged"]], [self.name])
+
+        sides = git_cli.diff_file({"cwd": str(self.root), "filePath": self.name, "staged": True})
+        self.assertEqual(sides["originalContent"], "one\n")
+        self.assertEqual(sides["modifiedContent"], "one\ntwo\n")
+
+    def test_a_rename_of_one_is_carried_by_both_names(self):
+        git(self.root, "mv", self.name, "café-2.py")
+        entry = git_cli.status({"cwd": str(self.root)})["staged"][0]
+        self.assertEqual(entry["path"], "café-2.py")
+        self.assertEqual(entry["fromPath"], self.name)
+        sides = git_cli.diff_file(
+            {
+                "cwd": str(self.root),
+                "filePath": entry["path"],
+                "fromPath": entry["fromPath"],
+                "staged": True,
+            }
+        )
+        self.assertEqual(sides["originalContent"], "one\n")
+
 
 if __name__ == "__main__":
     unittest.main()

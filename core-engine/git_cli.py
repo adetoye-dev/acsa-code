@@ -106,6 +106,74 @@ def _split_rename(raw: str) -> tuple[str, str] | None:
     return old.strip(), new.strip()
 
 
+# The escapes git writes inside a quoted path. `quote_c_style` uses the short form
+# for the characters C has one for, and three octal digits for any other byte.
+_PATH_ESCAPES = {
+    "a": 0x07,
+    "b": 0x08,
+    "f": 0x0C,
+    "n": 0x0A,
+    "r": 0x0D,
+    "t": 0x09,
+    "v": 0x0B,
+    "\\": 0x5C,
+    '"': 0x22,
+}
+
+
+def unquote_path(raw: str) -> str:
+    """Undo git's C-style path quoting; an unquoted path comes back unchanged.
+
+    `core.quotePath` is on by default, so a path holding a non-ASCII byte, a
+    control character, a quote or a backslash is printed *quoted and escaped*:
+    `"caf\\303\\251.py"` is `café.py`. That form is for reading, and handing it back
+    to git asks about a file whose name really contains the quotes — which is why
+    staging, diffing and discarding those files all failed with "did not match any
+    file(s) known to git".
+
+    The escapes stand for *bytes*, so they are collected as bytes and decoded as
+    UTF-8 at the end: `\\303\\251` is one `é`, and decoding each escape on its own
+    would produce two replacement characters.
+    """
+    if len(raw) < 2 or not raw.startswith('"') or not raw.endswith('"'):
+        return raw
+
+    out = bytearray()
+    index = 1
+    end = len(raw) - 1
+    while index < end:
+        char = raw[index]
+        if char != "\\":
+            # Inside a quoted path this is ASCII; a non-ASCII character can only
+            # appear when git was told not to quote, and then it is already text.
+            out.extend(char.encode("utf-8", "surrogatepass"))
+            index += 1
+            continue
+        index += 1
+        if index >= end:
+            out.append(0x5C)
+            break
+        escaped = raw[index]
+        if escaped in _PATH_ESCAPES:
+            out.append(_PATH_ESCAPES[escaped])
+            index += 1
+            continue
+        if escaped.isdigit():
+            digits = ""
+            while index < end and len(digits) < 3 and raw[index].isdigit():
+                digits += raw[index]
+                index += 1
+            out.append(int(digits, 8) & 0xFF)
+            continue
+        # An escape git does not write. Both characters are kept rather than one
+        # dropped: a path this function got wrong should be visible, not mangled.
+        out.append(0x5C)
+        out.extend(escaped.encode("utf-8", "surrogatepass"))
+        index += 1
+
+    return out.decode("utf-8", "replace")
+
+
 def _is_unmerged(index_status: str, worktree_status: str) -> bool:
     """Git's own marks for a conflict: `UU`, `AA`, `DD`, `AU`, `UA`, `DU`, `UD`."""
     if index_status == "U" or worktree_status == "U":
@@ -148,8 +216,10 @@ def parse_status(stdout: str) -> dict:
         # file showed an empty diff.
         renamed = _split_rename(raw_path)
         item = {
-            "path": renamed[1] if renamed else raw_path,
-            "fromPath": renamed[0] if renamed else "",
+            # Both sides of a rename are quoted separately, so the split comes first
+            # and the unquoting after.
+            "path": unquote_path(renamed[1]) if renamed else unquote_path(raw_path),
+            "fromPath": unquote_path(renamed[0]) if renamed else "",
             "indexStatus": index_status,
             "workTreeStatus": worktree_status,
         }
@@ -357,7 +427,9 @@ def parse_commit_files(name_status: str, numstat: str) -> list[dict]:
         # A rename or a copy is the one status with two paths on the line:
         # `R100<TAB>old<TAB>new`.
         letter = (parts[0] or "M")[:1]
-        from_path = parts[1] if letter in ("R", "C") and len(parts) >= 3 else ""
+        from_path = (
+            unquote_path(parts[1]) if letter in ("R", "C") and len(parts) >= 3 else ""
+        )
         additions = deletions = None
         if index < len(stats) and len(stats[index]) >= 3:
             added, removed = stats[index][0].strip(), stats[index][1].strip()
@@ -365,7 +437,7 @@ def parse_commit_files(name_status: str, numstat: str) -> list[dict]:
             deletions = int(removed) if removed.isdigit() else None
         files.append(
             {
-                "path": parts[-1],
+                "path": unquote_path(parts[-1]),
                 "fromPath": from_path,
                 "status": letter,
                 "additions": additions,
@@ -506,7 +578,13 @@ def discard(payload: dict) -> dict:
 def conflicted_paths(cwd: str) -> list[str]:
     """The paths git still counts as unmerged."""
     ok, out, _ = _run(cwd, ["diff", "--name-only", "--diff-filter=U"])
-    return [line.strip() for line in out.splitlines() if line.strip()] if ok else []
+    # `--name-only` quotes the same way `status` does, so these have to be unquoted
+    # before they are handed back to `git add`.
+    return (
+        [unquote_path(line.strip()) for line in out.splitlines() if line.strip()]
+        if ok
+        else []
+    )
 
 
 def resolve_all(payload: dict) -> dict:
