@@ -16,6 +16,29 @@ describe("the standing instruction handed to the agent", () => {
   it("still asks for verification, so it is not a licence to skip checking", () => {
     expect(AGENT_BASE_INSTRUCTIONS).toMatch(/verify your changes/);
   });
+
+  /**
+   * Reproduced on current code: "Create stats.js … and stats.test.js … Then run
+   * the tests with node" came back as a design proposal ending "reply yes and
+   * I'll implement it", with nothing written — the model obeyed a host skill
+   * (`superpowers:brainstorming`) whose "MUST use before any creative work" reads
+   * as a gate. Without a precedence line there is nothing to weigh against it.
+   */
+  it("makes a concrete instruction the assignment, ahead of a plan-and-wait skill", () => {
+    expect(AGENT_BASE_INSTRUCTIONS).toMatch(/concrete instruction is the assignment/);
+    expect(AGENT_BASE_INSTRUCTIONS).toMatch(/not a gate on starting it/);
+  });
+
+  /**
+   * The panel answers questions only through the structured tool
+   * (`features.default_mode_request_user_input`). A question written as prose
+   * ends the turn and leaves the user with nothing to click, which is the other
+   * half of the same reproduced run.
+   */
+  it("routes a needed decision to the structured question tool, not prose", () => {
+    expect(AGENT_BASE_INSTRUCTIONS).toMatch(/request_user_input/);
+    expect(AGENT_BASE_INSTRUCTIONS).toMatch(/written as plain text ends the turn/);
+  });
 });
 
 /**

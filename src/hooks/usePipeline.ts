@@ -994,11 +994,26 @@ export const AGENT_RUNTIME_FLAGS: readonly string[] = [
  * code, and a single run cannot show it works — the honest statement is that it
  * sets the ceiling the agent was missing, and that a hard wall-clock cap would
  * be the enforcing version of this.
+ *
+ * The third part is precedence, and it is the counterweight to the host-skill
+ * note above: those skills are worth having, but a *policy* skill that says
+ * "present a design and wait" does not fit a panel where the user has already
+ * said what they want and nobody else is going to answer. Reproduced live on
+ * current code — "Create stats.js … and stats.test.js … Then run the tests with
+ * node" came back as "Using superpowers:brainstorming … Proposed design: … If
+ * that looks good, reply yes and I'll implement it", and the turn ended with
+ * nothing on disk. The panel *can* answer a question, but only through the
+ * structured tool (`features.default_mode_request_user_input`); a question
+ * written as plain text is a dead end, which is why that is called out
+ * separately from just "do the work".
  */
 export const AGENT_BASE_INSTRUCTIONS =
   "You are a coding assistant. Help the user complete their task accurately, use available tools, and verify your changes. " +
   "Verify with the checks the project already has — its build, its tests, its own dev server — and prefer the smallest change that satisfies the request. " +
-  "Do not build new test harnesses or verification infrastructure unless the task asks for it.";
+  "Do not build new test harnesses or verification infrastructure unless the task asks for it. " +
+  "The user is in a chat panel, so a concrete instruction is the assignment: carry it out and verify it before you stop. " +
+  "Skills, MCP servers and other capabilities are tools for doing the work, not a gate on starting it — if one asks you to present a plan and wait, plan briefly, then make the smallest correct version of the change and say what you assumed. " +
+  "When you genuinely need a decision before continuing, ask with the `request_user_input` tool so the panel can show it as a question card; a question written as plain text ends the turn with no way for the user to answer it.";
 
 import { appStore } from "../services/appStore";
 import {
