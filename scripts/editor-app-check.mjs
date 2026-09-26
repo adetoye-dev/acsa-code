@@ -205,6 +205,64 @@ const TAURI_STUB = `(() => {
         : { success: true, originalContent: "", modifiedContent: "" };
     };
     window.__git.changeSides = changeSides;
+    // What the engine's gh subcommand answers. The fixture is one real run and
+    // one real pull request from this project's own history, and the available flag is
+    // switchable so the panel's honest fallbacks are checked rather than assumed.
+    window.__gh = {
+      available: true,
+      reason: null,
+      detail: "",
+      raw: "",
+      repo: "adetoye-dev/asca-code",
+      runs: [
+        {
+          id: 36207865178,
+          title: "release: 0.2.17",
+          workflow: "Release",
+          status: "completed",
+          conclusion: "success",
+          branch: "v0.2.17",
+          event: "push",
+          createdAt: at(3),
+          updatedAt: at(3),
+          durationSeconds: 487,
+          url: "https://github.com/adetoye-dev/asca-code/actions/runs/36207865178",
+        },
+        {
+          id: 36207824813,
+          title: "Add agent controls, project snapshots, and workbench UI updates",
+          workflow: "CI",
+          status: "completed",
+          conclusion: "failure",
+          branch: "dev",
+          event: "pull_request",
+          createdAt: at(4),
+          updatedAt: at(4),
+          durationSeconds: 523,
+          url: "https://github.com/adetoye-dev/asca-code/actions/runs/36207824813",
+        },
+      ],
+      pullRequests: [
+        {
+          number: 3,
+          title: "Add agent controls, project snapshots, and workbench UI updates",
+          author: "adetoye-dev",
+          isDraft: false,
+          reviewDecision: "CHANGES_REQUESTED",
+          branch: "dev",
+          createdAt: at(30),
+          updatedAt: at(2),
+          url: "https://github.com/adetoye-dev/asca-code/pull/3",
+          additions: 11582,
+          deletions: 2735,
+          changedFiles: 97,
+        },
+      ],
+      issues: [],
+      errors: {},
+    };
+    // Where a click that hands a URL to the OS is recorded.
+    window.__opens = [];
   })();
   // What the engine answers for the two AI actions the editor can make. Set per
   // check, so a review or an inline edit is deterministic rather than a
@@ -278,6 +336,21 @@ const TAURI_STUB = `(() => {
           return JSON.stringify({ ok: true, data: null });
         }
         if (sub === "ollama") return JSON.stringify({ ok: true, data: { installed: false, running: false, models: [], recommendedModel: "qwen2.5-coder:3b", totalRamGb: 0 } });
+        if (sub === "gh") {
+          const state = window.__gh;
+          return JSON.stringify({ ok: true, data: {
+            success: true,
+            available: state.available,
+            reason: state.reason,
+            detail: state.detail,
+            raw: state.raw,
+            repo: state.repo,
+            runs: state.available ? state.runs : [],
+            pullRequests: state.available ? state.pullRequests : [],
+            issues: state.available ? state.issues : [],
+            errors: state.errors || {},
+          } });
+        }
         // A real status shape: the empty editor's action panel shows the
         // project's own commands when it has any, and a stub that answers with
         // a bare truthy object leaves that half of the panel untested.
@@ -300,6 +373,12 @@ const TAURI_STUB = `(() => {
       if (cmd === "create_file_or_folder") return null;
       if (cmd === "delete_project_file") return null;
       if (cmd === "pick_folder") return null;
+      if (cmd === "open_external") {
+        // Recorded, not opened: this is the only evidence that a row is a link to
+        // the thing it names rather than a row that looks clickable.
+        window.__opens.push(args && args.url);
+        return null;
+      }
       if (cmd === "fetch_system_metrics") return { cpu_usage: 1, memory_usage: 1, disk_usage: 1 };
       return null;
     },
@@ -1118,6 +1197,92 @@ check("its refs are badged onto the commits they point at",
   JSON.stringify((repo.graphText ?? "").slice(0, 120)));
 await session.screenshot("repository-page");
 
+/** The panel's refresh control, whichever state it is currently in. */
+const clickRefresh = (s) =>
+  s.eval(`(() => {
+    const button = document.querySelector('[data-testid="gh-refresh"]') ||
+      document.querySelector('[data-testid="gh-check-again"]');
+    if (!button) throw new Error("no refresh control on the GitHub panel");
+    button.click();
+    return true;
+  })()`);
+
+// ── The landing state: what the remote knows ─────────────────────────────
+// Nothing local is selected yet, so the pane answers the questions that are not
+// local: this branch's checks, the open pull requests, what is assigned to you.
+const readLanding = async (s) => s.eval(`(() => {
+  const runs = [...document.querySelectorAll('[data-testid^="gh-run-"]')];
+  const prs = [...document.querySelectorAll('[data-testid^="gh-pr-"]')];
+  const flat = (node) => (node.innerText || '').replace(/\\s+/g, ' ').trim();
+  return {
+    body: (document.body.innerText || '').slice(0, 6000),
+    runs: runs.map(flat),
+    prs: prs.map(flat),
+    opens: window.__opens.slice(),
+    ghCalls: window.__engineCalls.filter((call) => call.endsWith(":gh:overview")).length,
+  };
+})()`);
+const landing = await readLanding(session);
+check("the landing state names the repository and lists its checks",
+  landing.body.includes("adetoye-dev/asca-code") &&
+    landing.runs.length === 2 &&
+    /Release · v0\.2\.17 · success/.test(landing.runs[0] ?? ""),
+  JSON.stringify(landing.runs));
+check("a run row carries how long it took and how long ago it ran",
+  /8m 7s/.test(landing.runs[0] ?? "") && /h ago/.test(landing.runs[0] ?? ""),
+  JSON.stringify(landing.runs[0] ?? ""));
+check("a failing run is distinguishable from a passing one",
+  /failure/.test(landing.runs[1] ?? ""), JSON.stringify(landing.runs[1] ?? ""));
+check("open pull requests show their number, author and review state",
+  landing.prs.length === 1 &&
+    landing.prs[0].includes("#3") &&
+    landing.prs[0].includes("@adetoye-dev") &&
+    landing.prs[0].includes("CHANGES"),
+  JSON.stringify(landing.prs));
+check("the issues card stays hidden when nothing is assigned to you",
+  !landing.body.includes("Assigned to you"), JSON.stringify(landing.body.slice(0, 120)));
+await session.screenshot("repository-landing");
+
+// A row has to be a way in, not a read-only list: the only proof is the URL the
+// OS was handed.
+await session.eval(`document.querySelector('[data-testid="gh-run-36207865178"]').click()`);
+await sleep(500);
+const openedRun = await session.eval(`window.__opens.slice()`);
+check("clicking a run hands its URL to the OS",
+  openedRun.some((url) => String(url).endsWith("/actions/runs/36207865178")),
+  JSON.stringify(openedRun));
+
+// Signed out is the state a new machine is actually in, and it must not look like
+// a repository with no checks.
+await session.eval(`(window.__gh.available = false,
+  window.__gh.reason = 'not-authenticated',
+  window.__gh.detail = 'The GitHub CLI is not signed in, so checks and pull requests cannot be read.',
+  true)`);
+await clickRefresh(session);
+await sleep(700);
+const signedOut = await readLanding(session);
+check("a signed-out GitHub says so instead of showing an empty checks list",
+  signedOut.body.includes("not signed in") &&
+    signedOut.body.includes("gh auth login") &&
+    signedOut.runs.length === 0,
+  JSON.stringify(signedOut.body.slice(0, 200)));
+await session.screenshot("repository-gh-signed-out");
+
+// One unreadable section must not blank the others, and must not read as "you
+// have none".
+await session.eval(`(window.__gh.available = true,
+  window.__gh.errors = { pullRequests: 'HTTP 403: Resource not accessible' },
+  true)`);
+await clickRefresh(session);
+await sleep(700);
+const partial = await readLanding(session);
+check("an unreadable list says so while the readable ones stay",
+  partial.body.includes("could not be read") &&
+    !partial.body.includes("No open pull requests.") &&
+    partial.runs.length === 2,
+  JSON.stringify(partial.body.slice(0, 240)));
+await session.screenshot("repository-gh-partial");
+
 // ── Opening a commit ─────────────────────────────────────────────────────
 // The graph was a list you could read but not open: the right pane only ever
 // showed a working-tree change. Clicking a commit has to fill that pane with the
@@ -1188,6 +1353,13 @@ const changeDiff = await editorText(session);
 check("its diff is the change's own two sides, not the commit's left behind",
   changeDiff.includes("unstaged = 2") && !changeDiff.includes("railIconSize") && !changeDiff.includes("layoutGraph"),
   JSON.stringify(changeDiff.slice(0, 200)));
+// The landing view unmounts the moment something is selected, so its answer is
+// held above it. If that regressed, every glance at a file would cost three `gh`
+// calls and a few seconds.
+const afterSelecting = await readLanding(session);
+check("selecting a file does not re-ask GitHub for an answer it already has",
+  afterSelecting.ghCalls === partial.ghCalls,
+  `${partial.ghCalls} calls before selecting, ${afterSelecting.ghCalls} after`);
 
 // ── A surface that never arrives ─────────────────────────────────────────
 // `Suspense` reports nothing when a chunk stalls rather than fails: no error, no
