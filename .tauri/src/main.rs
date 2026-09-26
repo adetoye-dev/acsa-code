@@ -1376,6 +1376,44 @@ fn friendly_agent_line(line: &str) -> AgentLine {
     if line.contains("codex_models_manager") && line.contains("fallback model metadata") {
         return AgentLine::Hide;
     }
+    // A provider that only implements chat completions is the most common way an
+    // agent run fails on a non-OpenAI-compatible provider, and the runtime's own
+    // words for it are ten lines of noise for one fact: five
+    // `WARN ... retrying sampling request` lines, each with a body, and five
+    // `ERROR: Reconnecting... n/5` lines. None of it says the useful part — that
+    // the endpoint does not exist and retrying cannot help.
+    //
+    // Measured against the runtime this build ships, on three providers that
+    // offer chat completions only, with the same config the app writes:
+    //
+    //     unexpected status 404 Not Found: Not found, url: https://api.anthropic.com/v1/responses
+    //     unexpected status 404 Not Found: { },       url: https://api.mistral.ai/v1/responses
+    //     unexpected status 404 Not Found: Unknown error, url: https://generativelanguage.googleapis.com/responses
+    //
+    // OpenAI and DeepSeek answer on the same path, which is why those two are the
+    // providers that work — a property of the provider, not a preference here.
+    // The URL is carried through because it is also what names a misconfigured
+    // base URL (the `generativelanguage.googleapis.com` case above is exactly
+    // that: Gemini's OpenAI-compatible surface lives under `/v1beta/openai`).
+    if line.contains("404 Not Found") && line.contains("/responses") {
+        let url = line
+            .split("url: ")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .map(|url| url.trim_end_matches(','))
+            .filter(|url| !url.is_empty())
+            .unwrap_or("this provider");
+        return AgentLine::Replace(format!(
+            "{url} answered 404 — this provider does not serve the Responses API the agent runtime \
+             requires (it speaks Responses, not chat completions). The model still works in chat; \
+             agent runs need a provider that implements Responses, as OpenAI and DeepSeek do."
+        ));
+    }
+    // The retry the runtime prints around that 404 is the same sentence again,
+    // with no information the line above does not already carry.
+    if line.contains("Reconnecting...") {
+        return AgentLine::Hide;
+    }
     AgentLine::Keep
 }
 
@@ -4710,6 +4748,47 @@ Valid hunk headers: '*** Add File: {path}', '*** Delete File: {path}', '*** Upda
             }
             AgentLine::Keep => panic!("expected a translation"),
             AgentLine::Hide => panic!("expected a translation, not a hide"),
+        }
+    }
+
+    /// Captured verbatim from the runtime this build ships, against the three
+    /// providers checked with the same config the app writes. Each is a provider
+    /// that offers chat completions only — the failure a user hits when they pick
+    /// a capable model whose API has no Responses endpoint.
+    const CHAT_ONLY_PROVIDER_404S: [&str; 3] = [
+        "2026-09-26T23:38:08.762940Z  WARN codex_core::responses_retry: stream disconnected - retrying sampling request (1/5 in 196ms)... turn_id=01a0e015 retries=1 max_retries=5 sampling_error=unexpected status 404 Not Found: Not found, url: https://api.anthropic.com/v1/responses, cf-ray: a41619b98dc11b60-NBO",
+        "2026-09-26T23:38:26.461468Z  WARN codex_core::responses_retry: stream disconnected - retrying sampling request (1/5 in 201ms)... sampling_error=unexpected status 404 Not Found: {\n}, url: https://api.mistral.ai/v1/responses, cf-ray: a4161a27fabcb0f0-NBO",
+        "2026-09-26T23:38:47.087611Z  WARN codex_core::responses_retry: stream disconnected - retrying sampling request (1/5 in 206ms)... sampling_error=unexpected status 404 Not Found: Unknown error, url: https://generativelanguage.googleapis.com/responses",
+    ];
+
+    #[test]
+    fn a_provider_without_the_responses_api_says_so_once() {
+        for raw in CHAT_ONLY_PROVIDER_404S {
+            match friendly_agent_line(raw) {
+                AgentLine::Replace(message) => {
+                    assert!(message.contains("404"), "{message}");
+                    assert!(message.contains("/responses"), "names the endpoint: {message}");
+                    assert!(message.contains("chat"), "says where it still works: {message}");
+                    assert!(
+                        !message.contains("codex_core::responses_retry"),
+                        "tracing prefix dropped: {message}"
+                    );
+                    assert!(
+                        !message.contains("retrying sampling request"),
+                        "the retry noise is dropped: {message}"
+                    );
+                }
+                AgentLine::Keep => panic!("a chat-only provider must be explained, not printed raw"),
+                AgentLine::Hide => panic!("a chat-only provider must be explained, not hidden"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_retry_echo_around_that_404_is_dropped() {
+        // The runtime prints these beside the warning above; they add nothing.
+        for line in ["ERROR: Reconnecting... 1/5", "ERROR: Reconnecting... 5/5"] {
+            assert!(matches!(friendly_agent_line(line), AgentLine::Hide), "kept: {line}");
         }
     }
 
