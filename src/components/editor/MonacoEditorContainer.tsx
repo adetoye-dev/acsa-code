@@ -282,6 +282,9 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
   // index to a Monaco view zone + its DOM node; heights are measured, not guessed.
   const [expandedFindings, setExpandedFindings] = useState<Set<number>>(new Set());
   const [findingCursor, setFindingCursor] = useState(0);
+  // Keyed by the *line* a thread is anchored to, not by the finding: two findings on
+  // one line belong to one thread, and one zone per finding put two zones at the same
+  // offset — two cards for one line, and the code beneath them pushed down twice.
   const reviewZoneIdsRef = useRef<Map<number, string>>(new Map());
   const reviewZoneNodesRef = useRef<Map<number, HTMLDivElement>>(new Map());
   const reviewZoneHeightsRef = useRef<Map<number, number>>(new Map());
@@ -556,20 +559,86 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
     return Math.min(MAX_REVIEW_CARD_HEIGHT, 38 + 150 + Math.ceil(chars / 55) * 15);
   };
 
+  /** A whole thread's height: its rows, plus the hairline between them. */
+  const estimateThreadHeight = useCallback(
+    (items: { issue: ReviewIssue; index: number }[]): number =>
+      items.reduce(
+        (total, item) =>
+          total + estimateFindingHeight(item.issue, expandedFindings.has(item.index)),
+        0
+      ) + Math.max(0, items.length - 1) * 4,
+    [expandedFindings]
+  );
+
   /**
    * Monaco owns the DOM node for a view zone, so the node must exist before the
    * render that portals the card into it (creating it in an effect would happen
    * one render too late and the portal would never mount).
    */
-  const ensureReviewZoneNode = (index: number): HTMLDivElement => {
-    let node = reviewZoneNodesRef.current.get(index);
+  const ensureReviewZoneNode = (line: number): HTMLDivElement => {
+    let node = reviewZoneNodesRef.current.get(line);
     if (!node) {
       node = document.createElement("div");
       node.className = "acsa-review-zone";
-      reviewZoneNodesRef.current.set(index, node);
+      reviewZoneNodesRef.current.set(line, node);
     }
     return node;
   };
+
+  /**
+   * The findings, grouped by the line they are about.
+   *
+   * One thread per line with a row per finding inside it: a review of a dense
+   * function reports several problems on the same line, and a separate card for
+   * each made one line look like several unrelated threads stacked on top of the
+   * code. The line is clamped the same way the decorations clamp it, so the thread,
+   * the tinted line and the gutter glyph all agree about which line is meant.
+   */
+  const findingThreads = useMemo(() => {
+    const lineCount =
+      editorRef.current?.getModel()?.getLineCount() ?? Number.MAX_SAFE_INTEGER;
+    const threads: { line: number; items: { issue: ReviewIssue; index: number }[] }[] = [];
+    reviewIssues.forEach((issue, index) => {
+      const line = Math.min(Math.max(1, issue.line || 1), lineCount);
+      const last = threads[threads.length - 1];
+      if (last && last.line === line) last.items.push({ issue, index });
+      else threads.push({ line, items: [{ issue, index }] });
+    });
+    return threads;
+  }, [reviewIssues]);
+
+  /** True when every finding on that line is folded away. */
+  const threadIsCollapsed = useCallback(
+    (line: number): boolean => {
+      const thread = findingThreads.find((candidate) => candidate.line === line);
+      return !thread || thread.items.every((item) => !expandedFindings.has(item.index));
+    },
+    [expandedFindings, findingThreads]
+  );
+
+  /**
+   * Fold or unfold a whole thread.
+   *
+   * The gutter glyph marks a *line*, so it acts on the thread there: opening one of
+   * two findings and leaving the other folded made the glyph's meaning depend on
+   * which row you happened to click last.
+   */
+  const toggleThread = useCallback(
+    (line: number) => {
+      const thread = findingThreads.find((candidate) => candidate.line === line);
+      if (!thread) return;
+      const anyCollapsed = thread.items.some((item) => !expandedFindings.has(item.index));
+      setExpandedFindings((prev) => {
+        const next = new Set(prev);
+        thread.items.forEach((item) => {
+          if (anyCollapsed) next.add(item.index);
+          else next.delete(item.index);
+        });
+        return next;
+      });
+    },
+    [expandedFindings, findingThreads]
+  );
 
   const applyReviewZones = useCallback(() => {
     const editor = editorRef.current;
@@ -584,33 +653,35 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
       });
       reviewZoneIdsRef.current.clear();
 
-      const liveIndexes = new Set(reviewIssues.map((_, index) => index));
-      reviewZoneNodesRef.current.forEach((_, index) => {
-        if (!liveIndexes.has(index)) reviewZoneNodesRef.current.delete(index);
+      const liveLines = new Set(findingThreads.map((thread) => thread.line));
+      reviewZoneNodesRef.current.forEach((_, line) => {
+        if (!liveLines.has(line)) {
+          reviewZoneNodesRef.current.delete(line);
+          reviewZoneHeightsRef.current.delete(line);
+        }
       });
 
-      reviewIssues.forEach((issue, index) => {
-        const node = ensureReviewZoneNode(index);
-        const line = Math.min(Math.max(1, issue.line || 1), lineCount);
-        const stored = reviewZoneHeightsRef.current.get(index);
+      findingThreads.forEach((thread) => {
+        const node = ensureReviewZoneNode(thread.line);
+        const stored = reviewZoneHeightsRef.current.get(thread.line);
         const height = Math.min(
           stored && stored <= MAX_REVIEW_CARD_HEIGHT
             ? stored
-            : estimateFindingHeight(issue, expandedFindings.has(index)),
+            : estimateThreadHeight(thread.items),
           MAX_REVIEW_CARD_HEIGHT
         );
         const zoneId = accessor.addZone({
-          afterLineNumber: line,
+          afterLineNumber: Math.min(Math.max(1, thread.line), lineCount),
           heightInPx: height,
           domNode: node,
         });
-        reviewZoneIdsRef.current.set(index, zoneId);
+        reviewZoneIdsRef.current.set(thread.line, zoneId);
       });
 
     });
     // `collapsedZoneHeightRef` is a ref: its identity never changes, so it was
     // never doing anything in this list.
-  }, [reviewIssues, expandedFindings]);
+  }, [findingThreads, estimateThreadHeight]);
 
   /**
    * Measures the cards Monaco has actually laid out and records their height.
@@ -620,7 +691,7 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
    */
   const measureVisibleZones = useCallback(() => {
     let changed = false;
-    reviewZoneNodesRef.current.forEach((node, index) => {
+    reviewZoneNodesRef.current.forEach((node, line) => {
       if (!node.isConnected || node.style.display === "none") return;
       // Measure the card itself, never the wrapper. The wrapper is absolutely
       // positioned and full-height, so measuring it returned the zone's own
@@ -628,6 +699,7 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
       // feedback loop that grew a zone to ~90,000px and pushed the file off
       // screen.
       const card =
+        (node.querySelector(".acsa-review-thread") as HTMLElement | null) ||
         (node.querySelector(".acsa-review-card") as HTMLElement | null) ||
         (node.firstElementChild as HTMLElement | null);
       if (!card) return;
@@ -636,15 +708,17 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
       // A single thread is never this tall; ignore anything implausible rather
       // than letting it ratchet.
       if (measured > MAX_REVIEW_CARD_HEIGHT) return;
-      const previous = reviewZoneHeightsRef.current.get(index);
+      const previous = reviewZoneHeightsRef.current.get(line);
       if (previous === undefined || Math.abs(previous - measured) > 2) {
-        reviewZoneHeightsRef.current.set(index, measured);
-        if (!expandedFindings.has(index)) collapsedZoneHeightRef.current = measured;
+        reviewZoneHeightsRef.current.set(line, measured);
+        // A thread that is one collapsed row long is the smallest one there is, and
+        // it is what the first render of every other thread is sized against.
+        if (threadIsCollapsed(line)) collapsedZoneHeightRef.current = measured;
         changed = true;
       }
     });
     return changed;
-  }, [expandedFindings]);
+  }, [threadIsCollapsed]);
 
   // Re-run whenever findings/expansion change; a late measurement also bumps
   // zoneEpoch to re-apply with the corrected heights.
@@ -671,7 +745,7 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
       if (timer) window.clearTimeout(timer);
       subscription.dispose();
     };
-  }, [measureVisibleZones]);
+  }, [measureVisibleZones, threadIsCollapsed]);
 
   // Highlight each finding's line and let the gutter glyph toggle its thread.
   const decorationIdsRef = useRef<string[]>([]);
@@ -700,13 +774,10 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
       if (event.target.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) return;
       const line = event.target.position?.lineNumber;
       if (!line) return;
-      const index = reviewIssues.findIndex(
-        (issue) => Math.min(Math.max(1, issue.line || 1), lineCount) === line
-      );
-      if (index >= 0) toggleFinding(index);
+      toggleThread(line);
     });
     return () => subscription.dispose();
-  }, [reviewIssues]);
+  }, [reviewIssues, toggleThread]);
 
   useEffect(() => {
     return () => {
@@ -874,109 +945,129 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
         </div>
       )}
 
-      {/* ── Inline finding threads, anchored at each finding's line ── */}
-      {reviewIssues.map((issue, index) => {
-        const node = ensureReviewZoneNode(index);
-        const expanded = expandedFindings.has(index);
+      {/* ── Inline finding threads, one per line, anchored at that line ── */}
+      {findingThreads.map((thread) => {
+        const node = ensureReviewZoneNode(thread.line);
+        // The frame takes the worst severity in the thread: a line with an error on
+        // it is an error line, whatever else it also has.
+        const severity = thread.items.some((item) => item.issue.severity === "error")
+          ? "error"
+          : thread.items.some((item) => item.issue.severity === "warning")
+            ? "warning"
+            : "info";
         return createPortal(
           <div className="acsa-review-card-wrap absolute inset-x-0 top-0">
             <div
-              className={`acsa-review-card rounded-lg border shadow-lg overflow-hidden font-sans ${
-                issue.severity === "error"
+              data-testid={`review-thread-${thread.line}`}
+              className={`acsa-review-card acsa-review-thread rounded-lg border shadow-lg overflow-hidden font-sans ${
+                severity === "error"
                   ? "border-red-500/40 bg-[#1b1315]"
-                  : issue.severity === "warning"
+                  : severity === "warning"
                   ? "border-amber-500/40 bg-[#1b1710]"
                   : "border-sky-500/40 bg-[#111820]"
               }`}
             >
-              <button
-                type="button"
-                // Not a tab stop: these cards sit *over* the code, and once focus
-                // was inside one, typing went to a button and Tab cycled the review
-                // controls — the editor was unreachable while any finding existed.
-                // Mouse access is unchanged; the top-right controls stay tabbable.
-                tabIndex={-1}
-                onClick={() => toggleFinding(index)}
-                className="w-full flex items-center gap-1.5 px-2 py-1.5 text-left hover:bg-white/[0.04] transition-colors"
-                title={expanded ? "Collapse" : "Expand"}
-              >
-                <span
-                  className={`text-4xs font-mono px-1 py-0.5 rounded shrink-0 ${
-                    issue.severity === "error"
-                      ? "bg-red-500/25 text-red-300"
-                      : issue.severity === "warning"
-                      ? "bg-amber-500/25 text-amber-300"
-                      : "bg-sky-500/25 text-sky-300"
-                  }`}
-                >
-                  {issue.severity}
-                </span>
-                <span className="text-3xs text-zinc-500 font-mono shrink-0">L{issue.line}</span>
-                <span className="flex-1 min-w-0 truncate text-2xs font-medium text-zinc-200">
-                  {issue.title}
-                </span>
-                <Icon
-                  icon={expanded ? ChevronDown : ChevronRight}
-                  size="xs"
-                  className="text-zinc-400 shrink-0"
-                />
-                <span
-                  role="button"
-                  tabIndex={-1}
-                  title="Dismiss this finding"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    dismissFinding(index);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.stopPropagation();
-                      dismissFinding(index);
+              {thread.items.map(({ issue, index }, position) => {
+                const expanded = expandedFindings.has(index);
+                return (
+                  <div
+                    key={index}
+                    data-testid={`review-finding-${index}`}
+                    className={
+                      position > 0 ? "border-t border-white/[0.06]" : undefined
                     }
-                  }}
-                  className="p-0.5 rounded text-zinc-500 hover:text-zinc-200 hover:bg-white/10 shrink-0"
-                >
-                  <Icon icon={X} size="xs" />
-                </span>
-              </button>
-              {expanded && (
-                <div className="px-2.5 pb-2 space-y-1.5 border-t border-white/[0.06] pt-1.5">
-                  {issue.detail && (
-                    <p className="text-2xs text-zinc-400 leading-snug whitespace-pre-wrap m-0">
-                      {issue.detail}
-                    </p>
-                  )}
-                  {issue.suggestion && (
-                    <p className="text-2xs text-emerald-300/90 leading-snug whitespace-pre-wrap m-0">
-                      Fix: {issue.suggestion}
-                    </p>
-                  )}
-                  <div className="flex items-center gap-1.5 pt-0.5">
+                  >
                     <button
                       type="button"
+                      // Not a tab stop: these cards sit *over* the code, and once focus
+                      // was inside one, typing went to a button and Tab cycled the review
+                      // controls — the editor was unreachable while any finding existed.
+                      // Mouse access is unchanged; the top-right controls stay tabbable.
                       tabIndex={-1}
-                      disabled={fixingIndex !== null}
-                      onClick={() => handleFixIssue(issue, index)}
-                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-3xs font-semibold bg-emerald-600/80 hover:bg-emerald-500 text-white transition-colors disabled:opacity-50"
+                      onClick={() => toggleFinding(index)}
+                      className="w-full flex items-center gap-1.5 px-2 py-1.5 text-left hover:bg-white/[0.04] transition-colors"
+                      title={expanded ? "Collapse" : "Expand"}
                     >
-                      <Icon icon={Sparkles} size="xs" />
-                      {fixingIndex === index ? "Fixing…" : "Fix with AI"}
+                      <span
+                        className={`text-4xs font-mono px-1 py-0.5 rounded shrink-0 ${
+                          issue.severity === "error"
+                            ? "bg-red-500/25 text-red-300"
+                            : issue.severity === "warning"
+                            ? "bg-amber-500/25 text-amber-300"
+                            : "bg-sky-500/25 text-sky-300"
+                        }`}
+                      >
+                        {issue.severity}
+                      </span>
+                      <span className="text-3xs text-zinc-500 font-mono shrink-0">L{thread.line}</span>
+                      <span className="flex-1 min-w-0 truncate text-2xs font-medium text-zinc-200">
+                        {issue.title}
+                      </span>
+                      <Icon
+                        icon={expanded ? ChevronDown : ChevronRight}
+                        size="xs"
+                        className="text-zinc-400 shrink-0"
+                      />
+                      <span
+                        role="button"
+                        tabIndex={-1}
+                        title="Dismiss this finding"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          dismissFinding(index);
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.stopPropagation();
+                            dismissFinding(index);
+                          }
+                        }}
+                        className="p-0.5 rounded text-zinc-500 hover:text-zinc-200 hover:bg-white/10 shrink-0"
+                      >
+                        <Icon icon={X} size="xs" />
+                      </span>
                     </button>
-                    <button
-                      type="button"
-                      tabIndex={-1}
-                      onClick={() => dismissFinding(index)}
-                      className="px-2 py-0.5 rounded text-3xs bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 transition-colors"
-                    >
-                      Dismiss
-                    </button>
+                    {expanded && (
+                      <div className="px-2.5 pb-2 space-y-1.5 border-t border-white/[0.06] pt-1.5">
+                        {issue.detail && (
+                          <p className="text-2xs text-zinc-400 leading-snug whitespace-pre-wrap m-0">
+                            {issue.detail}
+                          </p>
+                        )}
+                        {issue.suggestion && (
+                          <p className="text-2xs text-emerald-300/90 leading-snug whitespace-pre-wrap m-0">
+                            Fix: {issue.suggestion}
+                          </p>
+                        )}
+                        <div className="flex items-center gap-1.5 pt-0.5">
+                          <button
+                            type="button"
+                            tabIndex={-1}
+                            disabled={fixingIndex !== null}
+                            onClick={() => handleFixIssue(issue, index)}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-3xs font-semibold bg-emerald-600/80 hover:bg-emerald-500 text-white transition-colors disabled:opacity-50"
+                          >
+                            <Icon icon={Sparkles} size="xs" />
+                            {fixingIndex === index ? "Fixing…" : "Fix with AI"}
+                          </button>
+                          <button
+                            type="button"
+                            tabIndex={-1}
+                            onClick={() => dismissFinding(index)}
+                            className="px-2 py-0.5 rounded text-3xs bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 transition-colors"
+                          >
+                            Dismiss
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                </div>
-              )}
+                );
+              })}
             </div>
           </div>,
           node,
-          `finding-${index}`
+          `finding-line-${thread.line}`
         );
       })}
 
