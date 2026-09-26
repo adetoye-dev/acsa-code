@@ -3619,9 +3619,66 @@ fn local_adapter_stop(state: State<'_, LocalAdapterState>) -> Result<(), String>
 ///
 /// `@tauri-apps/plugin-process` exists for this, and pulling in a whole plugin —
 /// plus a capability entry — for one call is not worth it, so it is a command.
+///
+/// It deliberately does not just call `app_handle.restart()`. Tauri relaunches
+/// by spawning the bundle's *inner* executable (`Contents/MacOS/acsa-code`) with
+/// `Command::new`, and on macOS a GUI app started that way is never registered
+/// with LaunchServices: it runs with no window and no Dock item, which from the
+/// outside is indistinguishable from a launch that failed. Measured on 0.2.17 —
+/// "Restart now" left a live process, no windows in the accessibility tree, and
+/// the app only came back when it was launched from the bundle again.
+///
+/// `open -n` asks LaunchServices to start the bundle instead, which is what
+/// produces a real window. The `-n` is load-bearing: without it `open` would just
+/// activate the instance that is on its way out, and nothing would relaunch. The
+/// exit status is checked, so a bundle path that does not work falls back to
+/// Tauri's own restart rather than quitting into nothing.
 #[tauri::command]
 fn app_restart(app_handle: tauri::AppHandle) {
+    if let Some(bundle) = app_handle
+        .path()
+        .resource_dir()
+        .ok()
+        .as_deref()
+        .and_then(bundle_from_resource_dir)
+    {
+        let bundle = bundle.to_path_buf();
+        if launch_bundle(&bundle) {
+            app_handle.exit(0);
+            return;
+        }
+    }
+
     app_handle.restart();
+}
+
+/// The bundle a resource directory belongs to: `<bundle>.app/Contents/Resources`
+/// is the shipped layout, `target/debug` is a development one, and anything that
+/// is not a `.app` has no bundle to relaunch through LaunchServices.
+fn bundle_from_resource_dir(resources: &Path) -> Option<&Path> {
+    let bundle = resources.parent()?.parent()?;
+    if bundle.extension().map(|extension| extension == "app").unwrap_or(false) {
+        Some(bundle)
+    } else {
+        None
+    }
+}
+
+/// Start the bundle through LaunchServices. Returns whether `open` accepted it.
+#[cfg(target_os = "macos")]
+fn launch_bundle(bundle: &Path) -> bool {
+    Command::new("open")
+        .arg("-n")
+        .arg(bundle)
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// Nothing to launch into: only macOS spawns the inner executable directly.
+#[cfg(not(target_os = "macos"))]
+fn launch_bundle(_bundle: &Path) -> bool {
+    false
 }
 
 /// End the session entirely.
@@ -3938,6 +3995,35 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// The relaunch derives the bundle from the resource directory, and a wrong
+    /// derivation has two bad endings: `open` on a path that is not there, or
+    /// quitting into nothing because the exit status was never checked. Pinning
+    /// the derivation is what keeps that out of a release — the command itself
+    /// cannot be exercised end to end until a *later* build is the one running
+    /// when an update is installed.
+    #[test]
+    fn the_bundle_is_derived_from_the_shipped_resource_layout() {
+        assert_eq!(
+            bundle_from_resource_dir(Path::new("/Applications/ACSA Code.app/Contents/Resources")),
+            Some(Path::new("/Applications/ACSA Code.app"))
+        );
+        // A name that merely contains a dot is not a bundle.
+        assert_eq!(
+            bundle_from_resource_dir(Path::new("/Applications/Sierra.app.store/Contents/Resources")),
+            None
+        );
+    }
+
+    #[test]
+    fn a_development_layout_has_no_bundle_to_relaunch_through() {
+        // `tauri dev` runs the binary out of `target/`, where there is no `.app`
+        // around it, so the command must fall back to Tauri's own restart — and
+        // it must not panic on a path with no parents at all.
+        assert_eq!(bundle_from_resource_dir(Path::new("/repo/.tauri/target/debug")), None);
+        assert_eq!(bundle_from_resource_dir(Path::new("/Resources")), None);
+        assert_eq!(bundle_from_resource_dir(Path::new("")), None);
     }
 
     #[test]
