@@ -94,6 +94,15 @@ type Selection =
   | { kind: "change"; file: ChangedGitFile; staged: boolean }
   | { kind: "commit"; commit: GitCommit };
 
+/**
+ * What a commit's file is being compared against.
+ *
+ * `commit` is the commit's own change — its parent against it, what the row in the
+ * graph was about. `since` is that commit against the file on disk now, which is how
+ * you find out whether an old commit is still the state of play for a file.
+ */
+type DiffScope = "commit" | "since";
+
 /** `git status --porcelain` letters, in the colours people expect for them. */
 function statusTone(status: string): string {
   switch (status) {
@@ -154,8 +163,16 @@ const shortDate = (iso: string) => {
  * HEAD against the index when staged and the index against the file when not.
  * The pane reads a commit *or* a change, so it has to name which.
  */
-function diffScopeLabel(selection: Selection | null, detail: { commit: GitCommit } | null): string {
-  if (selection?.kind === "commit") return `${detail?.commit.short ?? ""} — parent vs commit`;
+function diffScopeLabel(
+  selection: Selection | null,
+  detail: { commit: GitCommit } | null,
+  scope: DiffScope
+): string {
+  if (selection?.kind === "commit") {
+    return scope === "since"
+      ? `${detail?.commit.short ?? ""} — commit vs working tree`
+      : `${detail?.commit.short ?? ""} — parent vs commit`;
+  }
   if (selection?.kind === "change" && selection.staged) return "staged — HEAD vs index";
   return "unstaged — index vs working tree";
 }
@@ -232,6 +249,8 @@ export function GitDashboard({
   const [selected, setSelected] = useState<Selection | null>(null);
   const [commitDetail, setCommitDetail] = useState<{ commit: GitCommit; files: GitCommitFile[] } | null>(null);
   const [diff, setDiff] = useState<{ path: string; original: string; modified: string } | null>(null);
+  /** What an open commit's diff is compared against; the change view has its own. */
+  const [diffScope, setDiffScope] = useState<DiffScope>("commit");
   const [isDiffLoading, setIsDiffLoading] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState<ChangedGitFile | null>(null);
   const [commits, setCommits] = useState<GitCommit[]>([]);
@@ -432,11 +451,27 @@ export function GitDashboard({
    * with three files and no diff on screen is the panel being coy about the one
    * thing you opened it to read.
    */
+  /**
+   * The two sides of one file in an open commit.
+   *
+   * Both scopes go through here so the diff shown for the first file of a commit
+   * and for the file you click later cannot disagree about what they are comparing.
+   */
+  const commitFileSides = useCallback(
+    (sha: string, file: GitCommitFile, scope: DiffScope) =>
+      scope === "since"
+        ? call("diff-since", { ref: sha, filePath: file.path })
+        : call("commit-file", { sha, filePath: file.path, fromPath: file.fromPath }),
+    [call]
+  );
+
   const openCommit = useCallback(
     async (commit: GitCommit) => {
       setSelected({ kind: "commit", commit });
       setCommitDetail(null);
       setDiff(null);
+      // A commit opens as its own change; the scope is a question you ask after.
+      setDiffScope("commit");
       setIsDiffLoading(true);
       const seq = ++requestSeq.current;
 
@@ -454,31 +489,22 @@ export function GitDashboard({
 
       const first = files[0];
       if (first) {
-        const sides = await call("commit-file", {
-          sha: commit.sha,
-          filePath: first.path,
-          fromPath: first.fromPath,
-        });
+        const sides = await commitFileSides(commit.sha, first, "commit");
         if (seq !== requestSeq.current) return;
         setDiff({ path: first.path, original: sides.originalContent ?? "", modified: sides.modifiedContent ?? "" });
       }
       setIsDiffLoading(false);
     },
-    [call]
+    [call, commitFileSides]
   );
 
   /** One file inside the commit that is open. */
   const openCommitFile = useCallback(
-    async (file: GitCommitFile) => {
+    async (file: GitCommitFile, scope: DiffScope = diffScope) => {
       if (selected?.kind !== "commit") return;
       setIsDiffLoading(true);
       const seq = ++requestSeq.current;
-      const sides = await call("commit-file", {
-        sha: selected.commit.sha,
-        filePath: file.path,
-        // A rename's previous side lives under its old name.
-        fromPath: file.fromPath,
-      });
+      const sides = await commitFileSides(selected.commit.sha, file, scope);
       if (seq !== requestSeq.current) return;
       setDiff({
         path: file.path,
@@ -487,7 +513,24 @@ export function GitDashboard({
       });
       setIsDiffLoading(false);
     },
-    [call, selected]
+    [commitFileSides, diffScope, selected]
+  );
+
+  /**
+   * Flip what the open commit is compared against, and re-read the file on screen.
+   *
+   * The new scope is passed straight through rather than read back from state: the
+   * re-read happens in the same tick, when `diffScope` still holds the old value,
+   * and asking for the diff you just asked for is the one thing a toggle must not do.
+   */
+  const changeDiffScope = useCallback(
+    async (next: DiffScope) => {
+      setDiffScope(next);
+      if (selected?.kind !== "commit" || !commitDetail || !diff) return;
+      const open = commitDetail.files.find((file) => file.path === diff.path);
+      if (open) await openCommitFile(open, next);
+    },
+    [commitDetail, diff, openCommitFile, selected]
   );
 
   /**
@@ -827,8 +870,27 @@ export function GitDashboard({
                   <Icon icon={FileCode} className="w-3.5 h-3.5 shrink-0 text-zinc-400" />
                   <span className="truncate font-mono text-zinc-200">{diff.path}</span>
                   <span className="shrink-0 rounded-full bg-white/5 px-2 py-0.5 text-4xs text-zinc-400">
-                    {diffScopeLabel(selected, commitDetail)}
+                    {diffScopeLabel(selected, commitDetail, diffScope)}
                   </span>
+                  {/* A commit's own change, or that commit against the file on disk:
+                      the second is how you find out whether an old commit is still
+                      the state of play. Only a commit has two scopes — a working-tree
+                      change has exactly one thing it can be compared with. */}
+                  {selected?.kind === "commit" && commitDetail && (
+                    <button
+                      type="button"
+                      data-testid="git-compare-scope"
+                      onClick={() => void changeDiffScope(diffScope === "since" ? "commit" : "since")}
+                      title={
+                        diffScope === "since"
+                          ? "Show this commit's own change"
+                          : "Show what has changed since this commit"
+                      }
+                      className="shrink-0 rounded-md px-1.5 py-0.5 text-4xs text-zinc-500 transition-colors hover:bg-white/5 hover:text-zinc-200"
+                    >
+                      {diffScope === "since" ? "Back to the commit" : "Compare with working tree"}
+                    </button>
+                  )}
                   {isDiffLoading && <span className="shrink-0 text-4xs text-zinc-500">loading…</span>}
                   {/* The same actions the row offers, where you are actually
                       looking at the diff you are deciding about. */}
@@ -881,12 +943,23 @@ export function GitDashboard({
                     swapping the editor out for it would dispose models the diff
                     widget is still holding.
                   */}
-                  {diff.original === "" && diff.modified === "" && (
+                  {/*
+                    Identical sides mean there is nothing to draw — for a binary file
+                    that is "both sides are empty", and for a comparison against the
+                    working tree it means the file has not moved since that commit.
+                  */}
+                  {diff.original === diff.modified && (
                     <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
                       <PaneMessage
                         icon={FileCode}
-                        headline="Nothing to compare"
-                        detail="Both sides are empty — the file is binary, or it is empty."
+                        headline={
+                          diffScope === "since" ? "No changes since this commit" : "Nothing to compare"
+                        }
+                        detail={
+                          diffScope === "since"
+                            ? `${diff.path} on disk matches the commit.`
+                            : "Both sides are empty — the file is binary, or it is empty."
+                        }
                       />
                     </div>
                   )}

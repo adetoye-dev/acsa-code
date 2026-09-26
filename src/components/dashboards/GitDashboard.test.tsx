@@ -23,6 +23,14 @@ const engine = vi.hoisted(() => ({
     operation: "",
   },
   diff: { success: true, originalContent: "before", modifiedContent: "after" },
+  /** A commit's own change, and the same file against the file on disk now. */
+  commitInfo: {
+    success: true,
+    commit: { sha: "c".repeat(40), short: "ccccccc", author: "Ada", date: new Date().toISOString(), subject: "a commit" },
+    files: [{ path: "src/a.ts", fromPath: "", status: "M", additions: 1, deletions: 1 }],
+  },
+  commitFile: { success: true, originalContent: "parent", modifiedContent: "in the commit" },
+  sinceDiff: { success: true, originalContent: "in the commit", modifiedContent: "on disk" },
   commit: { success: true, message: "committed" },
 }));
 
@@ -38,11 +46,17 @@ vi.mock("../../services/gitClient", () => ({
         ? { ...engine.status, ...(engine.overrides.status ?? {}) }
         : action === "diff-file"
           ? engine.diff
-          : action === "commit"
-            ? engine.commit
-            : action === "log"
-              ? { success: true, commits: [], refs: [], head: "", ...(engine.overrides.log ?? {}) }
-              : { success: true, output: `${action} ok` };
+          : action === "commit-info"
+            ? engine.commitInfo
+            : action === "commit-file"
+              ? engine.commitFile
+              : action === "diff-since"
+                ? engine.sinceDiff
+                : action === "commit"
+                    ? engine.commit
+                    : action === "log"
+                      ? { success: true, commits: [], refs: [], head: "", ...(engine.overrides.log ?? {}) }
+                      : { success: true, output: `${action} ok` };
     return new Response(JSON.stringify(body), {
       status: 200,
       headers: { "Content-Type": "application/json" },
@@ -303,5 +317,68 @@ describe("the source control page", () => {
     render(<GitDashboard projectCwd="/work/acsa-code" />);
     await screen.findByText("the only commit");
     expect(screen.queryByTestId("git-graph-load-more")).toBeNull();
+  });
+
+  it("compares an open commit against the file on disk when asked", async () => {
+    engine.overrides.log = {
+      commits: [
+        {
+          sha: "c".repeat(40),
+          short: "ccccccc",
+          parents: [],
+          author: "Ada",
+          date: new Date().toISOString(),
+          subject: "a commit",
+        },
+      ],
+      refs: [],
+      head: "c".repeat(40),
+    };
+    render(<GitDashboard projectCwd="/work/acsa-code" />);
+
+    fireEvent.click(await screen.findByTestId("git-graph-row-ccccccc"));
+    // Opening a commit shows its own change: parent against commit.
+    await waitFor(() => expect(screen.getByTestId("diff-sides").textContent).toBe("parent → in the commit"));
+    expect(screen.getByText("ccccccc — parent vs commit")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("git-compare-scope"));
+
+    // Now it is that commit against the working tree, and the engine was asked for
+    // exactly that rather than for the commit's own change again.
+    await waitFor(() => expect(screen.getByTestId("diff-sides").textContent).toBe("in the commit → on disk"));
+    expect(screen.getByText("ccccccc — commit vs working tree")).toBeTruthy();
+    const ask = engine.payloads.filter((call) => call.action === "diff-since").at(-1);
+    expect(ask?.body.ref).toBe("c".repeat(40));
+    expect(ask?.body.filePath).toBe("src/a.ts");
+
+    // And back again.
+    fireEvent.click(screen.getByTestId("git-compare-scope"));
+    await waitFor(() => expect(screen.getByTestId("diff-sides").textContent).toBe("parent → in the commit"));
+  });
+
+  it("says when nothing has changed since the commit instead of drawing an empty diff", async () => {
+    engine.overrides.log = {
+      commits: [
+        {
+          sha: "c".repeat(40),
+          short: "ccccccc",
+          parents: [],
+          author: "Ada",
+          date: new Date().toISOString(),
+          subject: "a commit",
+        },
+      ],
+      refs: [],
+      head: "c".repeat(40),
+    };
+    engine.sinceDiff = { success: true, originalContent: "same", modifiedContent: "same" };
+    render(<GitDashboard projectCwd="/work/acsa-code" />);
+
+    fireEvent.click(await screen.findByTestId("git-graph-row-ccccccc"));
+    await screen.findByTestId("diff-sides");
+    fireEvent.click(screen.getByTestId("git-compare-scope"));
+
+    expect(await screen.findByText("No changes since this commit")).toBeTruthy();
+    expect(screen.getByText(/matches the commit/)).toBeTruthy();
   });
 });
