@@ -20,6 +20,7 @@ Reached as `acsa-engine gh overview <json>`.
 
 from __future__ import annotations
 
+import re
 import json
 import os
 import shutil
@@ -31,6 +32,21 @@ from pathlib import Path
 # These lists are network-bound and can take seconds on a large repository, so the
 # git module's local timeout would cut them off.
 GH_TIMEOUT = 30
+
+# A failed matrix build's log is fetched before it can be trimmed, so this one
+# waits longer than a list does.
+LOG_TIMEOUT = 60
+
+# The tail kept by default, and the range a caller may ask for: enough to hold the
+# error and the lines that explain it, not so much that the pane becomes the log.
+DEFAULT_TAIL = 120
+MIN_TAIL = 20
+MAX_TAIL = 500
+
+# `gh run view --log` prints one line per log line as
+# `job<TAB>step<TAB><timestamp> <text>`; the timestamp is noise in a pane that
+# already says when the run happened.
+LOG_LINE_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z ?")
 
 # Only the fields the page draws. Asking for JSON is the whole point: the table
 # output is laid out for people, and parsing it means guessing at column widths.
@@ -297,6 +313,134 @@ def _gh_json(slug: str, args: list[str]) -> tuple[bool, list, str]:
     return True, parsed if isinstance(parsed, list) else [], ""
 
 
+def parse_log(text: str, tail: int = DEFAULT_TAIL) -> dict:
+    """The end of a `gh run view --log` dump, as plain lines.
+
+    Keeps the end on purpose: the reason a run is red is at the bottom, and a
+    matrix build can emit tens of thousands of lines above it. `dropped` is how
+    many were left behind, so the panel can say it is showing a tail rather than
+    let a person believe they are reading the whole thing.
+
+    The job and step of each line are collected rather than prefixed to every one:
+    they repeat for hundreds of lines, and what the header needs is the distinct
+    set — which job, which step.
+    """
+    jobs: list[str] = []
+    steps: list[str] = []
+    lines: list[str] = []
+
+    for raw in text.replace("\r\n", "\n").split("\n"):
+        line = raw.lstrip("\ufeff")
+        if not line.strip():
+            continue
+        # `split("\t", 2)` and not `split("\t")`: log text can itself contain tabs,
+        # and everything after the second one is the line, verbatim.
+        parts = line.split("\t", 2)
+        if len(parts) == 3:
+            job, step, rest = parts
+            if job and job not in jobs:
+                jobs.append(job)
+            # gh writes `UNKNOWN STEP` when it cannot map a line to one, which is
+            # not a step name and would read as a bug.
+            if step and step != "UNKNOWN STEP" and step not in steps:
+                steps.append(step)
+            line = rest
+        lines.append(LOG_LINE_TIMESTAMP.sub("", line, count=1).rstrip())
+
+    dropped = max(0, len(lines) - tail)
+    return {
+        "lines": lines[dropped:],
+        "dropped": dropped,
+        "jobs": jobs,
+        "steps": steps,
+    }
+
+
+def run_log(payload: dict) -> dict:
+    """Why a run is red: the tail of its failed steps' logs.
+
+    `--log-failed` prints nothing at all when no step failed — a cancelled run and
+    an expired log look the same — so an empty answer is reported as a fact about
+    the run rather than rendered as an empty log, which would read as "nothing went
+    wrong".
+    """
+    cwd = _cwd(payload)
+    run_id = str(payload.get("runId") or "").strip()
+    if not run_id.isdigit():
+        return {
+            "success": False,
+            "available": False,
+            "reason": "bad-run",
+            "detail": "That is not a workflow run id.",
+            "raw": "",
+            "lines": [],
+            "dropped": 0,
+            "jobs": [],
+            "steps": [],
+        }
+
+    if _gh_path() is None:
+        return _unavailable_log("not-installed", "The GitHub CLI (gh) is not installed.")
+
+    slug = parse_remote_slug(_remote_url(cwd))
+    if not slug:
+        return _unavailable_log(
+            "not-github", "This repository has no github.com remote."
+        )
+
+    ok, out, err = _run(
+        ["gh", "run", "view", run_id, "--log-failed", "--repo", slug],
+        cwd,
+        LOG_TIMEOUT,
+    )
+    if not ok:
+        reason = classify_error(err or out)
+        detail = {
+            "not-authenticated": "The GitHub CLI is not signed in.",
+            "offline": "GitHub could not be reached.",
+        }.get(reason, "GitHub could not be asked for that run's log.")
+        return _unavailable_log(reason, detail, (err or out).strip())
+
+    parsed = parse_log(out, _tail(payload))
+    if not parsed["lines"]:
+        return _unavailable_log(
+            "no-log",
+            "This run has no failed-step log — it may have been cancelled, or the "
+            "log may have expired (GitHub keeps them for 90 days).",
+        )
+    return {
+        "success": True,
+        "available": True,
+        "reason": None,
+        "detail": "",
+        "raw": "",
+        **parsed,
+    }
+
+
+def _tail(payload: dict) -> int:
+    """A nonsense tail is a shorter log, not a failed call."""
+    try:
+        wanted = int(payload.get("tail") or DEFAULT_TAIL)
+    except (TypeError, ValueError):
+        return DEFAULT_TAIL
+    return max(MIN_TAIL, min(MAX_TAIL, wanted))
+
+
+def _unavailable_log(reason: str, detail: str, raw: str = "") -> dict:
+    return {
+        "success": True,
+        "available": False,
+        "reason": reason,
+        "detail": detail,
+        "raw": raw,
+        "lines": [],
+        "dropped": 0,
+        "jobs": [],
+        "steps": [],
+    }
+
+
 def _unavailable(reason: str, detail: str, repo: str = "", raw: str = "") -> dict:
     """A state the panel can explain, not an error it has to interpret."""
     return {
@@ -383,7 +527,7 @@ def overview(payload: dict) -> dict:
     }
 
 
-COMMANDS = {"overview": overview}
+COMMANDS = {"overview": overview, "run-log": run_log}
 
 
 def run(argv: list[str]) -> int:

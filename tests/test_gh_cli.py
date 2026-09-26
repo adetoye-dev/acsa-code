@@ -280,6 +280,121 @@ class OverviewStateTests(unittest.TestCase):
         limits = [args.split("-L ")[1].split(" ")[0] for args in seen if " run " in f" {args} "]
         self.assertEqual(limits, ["1", "1", str(gh_cli.DEFAULT_LIMIT), str(gh_cli.MAX_LIMIT), "3"])
 
+# Two lines of `gh run view --log` output, copied from a real run: a tab between
+# the job, the step and the text, then a UTC timestamp on every line.
+REAL_LOG = (
+    "\ufeffmacos\tUNKNOWN STEP\t2026-09-26T01:16:35.6949930Z Current runner version: '2.337.0'\n"
+    "macos\tRun tests\t2026-09-26T01:16:36.1000000Z npm test\n"
+    "ubuntu-latest\tRun tests\t2026-09-26T01:16:37.0000000Z AssertionError: expected 1 to be 2\n"
+)
+
+
+class ParseLogTests(unittest.TestCase):
+    def test_job_step_and_timestamp_come_off_the_line(self):
+        parsed = gh_cli.parse_log(REAL_LOG)
+        self.assertEqual(
+            parsed["lines"],
+            [
+                "Current runner version: '2.337.0'",
+                "npm test",
+                "AssertionError: expected 1 to be 2",
+            ],
+        )
+        # Both runners and the step that failed, without repetition: a header wants
+        # the distinct set, not the prefix of every line.
+        self.assertEqual(parsed["jobs"], ["macos", "ubuntu-latest"])
+        self.assertEqual(parsed["steps"], ["Run tests"])
+        self.assertEqual(parsed["dropped"], 0)
+
+    def test_the_unknown_step_gh_prints_is_not_treated_as_a_step(self):
+        self.assertEqual(gh_cli.parse_log(REAL_LOG)["steps"], ["Run tests"])
+
+    def test_the_tail_is_kept_and_the_count_says_how_much_was_left_behind(self):
+        parsed = gh_cli.parse_log(REAL_LOG, tail=2)
+        self.assertEqual(
+            parsed["lines"], ["npm test", "AssertionError: expected 1 to be 2"]
+        )
+        self.assertEqual(parsed["dropped"], 1)
+
+    def test_a_line_that_is_not_a_log_line_is_kept_whole(self):
+        # Anything gh prints without the job/step columns is still worth showing.
+        parsed = gh_cli.parse_log("just a line\n\n")
+        self.assertEqual(parsed["lines"], ["just a line"])
+        self.assertEqual(parsed["jobs"], [])
+
+    def test_tabs_inside_the_log_text_survive(self):
+        line = "macos\tRun tests\t2026-09-26T01:16:36.1000000Z col1\tcol2\tcol3\n"
+        self.assertEqual(gh_cli.parse_log(line)["lines"], ["col1\tcol2\tcol3"])
+
+    def test_an_empty_log_is_no_lines(self):
+        parsed = gh_cli.parse_log("")
+        self.assertEqual(parsed["lines"], [])
+        self.assertEqual(parsed["dropped"], 0)
+
+
+class RunLogStateTests(unittest.TestCase):
+    """`--log-failed` prints nothing when nothing failed, which is a fact."""
+
+    def _run_log(self, gh_path="/usr/bin/gh", remote="https://github.com/acme/api.git", run=None):
+        payload = {"cwd": ".", "runId": 42}
+        with mock.patch.object(gh_cli, "_gh_path", lambda: gh_path), mock.patch.object(
+            gh_cli, "_remote_url", lambda cwd: remote
+        ), mock.patch.object(gh_cli, "_run", run or (lambda *a, **k: (True, REAL_LOG, ""))):
+            return gh_cli.run_log(payload)
+
+    def test_a_failed_log_comes_back_as_lines_and_a_summary(self):
+        result = self._run_log()
+        self.assertTrue(result["available"])
+        self.assertEqual(len(result["lines"]), 3)
+        self.assertEqual(result["jobs"], ["macos", "ubuntu-latest"])
+
+    def test_an_empty_answer_is_reported_rather_than_shown_as_an_empty_log(self):
+        result = self._run_log(run=lambda *a, **k: (True, "", ""))
+        self.assertTrue(result["success"])
+        self.assertFalse(result["available"])
+        self.assertEqual(result["reason"], "no-log")
+        self.assertIn("cancelled", result["detail"])
+
+    def test_a_nonsense_run_id_never_reaches_gh(self):
+        calls: list[list[str]] = []
+
+        def run(args, *rest, **kwargs):
+            calls.append(list(args))
+            return True, "", ""
+
+        payload = {"cwd": ".", "runId": "36207865178; rm -rf /"}
+        with mock.patch.object(gh_cli, "_gh_path", lambda: "/usr/bin/gh"), mock.patch.object(
+            gh_cli, "_remote_url", lambda cwd: "https://github.com/acme/api.git"
+        ), mock.patch.object(gh_cli, "_run", run):
+            result = gh_cli.run_log(payload)
+        self.assertFalse(result["success"])
+        self.assertEqual(result["reason"], "bad-run")
+        self.assertEqual(calls, [])
+
+    def test_signed_out_is_named(self):
+        result = self._run_log(
+            run=lambda *a, **k: (False, "", "To get started with GitHub CLI, please run:  gh auth login")
+        )
+        self.assertFalse(result["available"])
+        self.assertEqual(result["reason"], "not-authenticated")
+
+    def test_the_tail_is_clamped(self):
+        seen: list[int] = []
+
+        def run(args, *rest, **kwargs):
+            seen.append(1)
+            return True, "\n".join(f"macos\tRun tests\t2026-09-26T01:16:36.1000000Z line {i}" for i in range(50)), ""
+
+        for wanted in ("nonsense", 1, 9999):
+            payload = {"cwd": ".", "runId": "7", "tail": wanted}
+            with mock.patch.object(gh_cli, "_gh_path", lambda: "/usr/bin/gh"), mock.patch.object(
+                gh_cli, "_remote_url", lambda cwd: "https://github.com/acme/api.git"
+            ), mock.patch.object(gh_cli, "_run", run):
+                result = gh_cli.run_log(payload)
+            self.assertTrue(result["available"])
+            self.assertEqual(len(result["lines"]), min(50, max(gh_cli.MIN_TAIL, min(gh_cli.MAX_TAIL, wanted if isinstance(wanted, int) else gh_cli.DEFAULT_TAIL))))
+        self.assertEqual(len(seen), 3)
+
 
 if __name__ == "__main__":
     unittest.main()
