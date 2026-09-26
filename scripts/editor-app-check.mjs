@@ -274,9 +274,28 @@ const TAURI_STUB = `(() => {
       ],
       issues: [],
       errors: {},
+      // What gh run view --log-failed answers for the failing run above: a tail
+      // of a real failed build, with the counts the engine reports beside it.
+      runLog: {
+        success: true,
+        available: true,
+        reason: null,
+        detail: "",
+        raw: "",
+        lines: [
+          "warning: build failed, waiting for other jobs to finish...",
+          "error: could not compile the rust shell",
+          "##[error]Process completed with exit code 101.",
+        ],
+        dropped: 1814,
+        jobs: ["Verify (typecheck, tests, build)"],
+        steps: ["Rust shell compiles"],
+      },
     };
     // Where a click that hands a URL to the OS is recorded.
     window.__opens = [];
+    // Which runs had their failed log asked for.
+    window.__logAsks = [];
     // Every diff-file request, so a check can prove the page asked about both
     // names of a rename rather than only the new one.
     window.__diffAsks = [];
@@ -396,6 +415,12 @@ const TAURI_STUB = `(() => {
         }
         if (sub === "ollama") return JSON.stringify({ ok: true, data: { installed: false, running: false, models: [], recommendedModel: "qwen2.5-coder:3b", totalRamGb: 0 } });
         if (sub === "gh") {
+          const ghAction = list && list[0];
+          if (ghAction === "run-log") {
+            const payload = JSON.parse((list && list[1]) || "{}");
+            window.__logAsks.push(payload.runId);
+            return JSON.stringify({ ok: true, data: window.__gh.runLog });
+          }
           const state = window.__gh;
           return JSON.stringify({ ok: true, data: {
             success: true,
@@ -1390,8 +1415,20 @@ session.phase = "the repository landing state";
 // Nothing local is selected yet, so the pane answers the questions that are not
 // local: this branch's checks, the open pull requests, what is assigned to you.
 const readLanding = async (s) => s.eval(`(() => {
-  const runs = [...document.querySelectorAll('[data-testid^="gh-run-"]')];
-  const prs = [...document.querySelectorAll('[data-testid^="gh-pr-"]')];
+  // Rows by their exact id, not by prefix: this panel has grown other ids in the
+  // same namespace (a fetch button, the log), and counting those as rows made one
+  // check pass and another fail on the same fixture.
+  const byId = (prefix) => {
+    const nodes = [...document.querySelectorAll('[data-testid^="' + prefix + '"]')];
+    return nodes.filter((node) => {
+      const rest = (node.getAttribute("data-testid") || "").slice(prefix.length);
+      // Digits only, spelled out rather than as a regex: this runs inside a
+      // template literal, where a backslash in a pattern would be eaten.
+      return rest.length > 0 && rest.split("").every((ch) => ch >= "0" && ch <= "9");
+    });
+  };
+  const runs = byId("gh-run-");
+  const prs = byId("gh-pr-");
   const flat = (node) => (node.innerText || '').replace(/\\s+/g, ' ').trim();
   return {
     body: (document.body.innerText || '').slice(0, 6000),
@@ -1421,6 +1458,43 @@ check("open pull requests show their number, author and review state",
 check("the issues card stays hidden when nothing is assigned to you",
   !landing.body.includes("Assigned to you"), JSON.stringify(landing.body.slice(0, 120)));
 await session.screenshot("repository-landing");
+
+// Why a run is red, without a browser: the tail of its failed steps, in place.
+await session.eval(`document.querySelector('[data-testid="gh-why-36207824813"]').click()`);
+await sleep(700);
+const runLog = await session.eval(`(() => {
+  const lines = document.querySelector('[data-testid="gh-log-lines"]');
+  const panel = document.querySelector('[data-testid="gh-log-36207824813"]');
+  return {
+    text: lines ? lines.textContent : null,
+    panel: panel ? (panel.innerText || '').replace(/\\s+/g, ' ').trim() : null,
+    asked: window.__logAsks.slice(),
+    // Only the failing run offers one.
+    passingHasIt: Boolean(document.querySelector('[data-testid="gh-why-36207865178"]')),
+  };
+})()`);
+check("a failing run can be asked why, and only a failing one",
+  Boolean(runLog.text) && runLog.asked.includes(36207824813) && runLog.passingHasIt === false,
+  JSON.stringify({ asked: runLog.asked, passingHasIt: runLog.passingHasIt }));
+check("the log names the job and step, shows the failure, and admits it is a tail",
+  (runLog.text || "").includes("exit code 101") &&
+    (runLog.panel || "").includes("Rust shell compiles") &&
+    /Last 3 of 1817 lines/.test(runLog.panel || ""),
+  JSON.stringify(runLog.panel));
+await session.screenshot("repository-run-log");
+
+await session.eval(`(() => {
+  const panel = document.querySelector('[data-testid="gh-log-36207824813"]');
+  const close = [...(panel ? panel.querySelectorAll("button") : [])]
+    .find((node) => (node.textContent || "").trim() === "Close");
+  if (!close) throw new Error("no Close in the log panel");
+  close.click();
+  return true;
+})()`);
+await sleep(400);
+check("the log closes again",
+  (await session.eval(`!document.querySelector('[data-testid="gh-log-36207824813"]')`)) === true,
+  "the panel was still open");
 
 // A row has to be a way in, not a read-only list: the only proof is the URL the
 // OS was handed.
@@ -1582,7 +1656,37 @@ check("the note does not block the load — the surface arrives once the chunk d
   stalled.note === true && released > 0 && noteCleared === true && recoveredText.includes("a{"),
   `shown=${stalled.note} released=${released} cleared=${noteCleared} text=${JSON.stringify(recoveredText)}`);
 
-check("no uncaught errors in the console", session.errors.length === 0, session.errors.slice(0, 4).join(" || "));
+/**
+ * Monaco's own report that it lost track of itself, which StrictMode causes.
+ *
+ * React 18's StrictMode — on in development only — mounts every component twice,
+ * so Monaco builds an editor, has it disposed, and builds another, all in one tick.
+ * Its menu view items can then be refreshed after the scope they were built against
+ * is gone, which it reports as "AbstractContextKeyService has been disposed". It is
+ * Monaco reporting on Monaco, no interaction produces it, and the built bundle does
+ * not produce it at all — see the `--dist` run, where even this message is fatal.
+ *
+ * Kept as a list rather than a filter, and printed: a tolerated error that nobody
+ * can see is the same as no check. Note that Monaco's "TextModel got disposed
+ * before DiffEditorWidget model got reset" is *not* here — the app could cause that
+ * one, and did, until the diff surface owned its models.
+ */
+const MONACO_STRICT_MODE_REPORT = /AbstractContextKeyService has been disposed/;
+const devOnlyReports = SERVE_DIST
+  ? []
+  : session.errors.filter((error) => MONACO_STRICT_MODE_REPORT.test(error));
+const realErrors = session.errors.filter((error) => !devOnlyReports.includes(error));
+check(
+  "no uncaught errors in the console",
+  realErrors.length === 0,
+  realErrors.slice(0, 4).join(" || ")
+);
+if (devOnlyReports.length > 0) {
+  console.log(
+    `  note: ${devOnlyReports.length} Monaco-internal report(s), dev server only (StrictMode mounts twice):\n      ` +
+      devOnlyReports[0]
+  );
+}
 if (process.env.DUMP_CALLS) {
   console.log("\ncalls:", JSON.stringify(await session.eval("window.__engineCalls")));
   console.log("getIndexStatus ->", await session.eval(
