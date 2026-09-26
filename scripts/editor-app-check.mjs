@@ -222,13 +222,7 @@ const TAURI_STUB = `(() => {
     // What the engine's gh subcommand answers. The fixture is one real run and
     // one real pull request from this project's own history, and the available flag is
     // switchable so the panel's honest fallbacks are checked rather than assumed.
-    window.__gh = {
-      available: true,
-      reason: null,
-      detail: "",
-      raw: "",
-      repo: "adetoye-dev/asca-code",
-      runs: [
+    const ghRuns = [
         {
           id: 36207865178,
           title: "release: 0.2.17",
@@ -240,6 +234,7 @@ const TAURI_STUB = `(() => {
           createdAt: at(3),
           updatedAt: at(3),
           durationSeconds: 487,
+          sha: "913d48b1473857d8f3e09176479d1417b3ad9562",
           url: "https://github.com/adetoye-dev/asca-code/actions/runs/36207865178",
         },
         {
@@ -253,9 +248,30 @@ const TAURI_STUB = `(() => {
           createdAt: at(4),
           updatedAt: at(4),
           durationSeconds: 523,
+          sha: "2ff54a5ea2c9d0b93c58b1c5f0a5d8e4a5f2b7c9",
           url: "https://github.com/adetoye-dev/asca-code/actions/runs/36207824813",
         },
-      ],
+      ];
+    window.__gh = {
+      available: true,
+      reason: null,
+      detail: "",
+      raw: "",
+      repo: "adetoye-dev/asca-code",
+      runs: ghRuns,
+      // The branch's own numbers, over the same two runs: one passed, one failed,
+      // so a rate of 50% has something to be measured against.
+      summary: {
+        branch: "dev",
+        total: 2,
+        passed: 1,
+        failed: 1,
+        other: 0,
+        passRate: 0.5,
+        averageDurationSeconds: 505,
+        latest: ghRuns[0],
+        history: [ghRuns[1], ghRuns[0]],
+      },
       pullRequests: [
         {
           number: 3,
@@ -430,6 +446,7 @@ const TAURI_STUB = `(() => {
             raw: state.raw,
             repo: state.repo,
             runs: state.available ? state.runs : [],
+            summary: state.summary,
             pullRequests: state.available ? state.pullRequests : [],
             issues: state.available ? state.issues : [],
             errors: state.errors || {},
@@ -1457,6 +1474,59 @@ check("open pull requests show their number, author and review state",
   JSON.stringify(landing.prs));
 check("the issues card stays hidden when nothing is assigned to you",
   !landing.body.includes("Assigned to you"), JSON.stringify(landing.body.slice(0, 120)));
+
+// The status card: the aggregates a list of runs cannot show.
+const stats = await session.eval(`(() => {
+  const card = document.querySelector('[data-testid="gh-run-stats"]');
+  const bars = document.querySelector('[data-testid="gh-history-bars"]');
+  return {
+    text: card ? (card.innerText || '').replace(/\\s+/g, ' ').trim() : null,
+    bars: bars ? bars.children.length : 0,
+    // A bar chart whose bars have no size is a bar chart nobody can read, and a
+    // screenshot is not precise enough to say — so the geometry is measured.
+    barBoxes: bars
+      ? [...bars.children].map((node) => {
+          const box = node.getBoundingClientRect();
+          return { w: Math.round(box.width), h: Math.round(box.height), cls: node.className };
+        })
+      : [],
+  };
+})()`);
+check("the landing state leads with the branch's CI as a status card",
+  (stats.text || "").includes("Successful") &&
+    (stats.text || "").includes("CI on dev") &&
+    ["Latest", "Duration", "Trigger", "Commit"].every((label) =>
+      (stats.text || "").includes(label.toUpperCase())
+    ),
+  JSON.stringify(stats.text));
+check("the card carries the aggregates and one bar per run",
+  (stats.text || "").includes("8m 25s") && // the average
+    (stats.text || "").includes("50%") && // pass
+    // The commit column is the run's own commit, not a dash.
+    (stats.text || "").includes("913d48b") &&
+    stats.bars === 2,
+  JSON.stringify(stats));
+check("every history bar is drawn, and sized by how long its run took",
+  stats.barBoxes.length === 2 &&
+    stats.barBoxes.every((box) => box.w > 0 && box.h > 0) &&
+    // The stub's history runs oldest first: the 8m43s CI failure, then the 8m7s
+    // release. The taller bar is the one that took longer.
+    stats.barBoxes[0].h > stats.barBoxes[1].h,
+  JSON.stringify(stats.barBoxes));
+
+// A bar is a way to its run, like every other row here.
+await session.eval(`(() => {
+  const bars = document.querySelector('[data-testid="gh-history-bars"]');
+  const last = bars.children[bars.children.length - 1];
+  last.click();
+  return true;
+})()`);
+await sleep(300);
+check("clicking a history bar opens the run it stands for",
+  (await session.eval(`window.__opens.slice(-1)[0] || ""`)) ===
+    "https://github.com/adetoye-dev/asca-code/actions/runs/36207865178",
+  JSON.stringify(await session.eval(`window.__opens.slice(-2)`)));
+
 await session.screenshot("repository-landing");
 
 // Why a run is red, without a browser: the tail of its failed steps, in place.
