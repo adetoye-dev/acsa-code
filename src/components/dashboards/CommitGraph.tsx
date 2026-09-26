@@ -198,6 +198,8 @@ export function CommitGraph({
   selectedSha,
   onSelectCommit,
   onRefresh,
+  hasMore,
+  onLoadMore,
 }: {
   commits: GitCommit[];
   refs: GitRef[];
@@ -209,6 +211,9 @@ export function CommitGraph({
   /** Picking a commit is what opens it in the pane beside this one. */
   onSelectCommit?: (commit: GitCommit) => void;
   onRefresh?: () => void;
+  /** The window was filled, so the history may hold more than it is showing. */
+  hasMore?: boolean;
+  onLoadMore?: () => void;
 }) {
   const [isOpen, setIsOpen] = useState(true);
   const { rows, laneCount } = layoutGraph(commits, refs, head);
@@ -262,15 +267,30 @@ export function CommitGraph({
               </p>
             )
           ) : (
-            rows.map((row) => (
-              <GraphRow
-                key={row.commit.sha}
-                row={row}
-                refsWidth={refsWidth}
-                isSelected={row.commit.sha === selectedSha}
-                onSelect={onSelectCommit}
-              />
-            ))
+            <>
+              {rows.map((row) => (
+                <GraphRow
+                  key={row.commit.sha}
+                  row={row}
+                  refsWidth={refsWidth}
+                  isSelected={row.commit.sha === selectedSha}
+                  onSelect={onSelectCommit}
+                />
+              ))}
+              {/* At the end of the list, where scrolling ends: the history is
+                  windowed, and a window that is full may be hiding older commits. */}
+              {hasMore && (
+                <button
+                  type="button"
+                  onClick={onLoadMore}
+                  disabled={isLoading}
+                  data-testid="git-graph-load-more"
+                  className="mt-1 w-full px-3 py-2 text-left text-4xs text-zinc-500 transition-colors hover:bg-white/5 hover:text-zinc-200 disabled:opacity-40"
+                >
+                  {isLoading ? "Reading the history…" : "Load more commits"}
+                </button>
+              )}
+            </>
           )}
         </div>
       )}

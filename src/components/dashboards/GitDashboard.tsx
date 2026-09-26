@@ -114,6 +114,15 @@ function statusTone(status: string): string {
   }
 }
 
+/**
+ * How many commits one read of the history asks for.
+ *
+ * Sixty fills the pane at any window size and is cheap for git to read; the graph
+ * offers to read more when the window comes back full, rather than guessing a size
+ * that suits every repository.
+ */
+const HISTORY_PAGE = 60;
+
 /** How a half-finished operation reads above the changes it is about. */
 const OPERATION_LABELS: Record<string, string> = {
   merge: "Merging",
@@ -231,6 +240,8 @@ export function GitDashboard({
   const [isLogLoading, setIsLogLoading] = useState(true);
   /** A history that could not be read is not an empty history, and says so. */
   const [logError, setLogError] = useState<string | null>(null);
+  /** How much of the history is being read. Sixty fills the pane; "load more" grows it. */
+  const [logLimit, setLogLimit] = useState(HISTORY_PAGE);
   const requestSeq = useRef(0);
   /** A pending re-read of the remote half after a push; cleared on unmount. */
   const catchUpTimer = useRef<number | null>(null);
@@ -283,14 +294,14 @@ export function GitDashboard({
    */
   const fetchLog = useCallback(async () => {
     setIsLogLoading(true);
-    const data = await call("log", { limit: 60 });
+    const data = await call("log", { limit: logLimit });
     const failed = data.success === false;
     setLogError(failed ? data.error || "The history could not be read." : null);
     setCommits(failed ? [] : data.commits || []);
     setRefs(failed ? [] : data.refs || []);
     setHead(failed ? "" : data.head || "");
     setIsLogLoading(false);
-  }, [call]);
+  }, [call, logLimit]);
 
   useEffect(() => {
     // A different repository: nothing from the old one may linger, down to the
@@ -729,6 +740,8 @@ export function GitDashboard({
           selectedSha={selected?.kind === "commit" ? selected.commit.sha : undefined}
           onSelectCommit={(commit) => void openCommit(commit)}
           onRefresh={() => void fetchLog()}
+          hasMore={commits.length >= logLimit}
+          onLoadMore={() => setLogLimit((limit) => limit + HISTORY_PAGE)}
         />
       </div>
 

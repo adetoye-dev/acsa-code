@@ -40,7 +40,9 @@ vi.mock("../../services/gitClient", () => ({
           ? engine.diff
           : action === "commit"
             ? engine.commit
-            : { success: true, output: `${action} ok` };
+            : action === "log"
+              ? { success: true, commits: [], refs: [], head: "", ...(engine.overrides.log ?? {}) }
+              : { success: true, output: `${action} ok` };
     return new Response(JSON.stringify(body), {
       status: 200,
       headers: { "Content-Type": "application/json" },
@@ -257,5 +259,49 @@ describe("the source control page", () => {
       expect(ask?.body.staged).toBe(true);
     });
     expect(screen.getByTestId("diff-path").textContent).toBe("src/b.ts");
+  });
+
+  it("offers more history when the window comes back full", async () => {
+    // Exactly as many commits as one read asks for: the window is full, so there
+    // may be older ones behind it.
+    const many = Array.from({ length: 60 }, (_, index) => ({
+      sha: `${index}`.padStart(40, "a"),
+      short: `c${index}`,
+      parents: [],
+      author: "Ada",
+      date: new Date().toISOString(),
+      subject: `commit ${index}`,
+    }));
+    engine.overrides.log = { commits: many, refs: [], head: many[0].sha };
+    render(<GitDashboard projectCwd="/work/acsa-code" />);
+
+    const more = await screen.findByTestId("git-graph-load-more");
+    engine.payloads = [];
+    fireEvent.click(more);
+    // The next read asks for a bigger window, rather than re-reading the same one.
+    await waitFor(() => {
+      const ask = engine.payloads.filter((call) => call.action === "log").at(-1);
+      expect(ask?.body.limit).toBe(120);
+    });
+  });
+
+  it("hides it when the history is shorter than the window", async () => {
+    engine.overrides.log = {
+      commits: [
+        {
+          sha: "a".repeat(40),
+          short: "aaaaaaa",
+          parents: [],
+          author: "Ada",
+          date: new Date().toISOString(),
+          subject: "the only commit",
+        },
+      ],
+      refs: [],
+      head: "a".repeat(40),
+    };
+    render(<GitDashboard projectCwd="/work/acsa-code" />);
+    await screen.findByText("the only commit");
+    expect(screen.queryByTestId("git-graph-load-more")).toBeNull();
   });
 });
