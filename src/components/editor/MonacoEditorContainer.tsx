@@ -288,6 +288,15 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
   const reviewZoneIdsRef = useRef<Map<number, string>>(new Map());
   const reviewZoneNodesRef = useRef<Map<number, HTMLDivElement>>(new Map());
   const reviewZoneHeightsRef = useRef<Map<number, number>>(new Map());
+  /**
+   * The height each zone is actually applied with.
+   *
+   * Kept apart from the measured heights so a pass that changes nothing can leave
+   * Monaco's DOM alone. Re-adding a zone replaces its node — and a node replaced
+   * between a mousedown and its mouseup never receives the click, which is how the
+   * buttons on a card came to work sometimes and not others.
+   */
+  const reviewZoneAppliedHeightsRef = useRef<Map<number, number>>(new Map());
   /** Measured height of a collapsed thread, reused for still-unmeasured ones. */
   const collapsedZoneHeightRef = useRef<number | null>(null);
   const [zoneEpoch, setZoneEpoch] = useState(0);
@@ -316,6 +325,7 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
     reviewZoneIdsRef.current.clear();
     reviewZoneNodesRef.current.clear();
     reviewZoneHeightsRef.current.clear();
+    reviewZoneAppliedHeightsRef.current.clear();
   }, []);
 
   /** Drops all review state (findings, squiggles, inline threads). */
@@ -658,11 +668,11 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
         if (!liveLines.has(line)) {
           reviewZoneNodesRef.current.delete(line);
           reviewZoneHeightsRef.current.delete(line);
+          reviewZoneAppliedHeightsRef.current.delete(line);
         }
       });
 
       findingThreads.forEach((thread) => {
-        const node = ensureReviewZoneNode(thread.line);
         const stored = reviewZoneHeightsRef.current.get(thread.line);
         const height = Math.min(
           stored && stored <= MAX_REVIEW_CARD_HEIGHT
@@ -670,12 +680,28 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
             : estimateThreadHeight(thread.items),
           MAX_REVIEW_CARD_HEIGHT
         );
+        const existingId = reviewZoneIdsRef.current.get(thread.line);
+        if (
+          existingId !== undefined &&
+          reviewZoneAppliedHeightsRef.current.get(thread.line) === height
+        ) {
+          // Nothing to say: leaving the zone alone keeps its DOM node, and with it
+          // any click that is in flight over it.
+          return;
+        }
+        if (existingId !== undefined) {
+          try {
+            accessor.removeZone(existingId);
+          } catch {}
+        }
+        const node = ensureReviewZoneNode(thread.line);
         const zoneId = accessor.addZone({
           afterLineNumber: Math.min(Math.max(1, thread.line), lineCount),
           heightInPx: height,
           domNode: node,
         });
         reviewZoneIdsRef.current.set(thread.line, zoneId);
+        reviewZoneAppliedHeightsRef.current.set(thread.line, height);
       });
 
     });
