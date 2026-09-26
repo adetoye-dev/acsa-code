@@ -82,6 +82,69 @@ const TAURI_STUB = `(() => {
     const sha = (letter) => letter.repeat(40);
     const at = (hoursAgo) => new Date(Date.now() - hoursAgo * 3600e3).toISOString();
     const changed = (path, indexStatus, workTreeStatus, isStaged) => ({ path, indexStatus, workTreeStatus, isStaged });
+    // The files each commit touched. The merge carries three — one of them binary,
+    // where git reports a dash instead of counts — so the list has to render a
+    // row with no numbers rather than a misleading zero.
+    const commitFiles = {
+      [sha("a")]: [
+        { path: "src/components/layout/Sidebar.tsx", status: "M", additions: 12, deletions: 4 },
+        { path: "src/services/gitGraph.ts", status: "A", additions: 40, deletions: 0 },
+        { path: "public/hero.png", status: "A", additions: null, deletions: null },
+      ],
+      [sha("b")]: [
+        { path: "src/components/layout/IdeLayout.tsx", status: "M", additions: 3, deletions: 3 },
+      ],
+      [sha("c")]: [
+        { path: "src/components/dashboards/CommitGraph.tsx", status: "A", additions: 120, deletions: 0 },
+        { path: "src/services/gitGraph.ts", status: "A", additions: 60, deletions: 0 },
+      ],
+      [sha("d")]: [
+        { path: "core-engine/git_cli.py", status: "M", additions: 80, deletions: 12 },
+      ],
+      [sha("e")]: [
+        { path: "README.md", status: "A", additions: 5, deletions: 0 },
+      ],
+    };
+    // The two sides of one file inside a commit, keyed by sha then path. The
+    // Sidebar rewrite is the merge's first file, so it is the one that opens
+    // with no click.
+    const commitSides = {
+      [sha("a")]: {
+        "src/components/layout/Sidebar.tsx": [
+          "export const railWidth = 64;\\n",
+          "export const railWidth = 72;\\nexport const railIconSize = 24;\\n",
+        ],
+        "src/services/gitGraph.ts": ["", "export const layoutGraph = () => [];\\n"],
+        "public/hero.png": ["", ""],
+      },
+      [sha("b")]: {
+        "src/components/layout/IdeLayout.tsx": [
+          "const railHighlight = 40;\\n",
+          "const railHighlight = 42;\\n",
+        ],
+      },
+      [sha("c")]: {
+        "src/components/dashboards/CommitGraph.tsx": ["", "export const CommitGraph = () => null;\\n"],
+        "src/services/gitGraph.ts": ["", "export interface GraphRow { lane: number }\\n"],
+      },
+      [sha("d")]: {
+        "core-engine/git_cli.py": ["def log_limit():\\n    return 20\\n", "def log_limit():\\n    return 60\\n"],
+      },
+      [sha("e")]: {
+        "README.md": ["", "# ACSA Code\\n"],
+      },
+    };
+    // The two sides of a working-tree change. The pane labels a staged change
+    // "HEAD vs index" and an unstaged one "index vs working tree", so both keys
+    // exist — a diff that does not match its label is worse than no diff.
+    const changeSides = {
+      "src/components/dashboards/GitDashboard.tsx": {
+        unstaged: ["export const unstaged = 1;\\n", "export const unstaged = 2;\\n"],
+      },
+      "src/components/layout/IdeLayout.tsx": {
+        staged: ["export const staged = 1;\\n", "export const staged = 2;\\n"],
+      },
+    };
     window.__git = {
       status: {
         isGit: true,
@@ -116,6 +179,32 @@ const TAURI_STUB = `(() => {
         ],
       },
     };
+    // Read back by the checks below, and by the stub's own commit-info /
+    // commit-file routing: the engine's real answers, kept in one place.
+    window.__git.commitFiles = commitFiles;
+    window.__git.commitSides = commitSides;
+    window.__git.commitInfo = (wanted) => {
+      const meta = window.__git.log.commits.find((c) => c.sha === wanted);
+      if (!meta) return { success: false, error: "no such commit" };
+      return {
+        success: true,
+        commit: { ...meta, body: "" },
+        files: window.__git.commitFiles[wanted] || [],
+      };
+    };
+    window.__git.commitFile = (wanted, path) => {
+      const sides = (window.__git.commitSides[wanted] || {})[path];
+      return sides
+        ? { success: true, originalContent: sides[0], modifiedContent: sides[1] }
+        : { success: true, originalContent: "", modifiedContent: "" };
+    };
+    window.__git.diffFile = (path, staged) => {
+      const sides = (window.__git.changeSides[path] || {})[staged ? "staged" : "unstaged"];
+      return sides
+        ? { success: true, originalContent: sides[0], modifiedContent: sides[1] }
+        : { success: true, originalContent: "", modifiedContent: "" };
+    };
+    window.__git.changeSides = changeSides;
   })();
   // What the engine answers for the two AI actions the editor can make. Set per
   // check, so a review or an inline edit is deterministic rather than a
@@ -167,6 +256,18 @@ const TAURI_STUB = `(() => {
           const action = list && list[0];
           if (action === "status") return JSON.stringify({ ok: true, data: window.__git.status });
           if (action === "log") return JSON.stringify({ ok: true, data: window.__git.log });
+          if (action === "commit-info") {
+            const payload = JSON.parse((list && list[1]) || "{}");
+            return JSON.stringify({ ok: true, data: window.__git.commitInfo(payload.sha) });
+          }
+          if (action === "commit-file") {
+            const payload = JSON.parse((list && list[1]) || "{}");
+            return JSON.stringify({ ok: true, data: window.__git.commitFile(payload.sha, payload.filePath) });
+          }
+          if (action === "diff-file") {
+            const payload = JSON.parse((list && list[1]) || "{}");
+            return JSON.stringify({ ok: true, data: window.__git.diffFile(payload.filePath, payload.staged) });
+          }
           return JSON.stringify({ ok: true, data: { success: true } });
         }
         if (sub === "indexer") return JSON.stringify({ ok: true, data: { indexed: true, totalSymbols: 0, profile: null } });
@@ -585,10 +686,38 @@ await session
     permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],
   })
   .catch(() => {});
-await session.send("Page.addScriptToEvaluateOnNewDocument", { source: TAURI_STUB });
+// Wrapped so a broken stub names itself. Without this a typo in the stub makes
+// every check below fail with "the empty-state panel never appeared", which
+// reads like an app bug rather than a harness one.
+await session.send("Page.addScriptToEvaluateOnNewDocument", {
+  source: `window.__stubError = null;\ntry {\n${TAURI_STUB}\n} catch (error) { window.__stubError = String((error && error.stack) || error); }`,
+});
 await session.send("Page.addScriptToEvaluateOnNewDocument", { source: FOCUS_LOGGER });
 await session.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
 await session.send("Page.navigate", { url: APP });
+
+/**
+ * The stub has to be installed before the app boots, or every check below fails
+ * with a symptom — "the empty-state panel never appeared" — instead of the
+ * cause. A syntax error in the injected source cannot be caught from inside it —
+ * nothing compiles, so no `try` runs — so it is caught here instead, named in
+ * seconds rather than three minutes into a wall of unrelated failures.
+ */
+const stubInstalled = async (s) => {
+  for (let i = 0; i < 24; i++) {
+    if ((await s.eval(`typeof window.__TAURI_INTERNALS__`).catch(() => "?")) === "object") return true;
+    await sleep(250);
+  }
+  return false;
+};
+if (!(await stubInstalled(session))) {
+  // Bail loudly: without the stub there is no app to check, and running on would
+  // report a dozen app bugs that are really this one harness bug.
+  console.error("editor-app-check: the Tauri stub never installed, so nothing below can run.");
+  console.error("  page errors:", JSON.stringify(session.errors.slice(-3), null, 2));
+  console.error("  page console:", JSON.stringify(session.console.slice(-3)));
+  process.exit(1);
+}
 
 // ── The empty editor, before anything is open ────────────────────────────
 // One panel, with the project's commands in it and the shortcuts under one
@@ -988,6 +1117,77 @@ check("its refs are badged onto the commits they point at",
   /dev/.test(repo.graphText ?? "") && /v0\.2\.0/.test(repo.graphText ?? "") && /main/.test(repo.graphText ?? ""),
   JSON.stringify((repo.graphText ?? "").slice(0, 120)));
 await session.screenshot("repository-page");
+
+// ── Opening a commit ─────────────────────────────────────────────────────
+// The graph was a list you could read but not open: the right pane only ever
+// showed a working-tree change. Clicking a commit has to fill that pane with the
+// commit — its header, the files it touched, and the first file's diff, because a
+// commit with files and no diff on screen is the panel being coy about the one
+// thing you opened it to read.
+await session.eval(`document.querySelector('[data-testid="git-graph-row-aaaaaaa"]').click()`);
+await sleep(1300);
+const commitView = await session.eval(`(() => {
+  const files = [...document.querySelectorAll('[data-testid^="git-commit-file-"]')];
+  return {
+    files: files.map((node) => ({
+      id: node.getAttribute('data-testid') || '',
+      text: (node.innerText || '').replace(/\\s+/g, ' ').trim(),
+    })),
+    body: (document.body.innerText || '').slice(0, 3000),
+    hasDiff: Boolean(document.querySelector('.monaco-editor .view-lines')),
+  };
+})()`);
+check("clicking a commit opens its files beside the history",
+  commitView.files.length === 3 && commitView.files.some((f) => f.id.endsWith("Sidebar.tsx")),
+  JSON.stringify(commitView.files.map((f) => f.id)));
+check("the commit header names its subject, author and short sha",
+  ["Merge the sidebar rework", "Ada", "aaaaaaa"].every((needle) => commitView.body.includes(needle)),
+  JSON.stringify(commitView.body.slice(0, 220)));
+check("a file whose counts git cannot give shows none, not a fake +0",
+  commitView.files.some((f) => f.id.endsWith("hero.png") && !/[+-]\d/.test(f.text)),
+  JSON.stringify(commitView.files));
+check("the commit's first file is diffed without a second click",
+  commitView.hasDiff && (await editorText(session)).includes("railIconSize = 24"),
+  JSON.stringify((await editorText(session)).slice(0, 200)));
+await session.screenshot("repository-commit");
+
+// The second file has to replace the first in the same pane; two diffs at once
+// would be two answers to one question.
+await session.eval(`document.querySelector('[data-testid="git-commit-file-src/services/gitGraph.ts"]').click()`);
+await sleep(1000);
+const secondFileDiff = await editorText(session);
+check("picking another file in the commit swaps the diff",
+  secondFileDiff.includes("layoutGraph") && !secondFileDiff.includes("railIconSize"),
+  JSON.stringify(secondFileDiff.slice(0, 200)));
+check("the open diff says which commit it came from",
+  (await session.eval(`(document.body.innerText || '').includes('parent vs commit')`)) === true,
+  JSON.stringify((await session.eval(`(document.body.innerText || '').split('\\n').filter((l) => l.includes('vs')).slice(0, 3)`))));
+
+// A binary file has no text on either side. Monaco's answer to that is two blank
+// panes, so the pane has to say why rather than look broken.
+await session.eval(`document.querySelector('[data-testid="git-commit-file-public/hero.png"]').click()`);
+await sleep(900);
+check("a commit file with no text either side says so instead of showing blank panes",
+  (await session.eval(`(document.body.innerText || '').includes('Nothing to compare')`)) === true,
+  JSON.stringify((await session.eval(`(document.body.innerText || '').split('\\n').filter((l) => /blank|binary|Nothing/.test(l)).slice(0, 3)`))));
+
+// The commit and a working-tree change share one selection: opening a change has
+// to close the commit rather than leave both lit.
+await session.eval(`document.querySelector('[data-testid="git-file-src/components/dashboards/GitDashboard.tsx"]').click()`);
+await sleep(1000);
+const afterChange = await session.eval(`(() => ({
+  commitFiles: document.querySelectorAll('[data-testid^="git-commit-file-"]').length,
+  body: (document.body.innerText || '').slice(0, 2000),
+}))()`);
+check("opening a change closes the commit instead of stacking two views",
+  afterChange.commitFiles === 0 && afterChange.body.includes("index vs working tree"),
+  JSON.stringify(afterChange.body.slice(0, 240)));
+// The pane is one surface now, so the risk is not a second diff appearing — it
+// is the commit's diff still sitting there under the change's label.
+const changeDiff = await editorText(session);
+check("its diff is the change's own two sides, not the commit's left behind",
+  changeDiff.includes("unstaged = 2") && !changeDiff.includes("railIconSize") && !changeDiff.includes("layoutGraph"),
+  JSON.stringify(changeDiff.slice(0, 200)));
 
 // ── A surface that never arrives ─────────────────────────────────────────
 // `Suspense` reports nothing when a chunk stalls rather than fails: no error, no
