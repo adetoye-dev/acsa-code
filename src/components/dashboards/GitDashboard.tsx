@@ -28,6 +28,8 @@ import { SurfaceFallback } from "../ui/SurfaceFallback";
 import { CommitGraph } from "./CommitGraph";
 import { gitFetch } from "../../services/gitClient";
 import type { GitCommit, GitCommitFile, GitRef } from "../../services/gitGraph";
+import { RepoOverview } from "./RepoOverview";
+import { useGhOverview } from "../../hooks/useGhOverview";
 
 /* Monaco is ~1.5 MB. This page is part of the workbench bundle, so the diff
    surface loads only when a file is actually being reviewed — the same rule the
@@ -198,6 +200,12 @@ export function GitDashboard({ projectCwd, onWorkspaceChanged }: GitDashboardPro
   /** A history that could not be read is not an empty history, and says so. */
   const [logError, setLogError] = useState<string | null>(null);
   const requestSeq = useRef(0);
+  /**
+   * The remote's state, read here rather than inside the landing view: selecting a
+   * file swaps that view out, and re-asking GitHub (three `gh` calls, seconds each)
+   * every time the user came back to it would be a tax on the commonest gesture.
+   */
+  const overview = useGhOverview(projectCwd);
 
   const call = useCallback(
     async (action: string, payload: Record<string, unknown> = {}): Promise<GitResponse> => {
@@ -678,25 +686,14 @@ export function GitDashboard({ projectCwd, onWorkspaceChanged }: GitDashboardPro
             ) : selected ? (
               <PaneMessage headline="Reading the diff…" detail={selected.file.path} />
             ) : (
-              <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
-                <Icon icon={GitCommitHorizontal} className="w-6 h-6 text-zinc-500" />
-                <div className="text-body font-medium text-zinc-300">Review a change</div>
-                <p className="max-w-md text-2xs leading-relaxed text-zinc-500">
-                  Pick a file on the left and its diff appears here — staged changes as HEAD against the
-                  index, working-tree changes as the index against the file on disk.
-                </p>
-                <div className="mt-1 flex items-center gap-3 text-4xs text-zinc-500">
-                  <span className="flex items-center gap-1">
-                    <Icon icon={Plus} className="w-3 h-3" /> stage
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <Icon icon={Minus} className="w-3 h-3" /> unstage
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <Icon icon={Undo2} className="w-3 h-3" /> discard
-                  </span>
-                </div>
-              </div>
+              /* Nothing local is selected, so the pane answers the questions that
+                 are not local: checks, pull requests, and your issues. */
+              <RepoOverview
+                data={overview.data}
+                isLoading={overview.isLoading}
+                checkedAt={overview.checkedAt}
+                onRefresh={overview.refresh}
+              />
             )}
           </div>
         </div>
