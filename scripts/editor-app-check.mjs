@@ -1182,9 +1182,14 @@ await setAi(session, "review", {
   ok: true,
   provider: "ollama",
   model: "stub-reviewer",
+  // Clustered on purpose: two findings on one line and another on the next, which is
+  // what a real review of a dense function produces and what a zone per finding
+  // cannot draw without the cards landing on top of each other.
   issues: [
-    { line: 1, severity: "warning", title: "Stub finding one", detail: "The first detail.", suggestion: "Try this instead." },
-    { line: 3, severity: "info", title: "Stub finding two", detail: "The second detail." },
+    { line: 1, severity: "error", title: "Stub finding one", detail: "The first detail.", suggestion: "Try this instead." },
+    { line: 1, severity: "warning", title: "Stub finding two", detail: "Another problem on the same line." },
+    { line: 2, severity: "info", title: "Stub finding three", detail: "The line below it." },
+    { line: 3, severity: "info", title: "Stub finding four", detail: "The second detail." },
   ],
 });
 
@@ -1210,12 +1215,57 @@ const clickedReview = await session.eval(`(() => {
 })()`);
 await sleep(1000);
 const afterReview = await reviewState(session);
-check("Review renders one inline thread per finding",
-  clickedReview && afterReview.cards === 2, `clicked=${clickedReview} ${JSON.stringify(afterReview)}`);
+check("Review renders one thread per line",
+  // Two findings on line 1, one on line 2, one on line 3: three threads.
+  clickedReview && afterReview.cards === 3,
+  `clicked=${clickedReview} ${JSON.stringify(afterReview)}`);
 check("the reviewed lines are marked in the editor",
   afterReview.warningLines >= 1 && afterReview.infoLines >= 1, JSON.stringify(afterReview));
 check("a review does not touch the file",
   (await editorText(session)) === "aa\nbb\ncc", JSON.stringify(await editorText(session)));
+
+// Two findings on one line, and one on the line below, is the case that used to
+// render as cards lying on top of each other: a Monaco view zone per *finding*
+// meant two zones at the same `afterLineNumber`, drawn at the same offset.
+const cluster = await session.eval(`(() => {
+  const boxes = [...document.querySelectorAll('.acsa-review-card')].map((card) => {
+    const box = card.getBoundingClientRect();
+    return {
+      top: Math.round(box.top),
+      bottom: Math.round(box.bottom),
+      left: Math.round(box.left),
+      right: Math.round(box.right),
+    };
+  });
+  const overlapping = [];
+  for (let a = 0; a < boxes.length; a++) {
+    for (let b = a + 1; b < boxes.length; b++) {
+      const one = boxes[a];
+      const other = boxes[b];
+      if (one.left < other.right && other.left < one.right && one.top < other.bottom && other.top < one.bottom) {
+        overlapping.push([a, b]);
+      }
+    }
+  }
+  return { cards: boxes.length, boxes, overlapping };
+})()`);
+check("findings on the same line do not land on top of each other",
+  cluster.overlapping.length === 0, JSON.stringify(cluster));
+// Two findings on one line, one thread: a card per finding made one line look like
+// two unrelated problems stacked on the code.
+const threads = await session.eval(`(() => ({
+  threads: document.querySelectorAll('[data-testid^="review-thread-"]').length,
+  rows: document.querySelectorAll('[data-testid^="review-finding-"]').length,
+  firstThread: (
+    document.querySelector('[data-testid="review-thread-1"]') || {}
+  ).textContent || "",
+}))()`);
+check("two findings on one line share one thread, one row each",
+  threads.threads === 3 &&
+    threads.rows === 4 &&
+    (threads.firstThread.match(/Stub finding/g) || []).length === 2,
+  JSON.stringify(threads));
+await session.screenshot("review-clustered");
 
 // The findings overlay the editor. When clicks landed on that overlay instead of
 // the code, the file could not be edited for as long as a finding existed.
