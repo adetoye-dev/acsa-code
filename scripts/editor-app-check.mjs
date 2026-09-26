@@ -219,6 +219,15 @@ const TAURI_STUB = `(() => {
         : { success: true, originalContent: "", modifiedContent: "" };
     };
     window.__git.changeSides = changeSides;
+    // Two hunks of one file, and what staging one of them answers.
+    window.__git.hunks = {
+      success: true,
+      hunks: [
+        { index: 0, header: "@@ -1,4 +1,5 @@", additions: 2, deletions: 1, preview: "first change" },
+        { index: 1, header: "@@ -20,3 +21,3 @@", additions: 1, deletions: 1, preview: "second change" },
+      ],
+    };
+    window.__git.applyHunk = { success: true, message: "Staged hunk 1 of 2." };
     // What a commit's file looked like then, against what it looks like on disk.
     window.__git.sinceDiff = {
       success: true,
@@ -323,6 +332,9 @@ const TAURI_STUB = `(() => {
     window.__diffAsks = [];
     // Every comparison against the working tree that was asked for.
     window.__sinceAsks = [];
+    // Every request to split a file into hunks, and every hunk applied.
+    window.__hunkAsks = [];
+    window.__hunkApplies = [];
   })();
   // What the engine answers for the two AI actions the editor can make. Set per
   // check, so a review or an inline edit is deterministic rather than a
@@ -381,6 +393,20 @@ const TAURI_STUB = `(() => {
           if (action === "commit-file") {
             const payload = JSON.parse((list && list[1]) || "{}");
             return JSON.stringify({ ok: true, data: window.__git.commitFile(payload.sha, payload.filePath) });
+          }
+          if (action === "hunks") {
+            const payload = JSON.parse((list && list[1]) || "{}");
+            window.__hunkAsks.push({ filePath: payload.filePath, staged: payload.staged });
+            return JSON.stringify({ ok: true, data: window.__git.hunks });
+          }
+          if (action === "apply-hunk") {
+            const payload = JSON.parse((list && list[1]) || "{}");
+            window.__hunkApplies.push({
+              filePath: payload.filePath,
+              hunk: payload.hunk,
+              staged: payload.staged,
+            });
+            return JSON.stringify({ ok: true, data: window.__git.applyHunk });
           }
           if (action === "diff-since") {
             const payload = JSON.parse((list && list[1]) || "{}");
@@ -1726,6 +1752,49 @@ const changeDiff = await editorText(session);
 check("its diff is the change's own two sides, not the commit's left behind",
   changeDiff.includes("unstaged = 2") && !changeDiff.includes("railIconSize") && !changeDiff.includes("layoutGraph"),
   JSON.stringify(changeDiff.slice(0, 200)));
+
+// Part of a file can be staged: the strip beside the diff lists its hunks, collapsed
+// so the diff stays the subject, and each one is applied on its own.
+const hunksBefore = await session.eval(`({
+  toggle: (document.querySelector('[data-testid="git-hunks-toggle"]') || {}).textContent || null,
+  listed: Boolean(document.querySelector('[data-testid="git-hunks"]')),
+  asked: window.__hunkAsks.length,
+})`);
+check("a changed file offers its hunks, folded away by default",
+  (hunksBefore.toggle || "").includes("2 hunks") && hunksBefore.listed === false,
+  JSON.stringify(hunksBefore));
+
+await session.eval(`document.querySelector('[data-testid="git-hunks-toggle"]').click()`);
+await sleep(300);
+const hunksOpen = await session.eval(`(() => {
+  const list = document.querySelector('[data-testid="git-hunks"]');
+  return {
+    rows: list ? list.children.length : 0,
+    text: list ? list.innerText.replace(/\\s+/g, ' ').trim() : null,
+  };
+})()`);
+check("unfolding it describes each hunk well enough to choose between them",
+  hunksOpen.rows === 2 &&
+    (hunksOpen.text || "").includes("@@ -1,4 +1,5 @@") &&
+    (hunksOpen.text || "").includes("second change"),
+  JSON.stringify(hunksOpen));
+await session.screenshot("repository-hunks");
+
+await session.eval(`document.querySelector('[data-testid="git-hunk-1"]').click()`);
+await sleep(700);
+const stagedHunk = await session.eval(`({
+  applies: window.__hunkApplies.slice(),
+  body: (document.body.innerText || '').slice(0, 2000),
+})`);
+check("staging a hunk asks for that hunk of that file",
+  stagedHunk.applies.length === 1 &&
+    stagedHunk.applies[0].hunk === 1 &&
+    stagedHunk.applies[0].staged === false &&
+    stagedHunk.applies[0].filePath === "src/components/dashboards/GitDashboard.tsx",
+  JSON.stringify(stagedHunk.applies));
+check("and the page reports what git said about it",
+  stagedHunk.body.includes("Staged hunk 1 of 2."),
+  JSON.stringify(stagedHunk.body.slice(-160)));
 
 // A re-read has to reach the diff on screen too: an agent writing to the file you
 // are looking at would otherwise leave a diff that no longer matches it.
