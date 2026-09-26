@@ -538,6 +538,37 @@ def diff_file(payload: dict) -> dict:
     return {"success": True, "originalContent": original, "modifiedContent": modified}
 
 
+def diff_since(payload: dict) -> dict:
+    """One file as a chosen commit had it, against the file on disk now.
+
+    `diff-file` answers about the working tree against HEAD or the index. This
+    answers about *any* commit — "what has happened to this file since then" — which
+    is the question you have after opening an old commit in the graph. The disk is
+    the "after" side whatever the index holds, because the unstaged work is the
+    point of asking.
+
+    A file the commit did not have yet is an addition and one deleted since is a
+    deletion; a ref that cannot be read is an error rather than one of those two,
+    because a stale commit would otherwise be reported as "everything changed".
+    """
+    cwd = _cwd(payload)
+    ref = str(payload.get("ref") or "HEAD").strip() or "HEAD"
+    file_path = _file(payload)
+
+    ok_ref, _, _ = _run(cwd, ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], 10)
+    if not ok_ref:
+        return {"success": False, "error": "That commit could not be read."}
+
+    ok_before, before, _ = _run(cwd, ["show", f"{ref}:{file_path}"])
+    try:
+        after = Path(cwd, file_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        after = ""
+
+    original, modified = _text_only(before if ok_before else "", after)
+    return {"success": True, "originalContent": original, "modifiedContent": modified}
+
+
 def _simple(payload: dict, args: list[str], *, ok_key: str = "output") -> dict:
     ok, stdout, stderr = _run(_cwd(payload), args)
     if not ok:
@@ -699,6 +730,7 @@ def clone(payload: dict) -> dict:
 COMMANDS = {
     "status": status,
     "diff-file": diff_file,
+    "diff-since": diff_since,
     "stage": stage,
     "unstage": unstage,
     "discard": discard,

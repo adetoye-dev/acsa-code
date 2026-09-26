@@ -430,6 +430,49 @@ class DiffSidesTests(unittest.TestCase):
         )
         self.assertEqual(sides["originalContent"], "settled\n")
         self.assertEqual(sides["modifiedContent"], "settled\n")
+    def test_a_file_changed_since_a_commit_reads_against_the_commit(self):
+        # The commit has "one\n"; the file on disk has two lines since.
+        (self.root / "old.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(self.root), capture_output=True, text=True
+        ).stdout.strip()
+        sides = git_cli.diff_since({"cwd": str(self.root), "ref": sha, "filePath": "old.py"})
+        self.assertTrue(sides["success"])
+        self.assertEqual(sides["originalContent"], "one\ntwo\n")
+        self.assertEqual(sides["modifiedContent"], "one\ntwo\nthree\n")
+
+    def test_the_disk_is_the_after_side_even_when_the_change_is_staged(self):
+        # "Since this commit" is about the working tree, so what is in the index
+        # must not be what the diff shows.
+        (self.root / "old.py").write_text("staged version\n", encoding="utf-8")
+        git(self.root, "add", "old.py")
+        (self.root / "old.py").write_text("disk version\n", encoding="utf-8")
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(self.root), capture_output=True, text=True
+        ).stdout.strip()
+        sides = git_cli.diff_since({"cwd": str(self.root), "ref": sha, "filePath": "old.py"})
+        self.assertEqual(sides["originalContent"], "one\ntwo\n")
+        self.assertEqual(sides["modifiedContent"], "disk version\n")
+
+    def test_a_file_the_commit_did_not_have_is_an_addition(self):
+        (self.root / "fresh.txt").write_text("brand new\n", encoding="utf-8")
+        sides = git_cli.diff_since({"cwd": str(self.root), "ref": "HEAD", "filePath": "fresh.txt"})
+        self.assertEqual(sides["originalContent"], "")
+        self.assertEqual(sides["modifiedContent"], "brand new\n")
+
+    def test_a_file_deleted_since_is_a_deletion(self):
+        (self.root / "other.txt").unlink()
+        sides = git_cli.diff_since({"cwd": str(self.root), "ref": "HEAD", "filePath": "other.txt"})
+        self.assertEqual(sides["originalContent"], "settled\n")
+        self.assertEqual(sides["modifiedContent"], "")
+
+    def test_a_ref_that_cannot_be_read_is_an_error_not_an_addition(self):
+        # A stale sha would otherwise read as "every line is new".
+        sides = git_cli.diff_since(
+            {"cwd": str(self.root), "ref": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", "filePath": "old.py"}
+        )
+        self.assertFalse(sides["success"])
+        self.assertIn("could not be read", sides["error"])
 
 class ConflictTests(unittest.TestCase):
     """A real merge, stopped on a conflict."""
