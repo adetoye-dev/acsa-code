@@ -219,6 +219,12 @@ const TAURI_STUB = `(() => {
         : { success: true, originalContent: "", modifiedContent: "" };
     };
     window.__git.changeSides = changeSides;
+    // What a commit's file looked like then, against what it looks like on disk.
+    window.__git.sinceDiff = {
+      success: true,
+      originalContent: "export const railWidth = 72;\\n",
+      modifiedContent: "export const railWidth = 72;\\nexport const railIconSize = 24;\\n",
+    };
     // What the engine's gh subcommand answers. The fixture is one real run and
     // one real pull request from this project's own history, and the available flag is
     // switchable so the panel's honest fallbacks are checked rather than assumed.
@@ -315,6 +321,8 @@ const TAURI_STUB = `(() => {
     // Every diff-file request, so a check can prove the page asked about both
     // names of a rename rather than only the new one.
     window.__diffAsks = [];
+    // Every comparison against the working tree that was asked for.
+    window.__sinceAsks = [];
   })();
   // What the engine answers for the two AI actions the editor can make. Set per
   // check, so a review or an inline edit is deterministic rather than a
@@ -373,6 +381,11 @@ const TAURI_STUB = `(() => {
           if (action === "commit-file") {
             const payload = JSON.parse((list && list[1]) || "{}");
             return JSON.stringify({ ok: true, data: window.__git.commitFile(payload.sha, payload.filePath) });
+          }
+          if (action === "diff-since") {
+            const payload = JSON.parse((list && list[1]) || "{}");
+            window.__sinceAsks.push({ ref: payload.ref, filePath: payload.filePath });
+            return JSON.stringify({ ok: true, data: window.__git.sinceDiff });
           }
           if (action === "diff-file") {
             const payload = JSON.parse((list && list[1]) || "{}");
@@ -1638,6 +1651,41 @@ check("a file whose counts git cannot give shows none, not a fake +0",
 check("the commit's first file is diffed without a second click",
   commitView.hasDiff && (await editorText(session)).includes("railIconSize = 24"),
   JSON.stringify((await editorText(session)).slice(0, 200)));
+
+// The same file, compared against the working tree: how you find out whether an old
+// commit is still the state of play for it. Placed after the binary check above,
+// because flipping the scope changes what every later read of this pane means.
+await session.eval(`document.querySelector('[data-testid="git-compare-scope"]').click()`);
+await sleep(700);
+const sinceView = await session.eval(`({
+  badge: (document.body.innerText || '').includes('commit vs working tree'),
+  ask: window.__sinceAsks[window.__sinceAsks.length - 1] || null,
+})`);
+check("an open commit can be compared against the working tree",
+  sinceView.badge === true &&
+    Boolean(sinceView.ask?.ref) &&
+    sinceView.ask?.filePath === "src/components/layout/Sidebar.tsx",
+  JSON.stringify(sinceView));
+const sinceText = await editorText(session);
+check("and that comparison really is the commit against the disk",
+  // The parent's line is gone and the file's current line is there: the commit's own
+  // diff would still be showing 64.
+  sinceText.includes("railWidth = 72") &&
+    !sinceText.includes("railWidth = 64") &&
+    sinceText.includes("railIconSize"),
+  JSON.stringify(sinceText.slice(0, 200)));
+
+// Back to the commit's own change, so the checks below read what they expect.
+await session.eval(`document.querySelector('[data-testid="git-compare-scope"]').click()`);
+await sleep(600);
+const revertedText = await editorText(session);
+check("and it flips back to the commit's own change",
+  (await session.eval(`(document.body.innerText || '').includes('parent vs commit')`)) === true &&
+    // The parent's line is back, which the comparison against the disk had dropped:
+    // that is what says the two scopes are really showing different pairs.
+    revertedText.includes("railWidth = 64"),
+  JSON.stringify(revertedText.slice(0, 200)));
+
 await session.screenshot("repository-commit");
 
 // The second file has to replace the first in the same pane; two diffs at once
@@ -1651,6 +1699,7 @@ check("picking another file in the commit swaps the diff",
 check("the open diff says which commit it came from",
   (await session.eval(`(document.body.innerText || '').includes('parent vs commit')`)) === true,
   JSON.stringify((await session.eval(`(document.body.innerText || '').split('\\n').filter((l) => l.includes('vs')).slice(0, 3)`))));
+
 
 // A binary file has no text on either side. Monaco's answer to that is two blank
 // panes, so the pane has to say why rather than look broken.

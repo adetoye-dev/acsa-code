@@ -69,6 +69,44 @@ class InjectedSourceTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr.strip())
 
+    def test_the_injected_source_is_valid_javascript(self):
+        """The strongest form of the check above: parse what the page receives.
+
+        The two tests above work on the file's text, and a `\n` written inside one of
+        the stub's strings passes them both while being wrong — the template literal
+        turns it into a real newline, which lands *inside a string literal* in the
+        injected script and stops it compiling. That failure looks like the harness
+        being broken ("the stub never installed") with no mention of escaping, so it
+        is worth catching here instead.
+
+        This evaluates the template literal the way the browser does and then parses
+        the result the way the page does, which is the only check that sees the
+        difference between `\n` and `\\n`.
+        """
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not installed, so the source cannot be parsed here")
+        program = (
+            "const fs = require('node:fs');"
+            f"const source = fs.readFileSync({str(HARNESS)!r}, 'utf8');"
+            "const body = (name) => {"
+            "  const open = 'const ' + name + ' = ' + String.fromCharCode(96);"
+            "  const start = source.indexOf(open) + open.length;"
+            "  const end = source.indexOf(String.fromCharCode(96) + ';', start);"
+            "  return source.slice(start, end);"
+            "};"
+            "for (const name of ['TAURI_STUB', 'FOCUS_LOGGER']) {"
+            "  const injected = eval(String.fromCharCode(96) + body(name) + String.fromCharCode(96));"
+            "  new Function(injected);"
+            "  console.log(name + ': ' + injected.length + ' chars parse');"
+            "}"
+        )
+        result = subprocess.run(
+            [node, "-e", program], capture_output=True, text=True, timeout=60
+        )
+        self.assertEqual(result.returncode, 0, result.stderr.strip())
+        self.assertIn("TAURI_STUB", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
