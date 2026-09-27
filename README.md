@@ -23,6 +23,7 @@
   <a href="#what-you-can-do">Features</a> ·
   <a href="#providers-and-models">Providers</a> ·
   <a href="#build-from-source">Build</a> ·
+  <a href="CHANGELOG.md">Changelog</a> ·
   <a href="#contributing">Contributing</a>
 </p>
 
@@ -311,6 +312,8 @@ ACSA Code is at **0.2.x** — usable, and still moving quickly.
 
 - Releases are cut from the `dev` branch; macOS builds are signed, notarised and
   delivered through the built-in updater.
+- [CHANGELOG.md](CHANGELOG.md) is the record of what each release changed; it is
+  what the release notes are published from.
 - Agent mode runs on the bundled Codex CLI. It is the part of the app that changes
   most, and the part where a provider's own quirks show through.
 - Windows and Linux are not built by CI yet. The code has been written for all three,
@@ -329,6 +332,8 @@ Issues and pull requests are welcome. A few things make changes land faster:
   way it is — the comments explaining a past bug are load-bearing.
 - **Commit messages** follow `type(scope): summary` (`fix(adapter): …`,
   `feat(providers): …`), with the reasoning in the body.
+- **Add a line to [CHANGELOG.md](CHANGELOG.md) under `[Unreleased]`** for anything a
+  user would notice. The release cannot be cut without one — the build checks it.
 - **Do not commit build outputs.** The engine sidecar, the Codex runtime, `dist/` and
   `.tauri/target/` are generated.
 

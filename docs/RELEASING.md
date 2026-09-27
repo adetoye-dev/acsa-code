@@ -364,19 +364,25 @@ if (update) {
 
 ## Release checklist
 
-1. Bump `version` in `.tauri/tauri.conf.json` (and `package.json`). There are
-   **four** carriers, not two — `package.json`, `package-lock.json`,
-   `.tauri/tauri.conf.json` and `.tauri/Cargo.toml` — and the two this step used to
-   name were the two that got bumped: the lockfile sat at `0.2.1` while
-   `package.json` went to `0.2.4`, and `Cargo.toml` stayed at `0.2.4` when
-   everything else moved to `0.2.5`. `npm version X --no-git-tag-version
-   --ignore-scripts` covers the two npm files; the other two are edited by hand.
-   `tests/test_version_consistency.py` now fails if they disagree.
-2. `npm run verify` — typecheck plus the Python suite. `npm run notices:check` runs in CI and fails if a dependency change left the notices stale.
-3. `tauri build` with the signing key set.
-4. Launch the `.app` and confirm the engine resolves from `Contents/Resources`.
-5. Notarise and staple, upload the artifact + `.sig`, publish `latest.json`.
-6. Install the *previous* version and confirm it updates to the new one.
+1. **Write the notes first.** Move what is under `[Unreleased]` in `CHANGELOG.md`
+   into a new `## [x.y.z] - <date>` section and leave `[Unreleased]` empty. The
+   workflow publishes that section verbatim as the release body, and
+   `tests/test_changelog.py` fails the build if the version in the carriers has no
+   section — a gate, not a habit. The shape is documented at the top of the file
+   (Keep a Changelog: `Added`/`Changed`/`Fixed`/`Removed`/`Security`).
+2. Bump `version`. There are **five** carriers — `package.json`,
+   `package-lock.json`, `.tauri/tauri.conf.json`, `.tauri/Cargo.toml` and
+   `.tauri/Cargo.lock` — and the two this step used to name were the two that got
+   bumped: the lockfile sat at `0.2.1` while `package.json` went to `0.2.4`, and
+   `Cargo.toml` stayed at `0.2.4` when everything else moved to `0.2.5`.
+   `npm version X --no-git-tag-version --ignore-scripts` covers the two npm files;
+   `Cargo.lock` follows its `Cargo.toml`; the rest are edited by hand.
+   `tests/test_version_consistency.py` fails if the first four disagree.
+3. `npm run verify` — typecheck plus the Python suite. `npm run notices:check` runs in CI and fails if a dependency change left the notices stale.
+4. `tauri build` with the signing key set.
+5. Launch the `.app` and confirm the engine resolves from `Contents/Resources`.
+6. Notarise and staple, upload the artifact + `.sig`, publish `latest.json`.
+7. Install the *previous* version and confirm it updates to the new one.
 
 ### The publish step is manual, and silence here looks exactly like success
 
@@ -387,6 +393,11 @@ assets are attached — and the app still sees the previous version, because
 one, and because draft assets are not publicly downloadable at all. That was
 `v0.2.1`: a green run, a 112 MB signed bundle that nobody could fetch, and a
 manifest still advertising `0.2.0`.
+
+The draft's body is the `CHANGELOG.md` section for the tag
+(`scripts/changelog_section.py`), followed by the download paragraph — so read it
+in the draft before publishing it. If it is thin, the notes are what to fix, not
+the workflow.
 
 After every tag push, publish the draft:
 

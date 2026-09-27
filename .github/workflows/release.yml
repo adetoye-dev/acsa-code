@@ -58,6 +58,13 @@ jobs:
 
       - run: npm ci
 
+      # `npm run verify` checks this too (tests/test_changelog.py), but a named
+      # step says which thing is missing in one line, a second after checkout,
+      # rather than buried in ten minutes of test output.
+      - name: The changelog has notes for this version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: python3 scripts/changelog_section.py --check
+
       - name: Verify before shipping
         run: npm run verify
 
@@ -252,11 +259,38 @@ jobs:
           print(json.dumps(manifest, indent=2))
           PY
 
+      # The release body is the changelog's section for this tag, so the notes a
+      # user reads are the curated ones. A tag with nothing written for it fails
+      # the step above rather than publishing boilerplate.
+      - name: Release notes from the changelog
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          NOTES="$RUNNER_TEMP/release-notes.md"
+          python3 scripts/changelog_section.py "${GITHUB_REF_NAME#v}" > "$NOTES"
+          cat >> "$NOTES" <<'EOF'
+
+          ---
+
+          **Download:** `ACSA-Code.app.zip` — signed with a Developer ID,
+          notarised and stapled, so it opens without the Gatekeeper prompt.
+          Unzip and drag `ACSA Code.app` to Applications.
+
+          **Already installed?** The app checks `latest.json` on launch and
+          offers an update in the title bar, and the zip above can simply be
+          replaced. The updater's own artifacts (`ACSA-Code.app.tar.gz` and its
+          `.sig`) and the manifest are attached for that check; the `.sig` is
+          minisign, verified against the public key compiled into the app.
+          EOF
+          echo "Built from ${{ github.sha }}." >> "$NOTES"
+          cat "$NOTES"
+
       - name: Publish the release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
           draft: true
+          body_path: ${{ runner.temp }}/release-notes.md
           # The signed, notarised, stapled app. The disk image is deliberately
           # not built here: it has to be made *from* the stapled app, and Tauri's
           # bundler cannot do that (see the Bundle step).
@@ -265,15 +299,3 @@ jobs:
             .tauri/target/release/bundle/macos/ACSA-Code.app.tar.gz
             .tauri/target/release/bundle/macos/ACSA-Code.app.tar.gz.sig
             .tauri/target/release/bundle/macos/latest.json
-          body: |
-            Built from ${{ github.sha }}.
-
-            **Download:** `ACSA-Code.app.zip` — signed with a Developer ID,
-            notarised and stapled, so it opens without the Gatekeeper prompt.
-            Unzip and drag `ACSA Code.app` to Applications.
-
-            **Already installed?** The app checks `latest.json` on launch and
-            offers an update in the title bar, and the zip above can simply be
-            replaced. The updater's own artifacts (`ACSA-Code.app.tar.gz` and its
-            `.sig`) and the manifest are attached for that check; the `.sig` is
-            minisign, verified against the public key compiled into the app.
