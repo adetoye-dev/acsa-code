@@ -3656,14 +3656,38 @@ async fn local_adapter_start(
         args.push(ollama_port.to_string());
     }
 
+    // Its stderr goes to a file — not to a pipe, and no longer to /dev/null.
+    //
+    // A pipe was wrong because nothing drains it and a full buffer blocks the
+    // adapter mid-turn. Discarding it was wrong too, and less obviously: the
+    // adapter is the only component that knows *why* a provider stalled or refused
+    // a request, and it was throwing that away. A request to NVIDIA NIM that never
+    // answered left no trace anywhere on the machine, which is exactly the kind of
+    // failure that needs one.
+    let adapter_log = app_handle
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|dir| dir.join("logs"))
+        .and_then(|dir| {
+            std::fs::create_dir_all(&dir).ok()?;
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dir.join("adapter.log"))
+                .ok()
+        });
+    let adapter_stderr = match adapter_log {
+        Some(file) => Stdio::from(file),
+        None => Stdio::null(),
+    };
+
     let mut child = Command::new(&program)
         .args(&args)
         .envs(env.iter().map(|(key, value)| (key.clone(), value.clone())))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        // Discarded rather than piped: nothing drains a piped stderr, and a full
-        // pipe buffer would block the adapter mid-turn.
-        .stderr(Stdio::null())
+        .stderr(adapter_stderr)
         .spawn()
         .map_err(|e| {
             format!(

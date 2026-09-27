@@ -69,6 +69,17 @@ def log(*parts: object) -> None:
         print("[adapter]", *parts, file=sys.stderr, flush=True)
 
 
+def warn(*parts: object) -> None:
+    """A line the operator needs, whether or not debugging is on.
+
+    `log` sits behind `ACSA_ADAPTER_DEBUG`, and a failure is not a debugging aid:
+    when a provider stalls, this process is the only component that knows why, and
+    its stderr is what a support bundle can read. It used to be thrown away at
+    spawn — see `local_adapter_start` in `.tauri/src/main.rs`.
+    """
+    print("[adapter]", *parts, file=sys.stderr, flush=True)
+
+
 def upstream_is_openai() -> bool:
     """Whether the upstream is an OpenAI-compatible `/chat/completions`."""
     return UPSTREAM_MODE == "openai"
@@ -704,7 +715,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if calls:
                     self._emit_tool_calls(calls, output_index=1, send=send, resp_id=resp_id, schemas=schemas)
         except Exception as error:  # noqa: BLE001 - surfaced as a failed response
-            log("stream failed:", error)
+            warn("stream failed:", error)
             send("response.failed", {"response": envelope(resp_id, model, "failed", [])})
             self._chunk(b"")
             return
@@ -874,6 +885,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if upstream_is_openai():
             scheme, host, port, path = upstream_endpoint()
             if not host:
+                warn("no upstream base URL: pass --base-url (or ACSA_ADAPTER_URL)")
                 raise RuntimeError("no upstream base URL: pass --base-url (or ACSA_ADAPTER_URL)")
             conn = (
                 http.client.HTTPSConnection(host, port, timeout=timeout)
@@ -908,6 +920,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         raw = response.read()
         conn.close()
         if response.status != 200:
+            warn(f"upstream answered {response.status}: {raw[:200]!r}")
             raise RuntimeError(f"upstream {response.status}: {raw[:200]!r}")
         result = json.loads(raw)
         if not upstream_is_openai():
@@ -919,6 +932,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if response.status != 200:
             raw = response.read()
             conn.close()
+            warn(f"upstream answered {response.status}: {raw[:200]!r}")
             raise RuntimeError(f"upstream {response.status}: {raw[:200]!r}")
         # OpenAI's stream is SSE and, unlike Ollama's, splits one tool call over
         # several chunks; the accumulator puts those back together and hands the
