@@ -36,6 +36,7 @@ import json
 import os
 import socketserver
 import sys
+import threading
 import time
 import uuid
 
@@ -78,6 +79,42 @@ def warn(*parts: object) -> None:
     spawn — see `local_adapter_start` in `.tauri/src/main.rs`.
     """
     print("[adapter]", *parts, file=sys.stderr, flush=True)
+
+
+def stdin_ended(source) -> bool:
+    """Whether the pipe this process was handed has closed.
+
+    Split out from the watcher below so it can be tested without exiting the test
+    process: `watch_stdin` turns "True" into a process exit.
+    """
+    while True:
+        try:
+            if not source.read(1):
+                return True
+        except (OSError, ValueError):
+            return True
+
+
+def watch_stdin() -> None:
+    """Exit when the app that started us goes away.
+
+    This process is handed the provider's credential in its environment, and it
+    used to outlive the app: a crashed or killed app left the adapter running, still
+    holding the key, until the machine was rebooted — found by spotting an orphan
+    from a killed run and reading its environment.
+
+    The app holds the write end of our stdin and never writes to it, so the pipe
+    closing is the app being gone — whatever killed it. Only used when the app asks
+    for it (`ACSA_ADAPTER_WATCH_STDIN=1`), because a manually started adapter has a
+    terminal on stdin and must not read from it.
+    """
+    source = getattr(sys.stdin, "buffer", None)
+    if source is None:
+        return
+    if not stdin_ended(source):
+        return
+    log("the app that started this adapter is gone; exiting rather than holding its credential")
+    os._exit(0)
 
 
 def upstream_is_openai() -> bool:
@@ -328,6 +365,63 @@ def text_of(content) -> str:
                 chunks.append(part)
         return "".join(chunks)
     return ""
+
+
+def reasoning_effort_of(body: dict) -> str:
+    """The effort the caller asked for, or `""` when it did not ask.
+
+    The runtime sends `reasoning: {"effort": "low"}` — confirmed by dumping a real
+    request from the app (`ACSA_ADAPTER_DEBUG=1`) — so the level our model catalog
+    declares does reach this process. It has to be carried one hop further.
+    """
+    reasoning = body.get("reasoning")
+    if not isinstance(reasoning, dict):
+        return ""
+    effort = reasoning.get("effort")
+    return effort if isinstance(effort, str) else ""
+
+
+def chat_body_for_request(body: dict, model: str) -> dict:
+    """One Responses request as the chat body its upstream wants."""
+    chat_body: dict = {
+        "model": model,
+        "messages": chat_messages(body),
+        "stream": True,
+    }
+    tools = chat_tools(body.get("tools"))
+    if tools:
+        chat_body["tools"] = tools
+    # The effort, passed on where the field exists.
+    #
+    # It was being dropped here, which made the catalog's `default_reasoning_level`
+    # decorative: the runtime asked for "low", this process discarded it, and a
+    # cheap tier went on reasoning as hard as it liked. vLLM-backed servers — NVIDIA
+    # NIM among them, whose own samples show `reasoning_effort` — take it as a
+    # chat-body field. Ollama's native API has no equivalent (it takes `think` /
+    # `options`), so that direction is left alone rather than sent a field it would
+    # refuse.
+    effort = reasoning_effort_of(body)
+    if upstream_is_openai() and effort:
+        chat_body["reasoning_effort"] = effort
+    return chat_body
+
+
+def without_reasoning_effort(payload: dict) -> dict:
+    """A copy of a chat body with the effort field taken out."""
+    return {key: value for key, value in payload.items() if key != "reasoning_effort"}
+
+
+def rejects_reasoning_effort(status: int, body: bytes) -> bool:
+    """Whether an upstream refused a request over the effort field.
+
+    Not every OpenAI-compatible server has it, and a strict one answers 400 naming
+    the field. A provider should not be broken by a latency nicety, so that answer
+    is caught and the request retried once without it.
+    """
+    if status not in (400, 422):
+        return False
+    text = body.decode("utf-8", "replace").lower()
+    return "reasoning_effort" in text or "reasoning effort" in text
 
 
 def chat_messages(body: dict) -> list:
@@ -612,15 +706,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             for tool in (body.get("tools") or [])
             if isinstance(tool, dict) and tool.get("type") == "function" and tool.get("name")
         }
-        chat_body = {
-            "model": model,
-            "messages": chat_messages(body),
-            "stream": True,
-        }
-        tools = chat_tools(body.get("tools"))
-        if tools:
-            chat_body["tools"] = tools
-        log("request", model, len(chat_body["messages"]), "messages,", len(tools), "tools")
+        chat_body = chat_body_for_request(body, model)
+        log(
+            "request",
+            model,
+            len(chat_body["messages"]),
+            "messages,",
+            len(chat_body.get("tools") or []),
+            "tools,",
+            f"effort={chat_body.get('reasoning_effort') or 'unset'}",
+        )
 
         if not stream:
             self._respond_once(chat_body, model, schemas)
@@ -919,6 +1014,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         conn, response = self._upstream_post(payload, stream=False)
         raw = response.read()
         conn.close()
+        if "reasoning_effort" in payload and rejects_reasoning_effort(response.status, raw):
+            warn(f"upstream answered {response.status} over reasoning_effort; retrying without it")
+            payload = without_reasoning_effort(payload)
+            conn, response = self._upstream_post(payload, stream=False)
+            raw = response.read()
+            conn.close()
         if response.status != 200:
             warn(f"upstream answered {response.status}: {raw[:200]!r}")
             raise RuntimeError(f"upstream {response.status}: {raw[:200]!r}")
@@ -929,6 +1030,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _ollama_chat_stream(self, payload: dict):
         conn, response = self._upstream_post(payload, stream=True)
+        if "reasoning_effort" in payload and response.status in (400, 422):
+            # Only a *rejection* is read here. On a 200 the body is the stream
+            # itself, and peeking at it would swallow the first chunk.
+            raw = response.read()
+            conn.close()
+            if rejects_reasoning_effort(response.status, raw):
+                warn(f"upstream answered {response.status} over reasoning_effort; retrying without it")
+                payload = without_reasoning_effort(payload)
+                conn, response = self._upstream_post(payload, stream=True)
+            else:
+                warn(f"upstream answered {response.status}: {raw[:200]!r}")
+                raise RuntimeError(f"upstream {response.status}: {raw[:200]!r}")
         if response.status != 200:
             raw = response.read()
             conn.close()
@@ -1013,6 +1126,8 @@ def main() -> None:
             else f"ollama {UPSTREAM_HOST}:{UPSTREAM_PORT}"
         )
         log(f"listening on {host}:{port} -> {target}")
+        if os.environ.get("ACSA_ADAPTER_WATCH_STDIN") == "1":
+            threading.Thread(target=watch_stdin, daemon=True).start()
         server.serve_forever()
 
 

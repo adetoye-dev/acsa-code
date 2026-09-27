@@ -7,8 +7,11 @@ exact shapes rather than a plausible-looking approximation.
 """
 
 import importlib
+import io
 import json
+import os
 import sys
+import threading
 import unittest
 from pathlib import Path
 
@@ -406,3 +409,111 @@ class ModelCatalogIds(unittest.TestCase):
             ai_cli._names({"models": [{"name": "models/gemini-2.0-flash"}]}),
             ["gemini-2.0-flash"],
         )
+
+
+class AdapterLifetime(unittest.TestCase):
+    """The adapter must not outlive the app that handed it a credential.
+
+    It is started with the provider's key in its environment. Killing the app used
+    to leave it running — still holding a live key — until the machine was
+    rebooted, which is how this was found: an orphan from a killed run, with
+    `ACSA_ADAPTER_KEY` still readable in its environment. The app holds the write
+    end of the adapter's stdin and never writes to it, so the pipe closing *is* the
+    app being gone, whatever killed it.
+    """
+
+    def test_a_closed_pipe_reads_as_ended(self):
+        self.assertTrue(adapter.stdin_ended(io.BytesIO(b"")))
+
+    def test_a_read_error_reads_as_ended(self):
+        class Broken:
+            def read(self, _size):
+                raise OSError("bad file descriptor")
+
+        self.assertTrue(adapter.stdin_ended(Broken()))
+
+    def test_an_open_pipe_keeps_it_waiting_until_it_closes(self):
+        read_fd, write_fd = os.pipe()
+        source = os.fdopen(read_fd, "rb")
+        seen: list[bool] = []
+        worker = threading.Thread(
+            target=lambda: seen.append(adapter.stdin_ended(source)), daemon=True
+        )
+        try:
+            worker.start()
+            worker.join(0.3)
+            self.assertEqual(seen, [], "an open pipe must not read as ended")
+            # Data on it means the app is still there and writing; also not ended.
+            os.write(write_fd, b"still here")
+            worker.join(0.3)
+            self.assertEqual(seen, [], "data on the pipe must not end it")
+        finally:
+            os.close(write_fd)
+        worker.join(2)
+        self.assertEqual(seen, [True], "closing the pipe must end it")
+        source.close()
+
+
+class ReasoningEffort(unittest.TestCase):
+    """The thinking budget we ask for has to reach the provider, or it is decoration.
+
+    The runtime sends `reasoning: {"effort": …}` on every request — confirmed by
+    dumping one from the app with `ACSA_ADAPTER_DEBUG=1` — so the level our model
+    catalog declares does arrive. It was being discarded one hop later, which is
+    why lowering it changed nothing: the model went on reasoning as hard as it
+    liked.
+    """
+
+    def setUp(self):
+        self.saved = adapter.UPSTREAM_MODE
+        adapter.UPSTREAM_MODE = "openai"
+
+    def tearDown(self):
+        adapter.UPSTREAM_MODE = self.saved
+
+    def test_it_reads_the_effort_the_runtime_asked_for(self):
+        self.assertEqual(adapter.reasoning_effort_of({"reasoning": {"effort": "low"}}), "low")
+
+    def test_an_absent_or_odd_shape_reads_as_no_effort(self):
+        for body in (
+            {},
+            {"reasoning": None},
+            {"reasoning": "low"},
+            {"reasoning": {}},
+            {"reasoning": {"effort": 3}},
+        ):
+            self.assertEqual(adapter.reasoning_effort_of(body), "", repr(body))
+
+    def test_the_effort_is_carried_into_the_chat_body(self):
+        body = {"input": "hi", "reasoning": {"effort": "low"}}
+        self.assertEqual(adapter.chat_body_for_request(body, "m")["reasoning_effort"], "low")
+
+    def test_nothing_is_sent_when_no_effort_was_asked_for(self):
+        self.assertNotIn("reasoning_effort", adapter.chat_body_for_request({"input": "hi"}, "m"))
+
+    def test_the_ollama_direction_is_not_sent_a_field_it_lacks(self):
+        adapter.UPSTREAM_MODE = "ollama"
+        body = {"input": "hi", "reasoning": {"effort": "low"}}
+        self.assertNotIn("reasoning_effort", adapter.chat_body_for_request(body, "m"))
+
+    def test_the_tools_still_travel(self):
+        body = {"input": "hi", "tools": [{"type": "function", "name": "f", "parameters": {}}]}
+        self.assertEqual(len(adapter.chat_body_for_request(body, "m")["tools"]), 1)
+
+    def test_a_strict_upstream_refusal_is_recognised(self):
+        # Not every OpenAI-compatible server has the field, and one that refuses
+        # should cost a request, not the provider.
+        self.assertTrue(
+            adapter.rejects_reasoning_effort(400, b'{"error":"unknown field reasoning_effort"}')
+        )
+        self.assertTrue(
+            adapter.rejects_reasoning_effort(422, b'{"detail":"reasoning effort is not supported"}')
+        )
+
+    def test_an_unrelated_failure_is_not_mistaken_for_it(self):
+        self.assertFalse(adapter.rejects_reasoning_effort(400, b'{"error":"context length exceeded"}'))
+        self.assertFalse(adapter.rejects_reasoning_effort(500, b"reasoning_effort"))
+
+    def test_the_field_can_be_taken_back_out_for_the_retry(self):
+        body = {"model": "m", "reasoning_effort": "low", "stream": True}
+        self.assertEqual(adapter.without_reasoning_effort(body), {"model": "m", "stream": True})

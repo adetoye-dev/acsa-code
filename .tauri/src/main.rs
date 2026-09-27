@@ -3636,6 +3636,8 @@ async fn local_adapter_start(
     let mut env: Vec<(String, String)> = vec![
         ("ACSA_ADAPTER_UPSTREAM".to_string(), upstream.clone()),
         ("ACSA_ADAPTER_URL".to_string(), upstream_base.clone()),
+        // Ties the adapter's lifetime to this process — see the stdin note below.
+        ("ACSA_ADAPTER_WATCH_STDIN".to_string(), "1".to_string()),
     ];
     if upstream == "openai" {
         args.push("--upstream".to_string());
@@ -3685,7 +3687,16 @@ async fn local_adapter_start(
     let mut child = Command::new(&program)
         .args(&args)
         .envs(env.iter().map(|(key, value)| (key.clone(), value.clone())))
-        .stdin(Stdio::null())
+        // A pipe this process holds open and never writes to, so the adapter can
+        // tell when we are gone.
+        //
+        // It is handed the provider's credential in its environment, and it used
+        // to outlive us: killing the app left the adapter running with the key
+        // until the machine was rebooted (found by reading the environment of an
+        // orphan from a killed run). When this pipe closes — on a clean quit, a
+        // crash, or `kill -9` — the adapter exits. `Stdio::null()` gave it nothing
+        // to notice with.
+        .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(adapter_stderr)
         .spawn()
