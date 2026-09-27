@@ -220,8 +220,23 @@ export function CommitGraph({
   // One lane of pitch, plus room for the outermost dot's stroke.
   const refsWidth = Math.max(1, laneCount) * LANE_WIDTH + 4;
 
+  // `max-h-[45%]` below is load-bearing rather than cosmetic. This section is a
+  // flex sibling of the commit panel above it, and its height is its content:
+  // with a long history its basis is every row, which is far more than the
+  // column. Flex then resolves the negative free space by shrinking *this* item —
+  // the commit panel's basis is `0` (`flex-[1.5]`), so it has no shrink weight to
+  // lose — and the commit panel collapses to nothing. Its message box and Commit
+  // button overflow a zero-height box and the graph paints over them, because the
+  // graph is later in the tree. Seen on a 136-commit repository at the default
+  // 60-row window: "Commit message" underneath the commit rows and the button
+  // behind them. Capping this at a share of the column keeps the free space
+  // positive, so the panel above keeps the rest; the rows scroll inside the cap
+  // because the section now has a height for `flex-1` to resolve against.
   return (
-    <section className="flex min-h-0 flex-col border-t border-hairline" data-testid="git-graph">
+    <section
+      className="flex min-h-0 max-h-[45%] flex-col border-t border-hairline"
+      data-testid="git-graph"
+    >
       <div className="flex shrink-0 items-center gap-1 px-2 py-1.5">
         <button
           type="button"

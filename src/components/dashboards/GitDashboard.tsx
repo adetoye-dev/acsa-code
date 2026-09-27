@@ -706,7 +706,15 @@ export function GitDashboard({
         {/* ── The commit, and the changes it is about ─────────────────────
             Message first, as source control does: the box at the bottom of the
             panel is the one thing you have to scroll to find after staging. */}
-        <div className="flex min-h-0 flex-[1.5] flex-col">
+        {/*
+          A floor, not `min-h-0`: this panel is the flex sibling the graph can
+          steal from (see the note on `CommitGraph`). Its basis is `0`, so if the
+          column is ever shorter than both want it has no shrink weight to lose and
+          would be squeezed to nothing, taking the message box and Commit button
+          with it. 7.5rem is the message box, the button and the status line; the
+          changes list below still scrolls inside whatever is left.
+        */}
+        <div className="flex min-h-[7.5rem] flex-[1.5] flex-col" data-testid="git-commit-panel">
         <div className="shrink-0 border-b border-hairline p-2.5">
           {/* A half-finished merge is the context for everything below it, and the
               one state where the commit button deliberately refuses to work. */}

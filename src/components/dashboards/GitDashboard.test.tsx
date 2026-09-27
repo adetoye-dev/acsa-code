@@ -117,6 +117,30 @@ describe("the source control page", () => {
     expect(screen.getByText("Changes · 2")).toBeTruthy();
   });
 
+  /**
+   * The commit panel and the history are flex siblings in the same column, and
+   * the graph's height is its content — so on a long history its basis is every
+   * row, far more than the column. Flex resolves that negative free space by
+   * shrinking the graph, which the graph can do… except that the panel's basis is
+   * `0` (`flex-[1.5]`), so it has no shrink weight to lose and is the item that
+   * ends up at zero height. Its message box and Commit button then overflow a box
+   * with no height and the graph paints over them, being later in the tree.
+   * Watched on a 136-commit repository at the default 60-row window: "Commit
+   * message" underneath the commit rows, the Commit button behind them.
+   *
+   * jsdom computes no layout, so this cannot assert the resolved heights — that
+   * was checked in the running app. What it can assert is the pair of bounds the
+   * layout depends on, which is what a change would have to drop to bring the
+   * overlap back.
+   */
+  it("bounds the history so it cannot squash the commit panel", async () => {
+    render(<GitDashboard projectCwd="/work/acsa-code" />);
+    const panel = await screen.findByTestId("git-commit-panel");
+    expect(panel.className).toMatch(/min-h-\[7\.5rem\]/);
+    const graph = screen.getByTestId("git-graph");
+    expect(graph.className).toMatch(/max-h-\[45%\]/);
+  });
+
   it("previews the diff of the file that was chosen", async () => {
     render(<GitDashboard projectCwd="/work/acsa-code" />);
     await waitFor(() => expect(screen.getByText("Changes · 2")).toBeTruthy());
