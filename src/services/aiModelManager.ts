@@ -10,6 +10,10 @@
 
 import type { AIProviderConfig, AIProviderId } from "../types/workbench";
 import { appStore, type StoredProvider } from "./appStore";
+// The one list of "this is a local engine, not an API". Imported rather than
+// repeated: this codebase has been bitten by the same set existing twice and
+// drifting (see `RESERVED_RUNTIME_PROVIDER_IDS`).
+import { LOCAL_PROVIDER_IDS } from "./agentApproval";
 
 const STORAGE_KEY = "acsa_code_ai_providers_v4";
 const DEFAULT_PROVIDER_KEY = "acsa_code_default_provider_v4";
@@ -266,6 +270,17 @@ export function scoreModelForCoding(_providerId: string, modelName: string): num
  */
 export function curateProviderModels(providerId: string, rawModels: string[]): string[] {
   if (!Array.isArray(rawModels)) return [];
+
+  // A local engine reports what is *installed*, and that is the user's set rather
+  // than a catalog to curate: the coding-model filter below would hide a model they
+  // deliberately pulled — an embedding or a vision one — and the twelve cap would
+  // truncate an installation that has more. The same list also feeds the "installed
+  // models" panel, so hiding a local model is doubly wrong. `syncOllamaModels`
+  // already treats the daemon as the source of truth; this is the other entrance.
+  if (LOCAL_PROVIDER_IDS.has(providerId)) {
+    return Array.from(new Set(rawModels.filter(Boolean)));
+  }
+
   const valid = Array.from(new Set(rawModels.filter(Boolean).filter(isCodingChatModel)));
 
   if (valid.length === 0) {

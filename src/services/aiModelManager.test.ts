@@ -164,4 +164,27 @@ describe("curating a provider's fetched catalog", () => {
       "deepseek-ai/deepseek-v4.1-flash",
     );
   });
+
+  it("leaves a local engine's list exactly as the engine reported it", () => {
+    // A local engine reports what is *installed*, which is the user's set, not a
+    // catalog to curate. The coding-model filter would hide a model they
+    // deliberately pulled — an embedding or vision one — and the twelve cap would
+    // truncate an install that has more than twelve.
+    const installed = [
+      "qwen2.5-coder:7b",
+      "qwen3.5:9b",
+      "deepseek-coder:6.7b",
+      "nomic-embed-text:latest",
+      "llava:13b",
+      "codellama:7b",
+      "gemma2:9b",
+      "llama3.2:3b",
+      "llama3.2:1b",
+      "phi4:14b",
+      "mistral:7b",
+      "starcoder2:7b",
+      "solar:10.7b",
+    ];
+    expect(models.curateProviderModels("ollama", installed)).toEqual(installed);
+  });
 });
