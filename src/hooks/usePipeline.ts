@@ -39,6 +39,7 @@ import {
   shouldStopTurn,
   turnLimitNotice,
 } from "../services/agentTurnLimit";
+import { PROVIDER_RETRY_LIMIT, providerRetryReason } from "../services/providerRetry";
 import { restoreTurnSnapshot, takeTurnSnapshot } from "../services/turnSnapshot";
 
 /**
@@ -548,6 +549,9 @@ async function runAgentOnAppServer(params: {
 
   let finished = false;
   let failed = false;
+  // Failed sampling attempts the runtime has announced this turn. Counted rather
+  // than trusted to end on its own — see `providerRetryReason`.
+  let providerRetries = 0;
   // Set by turn/completed or turn/failed — the only signals that end a turn.
   const turnFinished = { value: false };
   const failureBox: { value: string } = { value: "" };
@@ -649,6 +653,30 @@ async function runAgentOnAppServer(params: {
         const payload = event.payload;
         const line = (typeof payload === "string" ? payload : String(payload?.line ?? "")).trim();
         if (line) params.log(`[agent] runtime: ${line.slice(0, 200)}`);
+        // A provider that keeps failing gets given up on, in the open.
+        //
+        // Five retries per turn, minutes apart, is twenty minutes of a turn spent
+        // on a provider that has already said no — and the chat shows none of it.
+        // See `providerRetryReason` for why the runtime cannot be left to report
+        // this itself.
+        const retryReason = providerRetryReason(line);
+        if (!retryReason || finished) return;
+        providerRetries += 1;
+        if (providerRetries < PROVIDER_RETRY_LIMIT || turnFinished.value || failureBox.value) return;
+        failureBox.value = retryReason;
+        failed = true;
+        turnFinished.value = true;
+        params.log(
+          `[agent] giving up on this turn: the provider failed ${providerRetries} times — ${retryReason}`,
+        );
+        void (async () => {
+          try {
+            const { invoke } = await import("@tauri-apps/api/core");
+            await invoke("agent_stop");
+          } catch {
+            /* the turn is being abandoned either way */
+          }
+        })();
       }),
     );
     unlisten.push(
