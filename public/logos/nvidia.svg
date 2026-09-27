@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  A placeholder mark for NVIDIA NIM, drawn here rather than copied: a green tile
+  with the initial. The provider registry resolves a logo by id, and anything it
+  does not know falls back to the local "Deterministic AST" entry — so before
+  this existed, NVIDIA NIM was drawn with that mark and announced as
+  "Deterministic AST" to the accessibility tree. Swap this file for the official
+  artwork whenever brand assets are added; the id and the table entry do not
+  change.
+-->
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="NVIDIA NIM"><title>NVIDIA NIM</title><rect x="1" y="1" width="22" height="22" rx="5" fill="#76B900"></rect><path d="M6.6 8.1v7.8h1.9v-4.6l3.1 4.6h1.8V8.1h-1.9v4.5L8.4 8.1H6.6Z" fill="#0B0B0C"></path><path d="M14.4 8.1h3.3c1.6 0 2.7 1.1 2.7 2.7v2.4c0 1.6-1.1 2.7-2.7 2.7h-3.3V8.1Zm1.9 1.5v4.8h1.3c.5 0 .9-.4.9-.9v-3c0-.5-.4-.9-.9-.9h-1.3Z" fill="#0B0B0C"></path></svg>

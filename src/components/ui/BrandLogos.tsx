@@ -45,6 +45,7 @@ export const BRAND_LOGO_URLS: Record<string, string> = {
   llama: "/logos/llama.svg",
   mistral: "/logos/mistral.svg",
   groq: "/logos/groq.svg",
+  nvidia: "/logos/nvidia.svg",
   ollama: "/logos/ollama.svg",
   cohere: "/logos/cohere.svg",
   perplexity: "/logos/perplexity.svg",
@@ -219,6 +220,19 @@ export function GroqLogo({ className = "w-4 h-4 shrink-0", size, style, title = 
 
 export function CohereLogo({ className = "w-4 h-4 shrink-0", size, style, title = "Cohere", ...rest }: LogoProps) {
   return <BrandLogoImg providerId="cohere" className={className} size={size} style={style} title={title} {...(rest as any)} />;
+}
+
+/**
+ * The mark is a placeholder in `public/logos/nvidia.svg` — drawn for this app,
+ * not the official artwork.
+ *
+ * It exists because the registry falls back to the local "Deterministic AST"
+ * entry for any id it does not know, so without an entry NVIDIA NIM was drawn
+ * with that mark *and announced as "Deterministic AST"* in the accessibility
+ * tree. An honest placeholder beats a wrong brand.
+ */
+export function NvidiaLogo({ className = "w-4 h-4 shrink-0", size, style, title = "NVIDIA NIM", ...rest }: LogoProps) {
+  return <BrandLogoImg providerId="nvidia" className={className} size={size} style={style} title={title} {...(rest as any)} />;
 }
 
 export function PerplexityLogo({ className = "w-4 h-4 shrink-0", size, style, title = "Perplexity AI", ...rest }: LogoProps) {
@@ -444,6 +458,16 @@ export const AI_BRAND_REGISTRY: Record<string, AIBrandMetadata> = {
     description: "Ultra-high-speed LPU inference engine for instant tokens.",
     component: GroqLogo,
     aliases: ["groq", "groq-cloud"],
+  },
+  nvidia: {
+    id: "nvidia",
+    name: "NVIDIA NIM",
+    domain: "nvidia.com",
+    category: "cloud",
+    primaryColor: "#76B900",
+    description: "NVIDIA's hosted inference microservices, including a free tier of OpenAI-compatible endpoints.",
+    component: NvidiaLogo,
+    aliases: ["nvidia", "nvidia-nim", "nim", "integrate.api.nvidia.com"],
   },
   ollama: {
     id: "ollama",
