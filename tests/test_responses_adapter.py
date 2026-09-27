@@ -377,3 +377,32 @@ class OpenAIUpstream(unittest.TestCase):
             stream.feed({"choices": [{"delta": {"content": "hel"}}]})[0]["message"]["content"],
             "hel",
         )
+
+
+class ModelCatalogIds(unittest.TestCase):
+    """How a provider's `/v1/models` reply becomes the app's model ids."""
+
+    def test_an_owner_prefix_is_kept(self):
+        # NIM, OpenRouter, Together and HuggingFace all report `owner/name`, and the
+        # whole string is what the model is called by. Stripping the owner listed a
+        # model and then 404ed on it — which is what emptied NIM's list of
+        # `deepseek-ai/deepseek-v4.1-flash`.
+        payload = {
+            "data": [
+                {"id": "deepseek-ai/deepseek-v4.1-flash"},
+                {"id": "moonshotai/kimi-k3"},
+                {"id": "gpt-5.3-codex"},
+            ]
+        }
+        self.assertEqual(
+            ai_cli._names(payload),
+            ["deepseek-ai/deepseek-v4.1-flash", "moonshotai/kimi-k3", "gpt-5.3-codex"],
+        )
+
+    def test_the_gemini_route_prefix_is_still_removed(self):
+        # Gemini puts a route on every id — `models/gemini-2.0-flash` — and its call
+        # takes the bare one, so that prefix is not part of the name.
+        self.assertEqual(
+            ai_cli._names({"models": [{"name": "models/gemini-2.0-flash"}]}),
+            ["gemini-2.0-flash"],
+        )

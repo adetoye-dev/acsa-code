@@ -132,7 +132,13 @@ def _names(payload: dict) -> list[str]:
         name = entry.get("id") or entry.get("name") or entry.get("model")
         # Gemini reports `models/gemini-2.0-flash`.
         if isinstance(name, str) and name:
-            names.append(name.split("/", 1)[-1])
+            # `models/` is a route prefix Gemini puts on every id, and its call takes
+            # the bare id. Any *other* slash is part of the id: `deepseek-ai/deepseek-v4.1-flash`
+            # and `anthropic/claude-3.7-sonnet` are what those providers serve, and
+            # stripping the owner produced models they had never heard of — so the app
+            # listed a model and then 404ed on the very next call. NVIDIA NIM is the
+            # case that surfaced it: all 82 of its ids are owner-qualified.
+            names.append(name[len("models/"):] if name.startswith("models/") else name)
     return names
 
 
