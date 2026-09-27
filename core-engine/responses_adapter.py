@@ -41,12 +41,51 @@ import uuid
 
 UPSTREAM_HOST = os.environ.get("ACSA_OLLAMA_HOST", "127.0.0.1")
 UPSTREAM_PORT = int(os.environ.get("ACSA_OLLAMA_PORT", "11434"))
+
+# Which shape the upstream speaks.
+#
+# "ollama" is the original: Ollama's native `/api/chat`. "openai" is any
+# OpenAI-compatible `/chat/completions` — which is most of the registry, and the
+# only way to reach one of them: the runtime requires the Responses API
+# (`wire_api = "chat"` is rejected outright by the Codex build this ships), and
+# almost no hosted provider implements Responses. Measured on NVIDIA NIM's public
+# host, which is the case that prompted this:
+#
+#     POST https://integrate.api.nvidia.com/v1/responses        -> 404 page not found
+#     POST https://integrate.api.nvidia.com/v1/chat/completions -> 403 (exists; needs a key)
+#     GET  https://integrate.api.nvidia.com/v1/models           -> 200, 82 models
+#
+# So NIM cannot be pointed at directly, and neither can Groq, Mistral, xAI,
+# Moonshot, Together, Cohere or OpenRouter unless their Responses support is
+# verified first. Fronting them with this adapter is what makes them work.
+UPSTREAM_MODE = os.environ.get("ACSA_ADAPTER_UPSTREAM", "ollama").strip().lower()
+UPSTREAM_URL = os.environ.get("ACSA_ADAPTER_URL", "").strip()
+UPSTREAM_KEY = os.environ.get("ACSA_ADAPTER_KEY", "")
 DEBUG = os.environ.get("ACSA_ADAPTER_DEBUG") == "1"
 
 
 def log(*parts: object) -> None:
     if DEBUG:
         print("[adapter]", *parts, file=sys.stderr, flush=True)
+
+
+def upstream_is_openai() -> bool:
+    """Whether the upstream is an OpenAI-compatible `/chat/completions`."""
+    return UPSTREAM_MODE == "openai"
+
+
+def upstream_endpoint() -> tuple[str, str, int, str]:
+    """`(scheme, host, port, path)` for the OpenAI upstream, from its base URL."""
+    scheme, _, rest = UPSTREAM_URL.partition("://")
+    scheme = scheme or "https"
+    hostport, _, path = rest.partition("/")
+    host, _, port = hostport.partition(":")
+    return (
+        scheme,
+        host,
+        int(port) if port else (443 if scheme == "https" else 80),
+        "/" + path.strip("/") + "/chat/completions" if path else "/v1/chat/completions",
+    )
 
 
 def new_id(prefix: str) -> str:
@@ -299,37 +338,171 @@ def chat_messages(body: dict) -> list:
                 role = "system"
             messages.append({"role": role, "content": text_of(item.get("content"))})
         elif kind == "function_call":
-            # The model's earlier tool call, replayed as history. Ollama wants
-            # `arguments` as an object here; the Responses API carries it as a
-            # string. Posting the string is a 400: "Value looks like object, but
-            # can't find closing '}'".
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "function": {
-                                "name": item.get("name") or "",
-                                "arguments": as_object(item.get("arguments")),
+            # The model's earlier tool call, replayed as history.
+            #
+            # The two upstreams disagree here, in opposite directions. Ollama
+            # wants `arguments` as an object — posting the Responses string is a
+            # 400, "Value looks like object, but can't find closing '}'" — and has
+            # no notion of a call id. OpenAI wants the exact shape the Responses
+            # API already carries: a JSON *string*, plus the id that pairs the call
+            # with the `role: "tool"` message answering it.
+            if upstream_is_openai():
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": item.get("call_id") or new_id("call"),
+                                "type": "function",
+                                "function": {
+                                    "name": item.get("name") or "",
+                                    "arguments": item.get("arguments") or "{}",
+                                },
                             }
-                        }
-                    ],
-                }
-            )
+                        ],
+                    }
+                )
+            else:
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": item.get("name") or "",
+                                    "arguments": as_object(item.get("arguments")),
+                                }
+                            }
+                        ],
+                    }
+                )
         elif kind == "function_call_output":
-            messages.append(
-                {
-                    "role": "tool",
-                    "content": item.get("output") if isinstance(item.get("output"), str) else text_of(item.get("output")),
-                    "tool_name": item.get("name") or "",
-                }
+            output = (
+                item.get("output")
+                if isinstance(item.get("output"), str)
+                else text_of(item.get("output"))
             )
+            if upstream_is_openai():
+                messages.append(
+                    {"role": "tool", "tool_call_id": item.get("call_id") or "", "content": output}
+                )
+            else:
+                messages.append(
+                    {"role": "tool", "content": output, "tool_name": item.get("name") or ""}
+                )
         elif kind == "reasoning":
             continue
         else:
             log("unhandled input item type:", kind)
     return messages
+
+
+# ── OpenAI, replayed as the shape everything below was written for ──────────
+#
+# Everything downstream of the handler was built against Ollama's `/api/chat`:
+# a `message` carrying `content` and `tool_calls`, and counters named
+# `prompt_eval_count` / `eval_count`. Rather than teach all of it a second
+# dialect, the two OpenAI entry points are converted into exactly that.
+
+
+def upstream_message(result: dict) -> dict:
+    """A non-streaming OpenAI reply as Ollama's `message`."""
+    choice = ((result or {}).get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    content = message.get("content")
+    calls = []
+    for call in message.get("tool_calls") or []:
+        fn = call.get("function") or {}
+        calls.append(
+            {
+                "id": call.get("id"),
+                "function": {
+                    "name": fn.get("name") or "",
+                    "arguments": fn.get("arguments") or "{}",
+                },
+            }
+        )
+    return {
+        "content": content if isinstance(content, str) else (text_of(content) if content else ""),
+        "tool_calls": calls,
+    }
+
+
+class OpenAiStream:
+    """An OpenAI SSE stream, replayed as Ollama-shaped chunks.
+
+    Two differences are load-bearing. OpenAI splits one tool call across chunks —
+    the name in one, the JSON arguments over the next few — while the consumer
+    here emits on first sight of a call, so without this the runtime would be
+    handed an empty argument object. And OpenAI reports usage in a final chunk
+    carrying no choices, where Ollama puts the counters on the last message.
+    """
+
+    def __init__(self) -> None:
+        self.calls: dict[int, dict] = {}
+        self.pending_prompt: int | None = None
+        self.pending_output: int | None = None
+
+    def feed(self, obj: dict) -> list[dict]:
+        out: list[dict] = []
+        usage = obj.get("usage") or {}
+        if isinstance(usage.get("prompt_tokens"), int):
+            self.pending_prompt = usage["prompt_tokens"]
+        if isinstance(usage.get("completion_tokens"), int):
+            self.pending_output = usage["completion_tokens"]
+
+        for choice in obj.get("choices") or []:
+            delta = choice.get("delta") or {}
+            content = delta.get("content")
+            if content:
+                out.append(
+                    {
+                        "message": {
+                            "content": content if isinstance(content, str) else text_of(content)
+                        }
+                    }
+                )
+            for call in delta.get("tool_calls") or []:
+                index = call.get("index")
+                key = index if isinstance(index, int) else len(self.calls)
+                slot = self.calls.setdefault(key, {"id": None, "name": "", "arguments": ""})
+                if call.get("id"):
+                    slot["id"] = call["id"]
+                fn = call.get("function") or {}
+                if fn.get("name"):
+                    slot["name"] += fn["name"]
+                if fn.get("arguments"):
+                    slot["arguments"] += fn["arguments"]
+            if choice.get("finish_reason"):
+                out.extend(self.flush())
+
+        # Reported once, when it arrives, rather than repeated on every chunk.
+        counters: dict = {}
+        if self.pending_prompt is not None:
+            counters["prompt_eval_count"] = self.pending_prompt
+            self.pending_prompt = None
+        if self.pending_output is not None:
+            counters["eval_count"] = self.pending_output
+            self.pending_output = None
+        if counters:
+            out.append(counters)
+        return out
+
+    def flush(self) -> list[dict]:
+        """Emit the collected tool calls, if any are still open."""
+        if not self.calls:
+            return []
+        calls = [
+            {
+                "id": slot["id"] or new_id("call"),
+                "function": {"name": slot["name"], "arguments": slot["arguments"] or "{}"},
+            }
+            for _, slot in sorted(self.calls.items())
+        ]
+        self.calls.clear()
+        return [{"message": {"content": "", "tool_calls": calls}}]
 
 
 # ── The Responses envelope (field-for-field what Ollama emits) ───────────────
@@ -408,8 +581,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
 
         if DEBUG:
-            with open(os.environ.get("ACSA_ADAPTER_DUMP", "/tmp/resp-adapter/last-request.json"), "w") as fh:
-                json.dump(body, fh, indent=1)
+            # Best effort: this is a debugging aid, and it used to take the whole
+            # request down when the directory did not exist yet — so turning the
+            # env var on replaced a working adapter with one that answered nothing.
+            try:
+                dump = os.environ.get("ACSA_ADAPTER_DUMP", "/tmp/resp-adapter/last-request.json")
+                os.makedirs(os.path.dirname(dump), exist_ok=True)
+                with open(dump, "w") as fh:
+                    json.dump(body, fh, indent=1)
+            except OSError as error:  # noqa: BLE001 - never fail the request for this
+                log("could not write the request dump:", error)
 
         model = body.get("model") or "llama3.2:3b"
         stream = bool(body.get("stream", True))
@@ -687,38 +868,65 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return items, index
 
     # ── upstream ────────────────────────────────────────────────────────────
-    def _ollama_chat(self, payload: dict, stream: bool) -> dict:
-        conn = http.client.HTTPConnection(UPSTREAM_HOST, UPSTREAM_PORT, timeout=600)
+    def _upstream_post(self, payload: dict, stream: bool):
+        """POST to the upstream, whichever shape it speaks. → `(conn, response)`."""
+        timeout = 600
+        if upstream_is_openai():
+            scheme, host, port, path = upstream_endpoint()
+            if not host:
+                raise RuntimeError("no upstream base URL: pass --base-url (or ACSA_ADAPTER_URL)")
+            conn = (
+                http.client.HTTPSConnection(host, port, timeout=timeout)
+                if scheme == "https"
+                else http.client.HTTPConnection(host, port, timeout=timeout)
+            )
+            body = dict(payload)
+            if stream:
+                # OpenAI sends usage only in the final chunk, and only when asked.
+                body["stream_options"] = {"include_usage": True}
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream" if stream else "application/json",
+            }
+            if UPSTREAM_KEY:
+                headers["Authorization"] = f"Bearer {UPSTREAM_KEY}"
+            conn.request("POST", path, body=json.dumps(body).encode(), headers=headers)
+            return conn, conn.getresponse()
+
+        conn = http.client.HTTPConnection(UPSTREAM_HOST, UPSTREAM_PORT, timeout=timeout)
         conn.request(
             "POST",
             "/api/chat",
             body=json.dumps(payload).encode(),
             headers={"Content-Type": "application/json"},
         )
-        response = conn.getresponse()
+        return conn, conn.getresponse()
+
+    def _ollama_chat(self, payload: dict, stream: bool) -> dict:
+        """The upstream's reply, reshaped to what `/api/chat` returns."""
+        conn, response = self._upstream_post(payload, stream=False)
         raw = response.read()
         conn.close()
         if response.status != 200:
-            raise RuntimeError(f"ollama {response.status}: {raw[:200]!r}")
-        return json.loads(raw)
+            raise RuntimeError(f"upstream {response.status}: {raw[:200]!r}")
+        result = json.loads(raw)
+        if not upstream_is_openai():
+            return result
+        return {"message": upstream_message(result)}
 
     def _ollama_chat_stream(self, payload: dict):
-        conn = http.client.HTTPConnection(UPSTREAM_HOST, UPSTREAM_PORT, timeout=600)
-        conn.request(
-            "POST",
-            "/api/chat",
-            body=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
-        )
-        response = conn.getresponse()
+        conn, response = self._upstream_post(payload, stream=True)
         if response.status != 200:
             raw = response.read()
             conn.close()
-            raise RuntimeError(f"ollama {response.status}: {raw[:200]!r}")
-        decoder = response
+            raise RuntimeError(f"upstream {response.status}: {raw[:200]!r}")
+        # OpenAI's stream is SSE and, unlike Ollama's, splits one tool call over
+        # several chunks; the accumulator puts those back together and hands the
+        # rest of this file the shape it was written for.
+        accumulator = OpenAiStream() if upstream_is_openai() else None
         buffer = b""
         while True:
-            block = decoder.read(1)
+            block = response.read(1)
             if not block:
                 break
             buffer += block
@@ -727,10 +935,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 line = line.strip()
                 if not line:
                     continue
+                if accumulator is None:
+                    try:
+                        yield json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    continue
+                if line.startswith(b"data:"):
+                    line = line[5:].strip()
+                if line == b"[DONE]":
+                    for chunk in accumulator.flush():
+                        yield chunk
+                    conn.close()
+                    return
                 try:
-                    yield json.loads(line)
+                    obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                for chunk in accumulator.feed(obj):
+                    yield chunk
+        if accumulator is not None:
+            for chunk in accumulator.flush():
+                yield chunk
         conn.close()
 
 
@@ -745,7 +971,7 @@ def main() -> None:
     The caller chooses the port and waits for `/health`, so startup order is not
     a race and no port is guessed.
     """
-    global UPSTREAM_HOST, UPSTREAM_PORT
+    global UPSTREAM_HOST, UPSTREAM_PORT, UPSTREAM_MODE, UPSTREAM_URL, UPSTREAM_KEY
     args = sys.argv[1:]
     port = int(os.environ.get("ACSA_ADAPTER_PORT", "11500"))
     host = "127.0.0.1"
@@ -759,8 +985,20 @@ def main() -> None:
             UPSTREAM_HOST = nxt
         elif arg == "--ollama-port" and nxt:
             UPSTREAM_PORT = int(nxt)
+        elif arg == "--upstream" and nxt:
+            UPSTREAM_MODE = nxt.strip().lower()
+        elif arg == "--base-url" and nxt:
+            UPSTREAM_URL = nxt.strip()
+        # The credential arrives in the environment (`ACSA_ADAPTER_KEY`), never as
+        # an argument: this process's argv is readable by any process on the
+        # machine, and a key in it would be the same mistake as a key in a URL.
     with Server((host, port), Handler) as server:
-        log(f"listening on {host}:{port} -> ollama {UPSTREAM_HOST}:{UPSTREAM_PORT}")
+        target = (
+            f"openai {UPSTREAM_URL or '(no base URL — set --base-url)'}"
+            if upstream_is_openai()
+            else f"ollama {UPSTREAM_HOST}:{UPSTREAM_PORT}"
+        )
+        log(f"listening on {host}:{port} -> {target}")
         server.serve_forever()
 
 

@@ -250,3 +250,130 @@ class TestConnectionErrorTextTests(unittest.TestCase):
         # frontend's classifier keys off it.
         source = (Path(__file__).resolve().parent.parent / "core-engine" / "ai_cli.py").read_text(encoding="utf-8")
         self.assertIn('f"HTTP {status or \'unreachable\'}: {_error_text(body)}"', source)
+
+
+class OpenAIUpstream(unittest.TestCase):
+    """The second upstream shape: any OpenAI-compatible `/chat/completions`.
+
+    This is the path every provider without a Responses API has to take — NVIDIA
+    NIM among them, which is why it exists: measured against NIM's public host,
+    `POST /v1/responses` is `404 page not found` while `/chat/completions` answers
+    403 without a key. The runtime will not speak chat completions itself, so the
+    adapter has to, and the translation is what these tests pin down.
+    """
+
+    def setUp(self):
+        self.saved = (adapter.UPSTREAM_MODE, adapter.UPSTREAM_URL, adapter.UPSTREAM_KEY)
+        adapter.UPSTREAM_MODE = "openai"
+        adapter.UPSTREAM_URL = "https://integrate.api.nvidia.com/v1"
+        adapter.UPSTREAM_KEY = "nvapi-test"
+
+    def tearDown(self):
+        adapter.UPSTREAM_MODE, adapter.UPSTREAM_URL, adapter.UPSTREAM_KEY = self.saved
+
+    def test_the_base_url_splits_into_scheme_host_port_and_path(self):
+        self.assertEqual(
+            adapter.upstream_endpoint(),
+            ("https", "integrate.api.nvidia.com", 443, "/v1/chat/completions"),
+        )
+
+    def test_a_plain_http_base_url_keeps_its_port(self):
+        adapter.UPSTREAM_URL = "http://127.0.0.1:11434/v1"
+        self.assertEqual(
+            adapter.upstream_endpoint(),
+            ("http", "127.0.0.1", 11434, "/v1/chat/completions"),
+        )
+
+    def test_a_non_streaming_reply_becomes_an_ollama_message(self):
+        result = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "hi",
+                        "tool_calls": [
+                            {"id": "call_1", "function": {"name": "f", "arguments": '{"a": 1}'}}
+                        ],
+                    }
+                }
+            ]
+        }
+        message = adapter.upstream_message(result)
+        self.assertEqual(message["content"], "hi")
+        self.assertEqual(message["tool_calls"][0]["function"]["arguments"], '{"a": 1}')
+        self.assertEqual(message["tool_calls"][0]["id"], "call_1")
+
+    def test_tool_history_keeps_the_string_and_pairs_the_call_id(self):
+        # OpenAI wants the Responses shape as it already is: a JSON *string*, and
+        # the id that pairs a call with the message answering it. Ollama is the
+        # opposite on both counts, which is why the direction is explicit.
+        messages = adapter.chat_messages(
+            {
+                "input": [
+                    {
+                        "type": "function_call",
+                        "name": "f",
+                        "arguments": '{"a": 1}',
+                        "call_id": "call_1",
+                    },
+                    {"type": "function_call_output", "call_id": "call_1", "output": "done"},
+                ]
+            }
+        )
+        self.assertEqual(messages[0]["tool_calls"][0]["function"]["arguments"], '{"a": 1}')
+        self.assertEqual(messages[1]["tool_call_id"], "call_1")
+        self.assertNotIn("tool_name", messages[1])
+
+    def test_the_ollama_direction_is_untouched_by_the_mode(self):
+        adapter.UPSTREAM_MODE = "ollama"
+        messages = adapter.chat_messages(
+            {"input": [{"type": "function_call", "name": "f", "arguments": '{"a": 1}'}]}
+        )
+        self.assertEqual(messages[0]["tool_calls"][0]["function"]["arguments"], {"a": 1})
+
+    def test_a_fragmented_streamed_tool_call_arrives_complete_and_once(self):
+        # The reason the accumulator exists: OpenAI sends the name in one chunk and
+        # the JSON arguments over the next few, and the consumer emits on first
+        # sight of a call — without this it would hand the runtime `{}` for every
+        # tool the model called.
+        stream = adapter.OpenAiStream()
+        chunks = []
+        for obj in [
+            # The name arrives whole in the first delta; the arguments are the part
+            # that is streamed in pieces.
+            {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_1", "function": {"name": "get_weather", "arguments": ""}}]}}]},
+            {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": '{"ci'}}]}}]},
+            {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": 'ty": "Lagos"}'}}]}}]},
+            {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+            {"choices": [], "usage": {"prompt_tokens": 11, "completion_tokens": 3}},
+        ]:
+            chunks.extend(stream.feed(obj))
+
+        calls = [
+            call
+            for chunk in chunks
+            for call in (chunk.get("message") or {}).get("tool_calls") or []
+        ]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["function"]["name"], "get_weather")
+        self.assertEqual(calls[0]["function"]["arguments"], '{"city": "Lagos"}')
+        self.assertEqual(calls[0]["id"], "call_1")
+        counters = [chunk for chunk in chunks if "eval_count" in chunk]
+        self.assertEqual(len(counters), 1, "usage is reported once, not per chunk")
+        self.assertEqual(counters[0]["prompt_eval_count"], 11)
+
+    def test_a_call_still_open_at_the_end_is_flushed(self):
+        # A stream that ends without `finish_reason` — a dropped connection, a
+        # provider that omits it — must not swallow the call the model made.
+        stream = adapter.OpenAiStream()
+        stream.feed({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c", "function": {"name": "f", "arguments": "{}"}}]}}]})
+        flushed = stream.flush()
+        self.assertEqual(flushed[0]["message"]["tool_calls"][0]["function"]["name"], "f")
+        self.assertEqual(stream.flush(), [], "flushing twice must not repeat the call")
+
+    def test_text_deltas_pass_through_untouched(self):
+        stream = adapter.OpenAiStream()
+        self.assertEqual(
+            stream.feed({"choices": [{"delta": {"content": "hel"}}]})[0]["message"]["content"],
+            "hel",
+        )
