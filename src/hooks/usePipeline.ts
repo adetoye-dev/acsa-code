@@ -2650,7 +2650,7 @@ export function agentCatalogEntry(providerId: string, providerName: string, slug
         slug,
         display_name: slug,
     description: `${slug} via ${providerName}.`,
-        default_reasoning_level: "high",
+        default_reasoning_level: defaultReasoningLevel(slug),
         supported_reasoning_levels: [
           { effort: "low", description: "Low reasoning" },
           { effort: "high", description: "High reasoning" },
@@ -2684,3 +2684,23 @@ export function agentCatalogEntry(providerId: string, providerName: string, slug
     experimental_supported_tools: [],
   };
 }
+
+/**
+ * How hard the runtime asks a model to think, before the user has even sent
+ * anything.
+ *
+ * Every entry used to declare `"high"`, which is the wrong default for the cheap
+ * tiers: a vendor ships a `flash`/`mini`/`nano` model precisely so it answers
+ * quickly and cheaply, and asking it for deep reasoning fights that design and
+ * pays in latency. Measured on NVIDIA NIM with `deepseek-ai/deepseek-v4.1-flash`,
+ * on a two-step read-only task: of a 232s turn, about 212s was the reasoning
+ * phase — the tool itself took milliseconds. The lever is ours; the tier is the
+ * vendor's own statement about what the model is for. Frontier models keep
+ * `"high"`, and both levels stay declared, so either can still be asked for.
+ */
+export function defaultReasoningLevel(slug: string): "low" | "high" {
+  return FAST_TIER_PATTERN.test(slug) ? "low" : "high";
+}
+
+/** The tier words vendors use for the cheap-and-quick variant of a model. */
+const FAST_TIER_PATTERN = /(^|[-_/])(flash|mini|nano|tiny|small|lite|turbo|fast|haiku)([-_.:]|$)/i;

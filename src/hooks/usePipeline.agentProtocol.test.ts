@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_BASE_INSTRUCTIONS, AGENT_RUNTIME_FLAGS, RESERVED_RUNTIME_PROVIDER_IDS, agentCatalogEntry, approvalSummary, countDiffLines, hostedProviderId, summarizeItemChanges, userInputResponse } from "./usePipeline";
+import { AGENT_BASE_INSTRUCTIONS, AGENT_RUNTIME_FLAGS, RESERVED_RUNTIME_PROVIDER_IDS, agentCatalogEntry, approvalSummary, countDiffLines, defaultReasoningLevel, hostedProviderId, summarizeItemChanges, userInputResponse } from "./usePipeline";
 
 /**
  * The instruction the app hands the agent through the model catalog on every run.
@@ -242,6 +242,29 @@ describe("the catalog entry for one model", () => {
     // retries five times before reporting the turn as failed.
     const entry = agentCatalogEntry("deepseek", "DeepSeek", "deepseek-flash");
     expect(entry.input_modalities).toEqual(["text"]);
+  });
+
+  /**
+   * How hard the model is asked to think, which we choose and the user does not
+   * see. Every entry said `"high"`, so a cheap tier was asked for deep reasoning:
+   * on NVIDIA NIM with `deepseek-ai/deepseek-v4.1-flash`, a two-step read-only
+   * task spent ~212s of a 232s turn in the reasoning phase, while the tool call
+   * itself took milliseconds.
+   */
+  it("does not ask a cheap tier for deep reasoning", () => {
+    expect(defaultReasoningLevel("deepseek-ai/deepseek-v4.1-flash")).toBe("low");
+    expect(defaultReasoningLevel("z-ai/glm-5.3-flash")).toBe("low");
+    expect(defaultReasoningLevel("gpt-5.3-codex-mini")).toBe("low");
+    expect(agentCatalogEntry("nvidia", "NVIDIA NIM", "deepseek-ai/deepseek-v4.1-flash"))
+      .toMatchObject({ default_reasoning_level: "low" });
+  });
+
+  it("leaves a frontier model at high, and offers both levels either way", () => {
+    expect(defaultReasoningLevel("gpt-5.3-codex")).toBe("high");
+    expect(defaultReasoningLevel("deepseek-v4-pro")).toBe("high");
+    const entry = agentCatalogEntry("openai", "OpenAI", "gpt-5.3-codex");
+    expect(entry.default_reasoning_level).toBe("high");
+    expect(entry.supported_reasoning_levels.map((level) => level.effort)).toEqual(["low", "high"]);
   });
 
   it("still names the model and the provider it came through", () => {
