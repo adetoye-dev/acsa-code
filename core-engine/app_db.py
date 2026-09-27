@@ -16,12 +16,17 @@ Design notes
   one migration path here, and every reader goes through it.
 * **Location.** A per-user data directory (see `data_dir`), overridable with
   `ACSA_DATA_DIR` so tests and portable installs do not touch the real one.
-* **Secrets.** Kept in a 0600 database rather than a browser store, never sent
-  back to the UI in raw form (see `set_secret` / `has_secret`), and always
-  overridden by the environment when one is set (`resolve_api_key`). There is no
-  encryption at rest: the standard library has no authenticated cipher and
-  hand-rolling one would be worse than the file permissions. OS keychain
-  integration is the follow-up, and `docs/PRODUCTION_CHECKLIST.md` says so.
+* **Secrets.** In the packaged app the UI never writes a credential here: the
+  Rust shell keeps it in the OS keychain (`.tauri/src/main.rs`, `secrets_set`)
+  and hands it to this process in the environment, which `resolve_api_key` reads
+  first. This table is the **fallback** — a keychain that is not usable (a
+  headless Linux box, a locked keyring, or a build the OS will not trust, where
+  `secrets_set` answers `stored: "file"` with the reason) — and the store the
+  dev bridge uses. Either way: a 0600 file rather than a browser store, never
+  sent back to the UI in raw form (see `set_secret` / `has_secret`), and always
+  overridden by the environment when one is set. No encryption at rest — the
+  standard library has no authenticated cipher, and hand-rolling one would be
+  worse than the file permissions.
 """
 
 from __future__ import annotations
