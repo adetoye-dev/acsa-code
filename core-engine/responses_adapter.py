@@ -834,6 +834,54 @@ class Handler(http.server.BaseHTTPRequestHandler):
             },
         )
 
+        # Finish the message item, once.
+        #
+        # The runtime's stream has exactly one active output item at a time, and it
+        # says so out loud when that is violated: a real run on NVIDIA NIM logged
+        # `ERROR … "OutputTextDelta without active item"` because the model wrote
+        # text and then called a tool in the same turn, and this adapter went on
+        # sending text deltas — and closed the message item — *after* the function
+        # call had become the active item. Closing the message first is also just the
+        # right order: text item completes, then the call it led to.
+        closed_message = False
+
+        def close_message(final_text: str) -> None:
+            nonlocal closed_message
+            if closed_message:
+                return
+            closed_message = True
+            if final_text:
+                send(
+                    "response.output_text.done",
+                    {"content_index": 0, "item_id": item_id, "logprobs": [], "output_index": 0, "text": final_text},
+                )
+                send(
+                    "response.content_part.done",
+                    {
+                        "content_index": 0,
+                        "item_id": item_id,
+                        "output_index": 0,
+                        "part": {"annotations": [], "logprobs": [], "text": final_text, "type": "output_text"},
+                    },
+                )
+            send(
+                "response.output_item.done",
+                {
+                    "output_index": 0,
+                    "item": {
+                        "content": (
+                            [{"annotations": [], "logprobs": [], "text": final_text, "type": "output_text"}]
+                            if final_text
+                            else []
+                        ),
+                        "id": item_id,
+                        "role": "assistant",
+                        "status": "completed",
+                        "type": "message",
+                    },
+                },
+            )
+
         text = ""
         # Text not yet sent, while it could still be a tool call.
         held = ""
@@ -850,7 +898,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 delta = message.get("content") or ""
                 if delta:
                     text += delta
-                    if streaming:
+                    if closed_message:
+                        # Text after a call: the call is the active item now, so a
+                        # delta here is the error above in the other direction.
+                        # The text is still the turn's text, just not streamed.
+                        pass
+                    elif streaming:
                         send(
                             "response.output_text.delta",
                             {"content_index": 0, "delta": delta, "item_id": item_id, "logprobs": [], "output_index": 0},
@@ -866,6 +919,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                             held = ""
                 calls = message.get("tool_calls") or []
                 if calls:
+                    close_message(text if streaming else "")
                     self._emit_tool_calls(calls, output_index=1, send=send, resp_id=resp_id, schemas=schemas)
         except Exception as error:  # noqa: BLE001 - surfaced as a failed response
             warn("stream failed:", error)
@@ -903,7 +957,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         # Nothing streamed, so decide now what the held text was.
         recovered = None
-        if held and not streaming:
+        # Not when a call already went out: that *is* the turn's action, and
+        # recovering a second one from leftover text would add a tool call the model
+        # never made as its answer.
+        if held and not streaming and not closed_message:
             recovered = tool_call_from_text(held, schemas)
             if recovered:
                 log("recovered a tool call the model wrote as text:", recovered[0], json.dumps(recovered[1])[:200])
@@ -930,39 +987,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # A recovered call is not also an answer: the message item stays empty, so
         # the chat does not show `{"name": …}` as prose beside the tool it drove.
         message_text = "" if recovered else text
-
-        if message_text:
-            send(
-                "response.output_text.done",
-                {"content_index": 0, "item_id": item_id, "logprobs": [], "output_index": 0, "text": message_text},
-            )
-            send(
-                "response.content_part.done",
-                {
-                    "content_index": 0,
-                    "item_id": item_id,
-                    "output_index": 0,
-                    "part": {"annotations": [], "logprobs": [], "text": message_text, "type": "output_text"},
-                },
-            )
-            send(
-                "response.output_item.done",
-                {
-                    "output_index": 0,
-                    "item": {
-                        "content": [{"annotations": [], "logprobs": [], "text": message_text, "type": "output_text"}],
-                        "id": item_id,
-                        "role": "assistant",
-                        "status": "completed",
-                        "type": "message",
-                    },
-                },
-            )
-        else:
-            send(
-                "response.output_item.done",
-                {"output_index": 0, "item": {"content": [], "id": item_id, "role": "assistant", "status": "completed", "type": "message"}},
-            )
+        # Idempotent: a turn that called a tool already closed it, with whatever text
+        # came before the call.
+        close_message(message_text)
 
         finished = []
         if message_text:
