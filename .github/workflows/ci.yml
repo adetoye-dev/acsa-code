@@ -215,7 +215,7 @@ jobs:
           echo "bundle launches and resolves its engine"
 
       - name: Upload bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ACSA-Code-macos-app
           path: .tauri/target/release/bundle/macos/*.app
