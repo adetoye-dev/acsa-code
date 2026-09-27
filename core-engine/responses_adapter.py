@@ -613,12 +613,38 @@ class OpenAiStream:
 # ── The Responses envelope (field-for-field what Ollama emits) ───────────────
 
 
-def envelope(resp_id: str, model: str, status: str, output, usage=None) -> dict:
+def upstream_failure_message(status: int, body: bytes) -> str:
+    """A sentence for a provider failure, rather than a status code on its own.
+
+    Written for the case that prompted it: NVIDIA NIM's free tier answered 504 to
+    every attempt, and all anyone could see was "upstream 504: b''" in a log file.
+    """
+    detail = (body or b"").decode("utf-8", "replace").strip()
+    known = {
+        401: "the provider refused the credential (401)",
+        403: "the provider refused the request (403)",
+        404: "the provider has no such endpoint or model (404)",
+        429: "the provider is rate limiting (429)",
+        500: "the provider failed internally (500)",
+        502: "the provider's gateway failed (502)",
+        503: "the provider is unavailable (503)",
+        504: "the provider timed out at its own gateway (504) — a loaded free tier does this",
+    }
+    sentence = known.get(status, f"the provider answered HTTP {status or 'nothing'}")
+    return f"{sentence}. {detail[:200]}" if detail else sentence
+
+
+def envelope(resp_id: str, model: str, status: str, output, usage=None, error=None) -> dict:
     return {
         "background": False,
         "completed_at": now() if status == "completed" else None,
         "created_at": now(),
-        "error": None,
+        # A failed response has to say *why*. Sent empty, the runtime reads the
+        # failure as a stream that ended early and retries five times — verified by
+        # pointing it at an upstream that always answers 504: "stream disconnected
+        # before completion: response.failed event received", five times, then
+        # nothing. With a reason in it the same answer is reportable.
+        "error": error,
         "frequency_penalty": 0,
         "id": resp_id,
         "incomplete_details": None,
@@ -811,7 +837,35 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     self._emit_tool_calls(calls, output_index=1, send=send, resp_id=resp_id, schemas=schemas)
         except Exception as error:  # noqa: BLE001 - surfaced as a failed response
             warn("stream failed:", error)
-            send("response.failed", {"response": envelope(resp_id, model, "failed", [])})
+            send(
+                # `response.failed`, with the reason in it.
+                #
+                # The runtime reads this event as a stream that ended early and
+                # retries five times — measured against a local upstream that always
+                # answers 504: five "stream disconnected before completion" lines and
+                # then nothing, i.e. twenty minutes of a turn spent on a provider
+                # that had already said no. Completing the stream with a failed
+                # response does stop the retrying, and was tried and reverted: the
+                # runtime then reports *nothing at all* and the app reads the turn as
+                # an empty success, which is worse than a loud retry.
+                #
+                # So the retry is left to the runtime, and the reason goes in the
+                # event and the log — which is what the OUTPUT panel shows and what
+                # `friendly_agent_line` turns into a sentence.
+                "response.failed",
+                {
+                    "response": envelope(
+                        resp_id,
+                        model,
+                        "failed",
+                        [],
+                        error={
+                            "code": "upstream_error",
+                            "message": str(error) or "the provider failed without saying why",
+                        },
+                    )
+                },
+            )
             self._chunk(b"")
             return
 
@@ -1021,8 +1075,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             raw = response.read()
             conn.close()
         if response.status != 200:
-            warn(f"upstream answered {response.status}: {raw[:200]!r}")
-            raise RuntimeError(f"upstream {response.status}: {raw[:200]!r}")
+            reason = upstream_failure_message(response.status, raw)
+            warn("upstream answered", response.status, "—", reason)
+            raise RuntimeError(reason)
         result = json.loads(raw)
         if not upstream_is_openai():
             return result
@@ -1040,13 +1095,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 payload = without_reasoning_effort(payload)
                 conn, response = self._upstream_post(payload, stream=True)
             else:
-                warn(f"upstream answered {response.status}: {raw[:200]!r}")
-                raise RuntimeError(f"upstream {response.status}: {raw[:200]!r}")
+                reason = upstream_failure_message(response.status, raw)
+                warn("upstream answered", response.status, "—", reason)
+                raise RuntimeError(reason)
         if response.status != 200:
             raw = response.read()
             conn.close()
-            warn(f"upstream answered {response.status}: {raw[:200]!r}")
-            raise RuntimeError(f"upstream {response.status}: {raw[:200]!r}")
+            reason = upstream_failure_message(response.status, raw)
+            warn("upstream answered", response.status, "—", reason)
+            raise RuntimeError(reason)
         # OpenAI's stream is SSE and, unlike Ollama's, splits one tool call over
         # several chunks; the accumulator puts those back together and hands the
         # rest of this file the shape it was written for.
