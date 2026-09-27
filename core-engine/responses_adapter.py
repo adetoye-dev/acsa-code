@@ -411,17 +411,19 @@ def without_reasoning_effort(payload: dict) -> dict:
     return {key: value for key, value in payload.items() if key != "reasoning_effort"}
 
 
-def rejects_reasoning_effort(status: int, body: bytes) -> bool:
-    """Whether an upstream refused a request over the effort field.
+def should_retry_without_effort(status: int, payload: dict) -> bool:
+    """Whether to take our own extra field back out and ask again.
 
-    Not every OpenAI-compatible server has it, and a strict one answers 400 naming
-    the field. A provider should not be broken by a latency nicety, so that answer
-    is caught and the request retried once without it.
+    Any 400 or 422 counts, not only one that names the field. This first required
+    the refusal to say "reasoning_effort", and a real one arrived as a single `{` —
+    the gateway got one byte of its error body out before the connection went — so
+    the retry never fired, four identical 400s were reported, and a provider looked
+    broken for a reason we had introduced.
+
+    Retrying once costs one request and settles which it was: if the refusal was
+    about something else, it happens again, with the provider's own words by then.
     """
-    if status not in (400, 422):
-        return False
-    text = body.decode("utf-8", "replace").lower()
-    return "reasoning_effort" in text or "reasoning effort" in text
+    return status in (400, 422) and "reasoning_effort" in payload
 
 
 def chat_messages(body: dict) -> list:
@@ -619,11 +621,13 @@ def upstream_failure_message(status: int, body: bytes) -> str:
     Written for the case that prompted it: NVIDIA NIM's free tier answered 504 to
     every attempt, and all anyone could see was "upstream 504: b''" in a log file.
     """
-    detail = (body or b"").decode("utf-8", "replace").strip()
+    detail = body_hint(body)
     known = {
+        400: "the provider refused the request (400) — a model or a field it does not accept",
         401: "the provider refused the credential (401)",
         403: "the provider refused the request (403)",
         404: "the provider has no such endpoint or model (404)",
+        422: "the provider refused the request (422)",
         429: "the provider is rate limiting (429)",
         500: "the provider failed internally (500)",
         502: "the provider's gateway failed (502)",
@@ -631,7 +635,35 @@ def upstream_failure_message(status: int, body: bytes) -> str:
         504: "the provider timed out at its own gateway (504) — a loaded free tier does this",
     }
     sentence = known.get(status, f"the provider answered HTTP {status or 'nothing'}")
-    return f"{sentence}. {detail[:200]}" if detail else sentence
+    return f"{sentence}: {detail}" if detail else sentence
+
+
+def body_hint(body: bytes) -> str:
+    """The provider's own words, when the body actually carries any.
+
+    A gateway that refuses mid-write leaves a fragment — a real one produced a
+    single `{` — and printing that after a sentence makes the message look broken
+    rather than the request. So a body is used only when it says something: a
+    readable fragment, or a JSON error's message.
+    """
+    text = (body or b"").decode("utf-8", "replace").strip()
+    if not text:
+        return ""
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        # A fragment worth repeating is one with words in it, `{` is not.
+        return text[:200] if len(text) >= 12 else ""
+    if isinstance(parsed, dict):
+        for key in ("message", "detail", "title", "error"):
+            value = parsed.get(key)
+            if isinstance(value, str) and value:
+                return value[:200]
+            if isinstance(value, dict):
+                inner = value.get("message") or value.get("detail")
+                if isinstance(inner, str) and inner:
+                    return inner[:200]
+    return ""
 
 
 def envelope(resp_id: str, model: str, status: str, output, usage=None, error=None) -> dict:
@@ -1068,8 +1100,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         conn, response = self._upstream_post(payload, stream=False)
         raw = response.read()
         conn.close()
-        if "reasoning_effort" in payload and rejects_reasoning_effort(response.status, raw):
-            warn(f"upstream answered {response.status} over reasoning_effort; retrying without it")
+        if should_retry_without_effort(response.status, payload):
+            warn(f"upstream answered {response.status}; retrying once without reasoning_effort")
             payload = without_reasoning_effort(payload)
             conn, response = self._upstream_post(payload, stream=False)
             raw = response.read()
@@ -1085,19 +1117,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _ollama_chat_stream(self, payload: dict):
         conn, response = self._upstream_post(payload, stream=True)
-        if "reasoning_effort" in payload and response.status in (400, 422):
+        if should_retry_without_effort(response.status, payload):
             # Only a *rejection* is read here. On a 200 the body is the stream
             # itself, and peeking at it would swallow the first chunk.
             raw = response.read()
             conn.close()
-            if rejects_reasoning_effort(response.status, raw):
-                warn(f"upstream answered {response.status} over reasoning_effort; retrying without it")
-                payload = without_reasoning_effort(payload)
-                conn, response = self._upstream_post(payload, stream=True)
-            else:
-                reason = upstream_failure_message(response.status, raw)
-                warn("upstream answered", response.status, "—", reason)
-                raise RuntimeError(reason)
+            warn(f"upstream answered {response.status}; retrying once without reasoning_effort")
+            payload = without_reasoning_effort(payload)
+            conn, response = self._upstream_post(payload, stream=True)
         if response.status != 200:
             raw = response.read()
             conn.close()

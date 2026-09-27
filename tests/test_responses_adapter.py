@@ -500,20 +500,44 @@ class ReasoningEffort(unittest.TestCase):
         body = {"input": "hi", "tools": [{"type": "function", "name": "f", "parameters": {}}]}
         self.assertEqual(len(adapter.chat_body_for_request(body, "m")["tools"]), 1)
 
-    def test_a_strict_upstream_refusal_is_recognised(self):
-        # Not every OpenAI-compatible server has the field, and one that refuses
-        # should cost a request, not the provider.
-        self.assertTrue(
-            adapter.rejects_reasoning_effort(400, b'{"error":"unknown field reasoning_effort"}')
-        )
-        self.assertTrue(
-            adapter.rejects_reasoning_effort(422, b'{"detail":"reasoning effort is not supported"}')
-        )
+    def test_any_refusal_is_worth_one_retry_without_our_field(self):
+        # Not every OpenAI-compatible server has `reasoning_effort`. Waiting for the
+        # refusal to *name* it was the first version, and a real one arrived as a
+        # single `{` — so the retry never fired and a provider looked broken for a
+        # reason we introduced. Any 400/422 now costs one request to settle.
+        with_field = {"model": "m", "reasoning_effort": "low", "stream": True}
+        self.assertTrue(adapter.should_retry_without_effort(400, with_field))
+        self.assertTrue(adapter.should_retry_without_effort(422, with_field))
 
-    def test_an_unrelated_failure_is_not_mistaken_for_it(self):
-        self.assertFalse(adapter.rejects_reasoning_effort(400, b'{"error":"context length exceeded"}'))
-        self.assertFalse(adapter.rejects_reasoning_effort(500, b"reasoning_effort"))
+    def test_it_retries_only_where_retrying_can_help(self):
+        with_field = {"model": "m", "reasoning_effort": "low", "stream": True}
+        without = {"model": "m", "stream": True}
+        # A 500 is the provider breaking; a 200 is not a failure; and nothing is
+        # retried when we never sent the field in the first place.
+        self.assertFalse(adapter.should_retry_without_effort(500, with_field))
+        self.assertFalse(adapter.should_retry_without_effort(200, with_field))
+        self.assertFalse(adapter.should_retry_without_effort(400, without))
 
     def test_the_field_can_be_taken_back_out_for_the_retry(self):
         body = {"model": "m", "reasoning_effort": "low", "stream": True}
         self.assertEqual(adapter.without_reasoning_effort(body), {"model": "m", "stream": True})
+
+    def test_a_refusal_body_is_quoted_only_when_it_says_something(self):
+        # The real 400 body was a single `{`: the gateway got one byte out before the
+        # connection went. Printed after a sentence it reads as a broken message
+        # rather than a broken request.
+        self.assertEqual(adapter.body_hint(b"{"), "")
+        self.assertEqual(adapter.body_hint(b""), "")
+        self.assertEqual(
+            adapter.body_hint(b'{"error":{"message":"model not found"}}'), "model not found"
+        )
+        self.assertEqual(adapter.body_hint(b'{"detail":"context length exceeded"}'), "context length exceeded")
+        self.assertEqual(adapter.body_hint(b"plain words about the failure"), "plain words about the failure")
+
+    def test_a_400_reads_as_a_refusal_not_a_number(self):
+        sentence = adapter.upstream_failure_message(400, b"{")
+        self.assertIn("refused the request", sentence)
+        self.assertNotIn("{", sentence, "the unusable fragment is dropped")
+        self.assertIn(
+            "model not found", adapter.upstream_failure_message(400, b'{"error":{"message":"model not found"}}')
+        )
