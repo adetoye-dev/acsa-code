@@ -58,7 +58,11 @@ export function selectRecentProjects(
     chosen.push({ name: activeProject.name, path: activePath });
   }
 
-  for (const item of stored) {
+  // `stored` arrives from the engine over IPC. The type says it is a list; the
+  // runtime says nothing of the kind, and iterating a non-list throws inside a
+  // component that sits in the titlebar — which takes the whole shell down with
+  // it. An empty page is the right failure here.
+  for (const item of Array.isArray(stored) ? stored : []) {
     const path = normalizeProjectPath(item.path);
     if (isPlaceholderPath(path) || seen.has(path)) continue;
     // Gone from disk: keep the row in the database (a folder can come back, and

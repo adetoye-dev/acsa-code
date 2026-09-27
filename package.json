@@ -1,7 +1,7 @@
 {
   "name": "acsa-code",
   "private": true,
-  "version": "0.2.4",
+  "version": "0.2.19",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -18,7 +18,9 @@
     "contrast:check": "node scripts/check_contrast.mjs",
     "notices:check": "node scripts/generate_third_party_notices.mjs --check",
     "lint": "eslint src vite-api-guard.ts vite.config.ts --max-warnings=0",
-    "test:ui": "vitest run"
+    "test:ui": "vitest run",
+    "gui:check": "node scripts/gui-check.mjs",
+    "gui:check:editor": "node scripts/editor-app-check.mjs"
   },
   "dependencies": {
     "@fontsource/inter": "^5.3.0",

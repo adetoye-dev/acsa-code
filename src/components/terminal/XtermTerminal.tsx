@@ -10,6 +10,7 @@
 
 import { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHandle } from "react";
 import { Terminal } from "@xterm/xterm";
+import { registerTerminalSender, unregisterTerminalSender } from "../../services/terminalCommands";
 import { FitAddon } from "@xterm/addon-fit";
 import { DESKTOP_REQUIRED_MESSAGE, hasIpc } from "../../services/engineBridge";
 
@@ -139,6 +140,24 @@ export const XtermTerminal = forwardRef<XtermTerminalHandle, XtermTerminalProps>
       initShell();
       termRef.current?.focus();
     }, [initShell]);
+
+    /**
+     * Claim commands addressed to "the terminal" while this one is connected.
+     *
+     * Registration is what makes `runInProjectTerminal` land here instead of on a
+     * session we spawned and abandoned; the queue in `terminalCommands` covers the
+     * gap when the command is issued before this shell is up, which is the normal
+     * case from the empty state.
+     */
+    useEffect(() => {
+      if (!isConnected) return;
+      const send: (command: string) => void = (command) => {
+        sendInputRef.current(command + "\n");
+        termRef.current?.focus();
+      };
+      registerTerminalSender(send);
+      return () => unregisterTerminalSender(send);
+    }, [isConnected]);
 
     useImperativeHandle(
       ref,

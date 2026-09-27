@@ -59,7 +59,13 @@ export async function exportBackup(): Promise<ActionOutcome> {
       path: target,
       detail: result.secretsIncluded
         ? "Included saved API keys — keep this file somewhere private."
-        : `Saved without API keys (${result.secretsRemoved} removed).`,
+        : result.secretsRemoved > 0
+        ? `Saved without API keys (${result.secretsRemoved} removed).`
+        : // Nothing to remove, because credentials are no longer stored here at all:
+          // they live in the OS keychain, which this file does not carry. Saying
+          // "(0 removed)" would read as a bug, and saying nothing would leave a user
+          // believing their keys were in a file that has none.
+          "Saved without API keys — credentials live in your system keychain, which this file does not carry.",
     };
   } catch (error) {
     return { kind: "failed", detail: reason(error) };

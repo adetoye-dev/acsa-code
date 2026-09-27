@@ -27,12 +27,20 @@ import {
   DEFAULT_AGENT_TRANSPORT,
   localProviderFor,
   localToolCallingNote,
+  needsToolAdapter,
   resolveApprovalMode,
   type AgentApprovalMode,
   type AgentTransport,
   type ApprovalDecision,
 } from "../services/agentApproval";
 import { ensureProvidersHydrated } from "../services/aiModelManager";
+import {
+  DEFAULT_TURN_LIMIT_MINUTES,
+  shouldStopTurn,
+  turnLimitNotice,
+} from "../services/agentTurnLimit";
+import { PROVIDER_RETRY_LIMIT, providerRetryReason } from "../services/providerRetry";
+import { restoreTurnSnapshot, takeTurnSnapshot } from "../services/turnSnapshot";
 
 /**
  * The provider id a local run uses once the tool adapter is in front of it.
@@ -44,15 +52,53 @@ import { ensureProvidersHydrated } from "../services/aiModelManager";
 const LOCAL_ADAPTER_PROVIDER_ID = "acsa-local";
 
 /**
+ * Provider ids the runtime ships itself. Offering one as our own
+ * `[model_providers.*]` table does not just lose to the built-in — it is a **hard
+ * config error**, so the whole config is refused and the run silently proceeds
+ * against whatever the runtime defaults to. Asked the binary directly, offering
+ * all thirteen of our ids in one file, it names exactly these:
+ *
+ *     Error loading config.toml: model_providers contains reserved built-in
+ *     provider IDs: `lmstudio`, `ollama`, `openai`
+ *
+ * That is why OpenAI models answered in prose and touched no files while
+ * DeepSeek edited them: only `openai` of our hosted ids is reserved. Verified by
+ * running one task headlessly against both providers with nothing else changed —
+ * with the id renamed, `gpt-5.3-codex` made 12 command calls and changed the file.
+ *
+ * The list is asserted in `usePipeline.agentProtocol.test.ts`, so a new id here
+ * fails the suite rather than the user's run.
+ */
+export const RESERVED_RUNTIME_PROVIDER_IDS = ["openai", "ollama", "lmstudio"] as const;
+
+/**
+ * The id our generated provider table uses for a hosted provider.
+ *
+ * Every hosted id is namespaced, not only the reserved ones: the runtime's
+ * built-in list is not ours to keep up with, and a collision costs a confusing
+ * silent fallback rather than an error the user could act on.
+ */
+export function hostedProviderId(providerId: string): string {
+  return `acsa-${providerId}`;
+}
+
+/**
  * Start the local-model tool adapter and return its Responses base URL.
  *
  * Best effort by design: a build without the adapter still runs, just without
  * tool calls, and the caller logs which of the two happened.
  */
-async function startLocalToolAdapter(providerId: string): Promise<string | null> {
+async function startLocalToolAdapter(
+  providerId: string,
+  upstream: { mode: "ollama" | "openai"; baseUrl: string },
+): Promise<string | null> {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    const url = await invoke<string>("local_adapter_start", { providerId });
+    const url = await invoke<string>("local_adapter_start", {
+      providerId,
+      upstream: upstream.mode,
+      baseUrl: upstream.baseUrl,
+    });
     return typeof url === "string" && url.startsWith("http") ? url : null;
   } catch {
     return null;
@@ -88,6 +134,11 @@ async function runAgent(params: {
   onWaitingForUser?: (status: string) => void;
   /** A `request_user_input` question, which needs answers, not a decision. */
   onQuestion?: (request: { id: unknown; questions: AgentQuestion[] }) => void;
+  /**
+   * Called immediately before the turn is handed to the runtime — the last moment
+   * the pre-turn state can still be read. See `undoLastTurn`.
+   */
+  onBeforeTurn?: () => Promise<void>;
   /** Provider/model the user picked for this message; wins over the saved default. */
   selection?: { providerId: string; model: string };
   /** How much the agent may do unattended. Defaults to "approve for me". */
@@ -145,9 +196,18 @@ async function runAgent(params: {
   // never acts. The adapter speaks Responses to the runtime and Ollama's native
   // `/api/chat` to the model, which is where tool calls actually work.
   const localProvider = localProviderFor(providerId);
-  const adapterBaseUrl = localProvider ? await startLocalToolAdapter(providerId) : null;
+  // Anything not verified to serve Responses is reached through the adapter, so
+  // the model the user picked actually runs instead of 404ing on its first tool
+  // call. A hosted provider arrives as a chat-completions upstream; a local one
+  // as Ollama's own API. See `needsToolAdapter` for how the two sets are decided.
+  const adapterBaseUrl = needsToolAdapter(providerId)
+    ? await startLocalToolAdapter(providerId, {
+        mode: localProvider ? "ollama" : "openai",
+        baseUrl: provider.baseUrl,
+      })
+    : null;
   if (adapterBaseUrl) {
-    params.log(`[agent] local models run through the tool adapter at ${adapterBaseUrl}`);
+    params.log(`[agent] ${providerId} runs through the tool adapter at ${adapterBaseUrl}`);
   } else {
     // No adapter: fall back to the runtime's own local-provider switch, which
     // reaches the model but cannot run tools. Say so rather than let an empty run
@@ -158,37 +218,23 @@ async function runAgent(params: {
   // With the adapter the provider is a plain Responses endpoint, so it gets a
   // table like any hosted provider — under a name of its own, because `ollama`
   // is reserved and cannot be overridden.
-  const runtimeProviderId = adapterBaseUrl ? LOCAL_ADAPTER_PROVIDER_ID : providerId;
+  const runtimeProviderId = adapterBaseUrl ? LOCAL_ADAPTER_PROVIDER_ID : hostedProviderId(providerId);
   const runtimeBaseUrl = adapterBaseUrl ?? provider.baseUrl;
-  const runtimeProviderName = adapterBaseUrl ? "Local models (ACSA tool adapter)" : provider.name || providerId;
+  const runtimeProviderName = adapterBaseUrl
+    ? `${provider.name || providerId} (ACSA tool adapter)`
+    : provider.name || providerId;
   const configToml = [
     `model = "${model}"`,
     ...(localProvider && !adapterBaseUrl ? [] : [`model_provider = "${runtimeProviderId}"`]),
     `approval_policy = "${approval.approvalPolicy}"`,
     `approvals_reviewer = "${approval.approvalsReviewer}"`,
     `sandbox_mode = "${approval.sandboxMode}"`,
-    // Host skills (`~/.agents/skills`) are left alone on purpose.
-    //
-    // They were the reason a run of "build a small todo app" stopped after a few
-    // read-only commands: `superpowers:brainstorming` told the agent to present a
-    // design and wait for a human, it did exactly that, and the transcript still
-    // read like a completed report. `features.skip_host_skill_discovery = true`
-    // was tried and *did not* stop it (the flag is still "under development"
-    // upstream), and skipping was the wrong instinct anyway — those skills encode
-    // a way of working that is worth having, and they only look broken because
-    // this app could not play the other half of the conversation.
-    //
-    // So the work is to support the interaction, not to suppress the skill: the
-    // runtime can ask the user (`ServerRequest::ToolRequestUserInput`, and a
-    // thread status of `waitingOnUserInput`), and the app has to answer. See
-    // `onWaitingForUser` below for what is wired up so far and what is not.
-    //
-    // `request_user_input` is gated to specific modes upstream, and the default
-    // mode is not one of them — so without this the agent can only ask in prose,
-    // which works (the reply resumes the thread) but cannot carry options or
-    // block the turn. Turning it on is the difference between the agent
-    // *describing* a question and the app being able to *ask* it.
-    "features.default_mode_request_user_input = true",
+    // Host skills, the plugin marketplace, the structured-question gate and the
+    // under-development warning. Each one, and why, is documented once on
+    // `AGENT_RUNTIME_FLAGS` — this app has been bitten twice by writing the
+    // wrong thing into this config, so it is asserted there rather than only
+    // appearing here.
+    ...AGENT_RUNTIME_FLAGS,
     ...(localProvider && !adapterBaseUrl
       ? []
       : [
@@ -212,35 +258,7 @@ async function runAgent(params: {
   const catalogJson = JSON.stringify(
     {
       models: (provider.availableModels?.length ? provider.availableModels : [model]).map(
-        (slug: string) => ({
-          slug,
-          display_name: slug,
-          description: `${slug} via ${provider.name || providerId}.`,
-          default_reasoning_level: "high",
-          supported_reasoning_levels: [
-            { effort: "low", description: "Low reasoning" },
-            { effort: "high", description: "High reasoning" },
-          ],
-          shell_type: "shell_command",
-          visibility: "list",
-          supported_in_api: true,
-          priority: 1,
-          base_instructions:
-            "You are a coding assistant. Help the user complete their task accurately, use available tools, and verify your changes.",
-          context_window: 131072,
-          max_context_window: 131072,
-          effective_context_window_percent: 95,
-          truncation_policy: { mode: "tokens", limit: 10000 },
-          input_modalities: ["text"],
-          apply_patch_tool_type: "freeform",
-          support_verbosity: true,
-          default_verbosity: "low",
-          default_reasoning_summary: "none",
-          supports_parallel_tool_calls: true,
-          use_responses_lite: false,
-          prefer_websockets: false,
-          experimental_supported_tools: [],
-        }),
+        (slug: string) => agentCatalogEntry(providerId, provider.name || providerId, slug),
       ),
     },
     null,
@@ -253,6 +271,8 @@ async function runAgent(params: {
   // `[mcp_servers.x]` with either `command`+`args` or a streamable-HTTP `url`, and an
   // optional `[mcp_servers.x.env]` table. Read from our registry rather than written into
   // Codex's config by the engine, because this run regenerates that config each time.
+  // Checked against the bundled runtime: with this exact shape on disk,
+  // `codex mcp list` reports the server as `enabled`.
   let mcpToml = "";
   try {
     const { marketplaceFetch } = await import("../services/marketplaceClient");
@@ -286,8 +306,11 @@ async function runAgent(params: {
       prompt: params.prompt,
       projectRoot: params.projectRoot,
       configToml: configToml + mcpToml,
-      // Same id the exec path uses, so both transports reach the same provider.
-      providerId: runtimeProviderId,
+      // Same two ids the exec path uses, so both transports reach the same provider
+      // and resolve the same credential.
+      providerId,
+      runtimeProviderId,
+      images: params.images,
       catalogJson,
       model,
       approvalMode: params.approvalMode ?? DEFAULT_AGENT_APPROVAL_MODE,
@@ -300,6 +323,7 @@ async function runAgent(params: {
       onApproval: params.onApproval,
       onWaitingForUser: params.onWaitingForUser,
       onQuestion: params.onQuestion,
+      onBeforeTurn: params.onBeforeTurn,
     });
   }
 
@@ -393,10 +417,11 @@ async function runAgent(params: {
         prompt: params.prompt,
         projectRoot: params.projectRoot,
         configToml: configToml + mcpToml,
-        // The id the *runtime* sees. With the adapter it is a normal Responses
-        // provider, so the runtime's own `--oss` local-provider switch must not
-        // also fire — `localProvider: null` is what stops it.
-        providerId: runtimeProviderId,
+        // Two ids, because they answer different questions. `providerId` keys the
+        // credential we resolve shell-side (`{provider}_api_key`); `runtimeProviderId`
+        // is what the generated table and the runtime's routing use.
+        providerId,
+        runtimeProviderId,
         catalogJson,
         model,
         localProvider: adapterBaseUrl ? null : localProvider,
@@ -481,7 +506,12 @@ async function runAgentOnAppServer(params: {
   prompt: string;
   projectRoot: string;
   configToml: string;
+  /** Keys the credential, shell-side. */
   providerId: string;
+  /** Routes inside the runtime; namespaced so it cannot be a built-in name. */
+  runtimeProviderId: string;
+  /** Data URLs from the composer, delivered as `input_image` items with the turn. */
+  images?: string[];
   catalogJson: string;
   model: string;
   approvalMode: AgentApprovalMode;
@@ -508,6 +538,8 @@ async function runAgentOnAppServer(params: {
   onWaitingForUser?: (status: string) => void;
   /** A `request_user_input` question, which needs answers, not a decision. */
   onQuestion?: (request: { id: unknown; questions: AgentQuestion[] }) => void;
+  /** Called immediately before the turn is handed to the runtime. See `undoLastTurn`. */
+  onBeforeTurn?: () => Promise<void>;
 }): Promise<"unavailable" | "success" | "failed"> {
   const { invoke } = await import("@tauri-apps/api/core");
   const { listen } = await import("@tauri-apps/api/event");
@@ -517,6 +549,9 @@ async function runAgentOnAppServer(params: {
 
   let finished = false;
   let failed = false;
+  // Failed sampling attempts the runtime has announced this turn. Counted rather
+  // than trusted to end on its own — see `providerRetryReason`.
+  let providerRetries = 0;
   // Set by turn/completed or turn/failed — the only signals that end a turn.
   const turnFinished = { value: false };
   const failureBox: { value: string } = { value: "" };
@@ -618,6 +653,30 @@ async function runAgentOnAppServer(params: {
         const payload = event.payload;
         const line = (typeof payload === "string" ? payload : String(payload?.line ?? "")).trim();
         if (line) params.log(`[agent] runtime: ${line.slice(0, 200)}`);
+        // A provider that keeps failing gets given up on, in the open.
+        //
+        // Five retries per turn, minutes apart, is twenty minutes of a turn spent
+        // on a provider that has already said no — and the chat shows none of it.
+        // See `providerRetryReason` for why the runtime cannot be left to report
+        // this itself.
+        const retryReason = providerRetryReason(line);
+        if (!retryReason || finished) return;
+        providerRetries += 1;
+        if (providerRetries < PROVIDER_RETRY_LIMIT || turnFinished.value || failureBox.value) return;
+        failureBox.value = retryReason;
+        failed = true;
+        turnFinished.value = true;
+        params.log(
+          `[agent] giving up on this turn: the provider failed ${providerRetries} times — ${retryReason}`,
+        );
+        void (async () => {
+          try {
+            const { invoke } = await import("@tauri-apps/api/core");
+            await invoke("agent_stop");
+          } catch {
+            /* the turn is being abandoned either way */
+          }
+        })();
       }),
     );
     unlisten.push(
@@ -647,6 +706,7 @@ async function runAgentOnAppServer(params: {
         projectRoot: params.projectRoot,
         configToml: params.configToml,
         providerId: params.providerId,
+        runtimeProviderId: params.runtimeProviderId,
         catalogJson: params.catalogJson,
         model: params.model,
         resumeThreadId: params.resumeThreadId ?? null,
@@ -664,7 +724,22 @@ async function runAgentOnAppServer(params: {
     params.log(`[agent] app-server: thread ${threadId.slice(0, 8)}`);
 
     try {
-      await invoke("agent_turn", { text: params.prompt });
+      // Before the runtime touches anything: the pre-turn state, so the turn can
+      // be undone. Best effort — see `takeTurnSnapshot`.
+      await params.onBeforeTurn?.();
+      // Same gate as the exec path, for the same reason: an image the model cannot
+      // read is a provider 400 the runtime retries five times before failing the
+      // turn. Declaring it here as well keeps the two transports honest about the
+      // same model — this path used to drop every image instead.
+      const turnImages = isModelVisionCapable(params.providerId, params.model)
+        ? params.images ?? []
+        : [];
+      if ((params.images?.length ?? 0) > 0 && turnImages.length === 0) {
+        params.log(
+          `[agent] ${params.images!.length} image(s) not attached: ${params.model} does not take image input. Pick a vision model, or say what is in the image.`,
+        );
+      }
+      await invoke("agent_turn", { text: params.prompt, images: turnImages });
     } catch (error) {
       params.log(`[agent] app-server: turn rejected — ${String(error)}`);
       return "unavailable";
@@ -696,7 +771,7 @@ async function runAgentOnAppServer(params: {
  * channel for the answer, and usage as its own notification rather than a field
  * on the turn event.
  */
-function applyAppServerEvent(
+export function applyAppServerEvent(
   event: any,
   update: {
     setSteps: (fn: (prev: any[]) => any[]) => void;
@@ -831,7 +906,7 @@ function buildAgentPrompt(
  * Map one Codex stream event onto the progress surfaces the chat already renders.
  * Separate from the runner so the mapping is readable and testable on its own.
  */
-function applyCodexEvent(
+export function applyCodexEvent(
   event: any,
   update: {
     setSteps: (fn: (prev: any[]) => any[]) => void;
@@ -908,6 +983,85 @@ function applyCodexEvent(
   }
 }
 import { hydrateChatHistory } from "../services/aiChatPersistence";
+
+/**
+ * The runtime flags this app always sets, in one place so they can be asserted
+ * rather than only appearing inside a large function.
+ *
+ * Every one of these exists because the runtime's default behaviour is wrong for
+ * a third-party provider, and each was found by reading what the runtime
+ * actually printed on a run:
+ *
+ * - `default_mode_request_user_input` — the runtime only lets the agent ask a
+ *   structured question in specific modes, and the default is not one of them.
+ *   Without it the agent can only ask in prose.
+ * - `features.plugins = false` — Codex's *plugin* marketplace. On every start
+ *   the runtime reached for OpenAI's curated plugin repo: a `featured plugin
+ *   ids cache` call to chatgpt.com (401 without an OpenAI login), a `git fetch`
+ *   of the curated repo, then a GitHub archive download when that timed out —
+ *   ~45s of a ~75s run, retrying on 30s timeouts, for something that can never
+ *   succeed off-provider. It governs Codex plugins, not what this app installs:
+ *   with the flag set, an `[mcp_servers.*]` entry still reports `enabled` from
+ *   `codex mcp list` and a mirrored skill still reaches the prompt.
+ * - `suppress_unstable_features_warning` — because the line above turns on an
+ *   under-development feature, the runtime warned about that on *every* start
+ *   ("may behave unpredictably"), which surfaced to the user as an error in
+ *   OUTPUT. The key is the runtime's own documented fix for it.
+ *
+ * Host skills (`~/.agents/skills`) are deliberately *not* suppressed. They were
+ * the reason a run of "build a small todo app" stopped after a few read-only
+ * commands: `superpowers:brainstorming` told the agent to present a design and
+ * wait for a human, it did exactly that, and the transcript still read like a
+ * completed report. `features.skip_host_skill_discovery = true` was tried and
+ * does not work (the flag is still "under development" upstream), and skipping
+ * was the wrong instinct anyway — those skills encode a way of working worth
+ * having, and they only looked broken because the app could not play the other
+ * half of the conversation.
+ */
+export const AGENT_RUNTIME_FLAGS: readonly string[] = [
+  "features.default_mode_request_user_input = true",
+  "features.plugins = false",
+  "suppress_unstable_features_warning = true",
+];
+
+/**
+ * The standing instruction the app hands the agent, written into the model
+ * catalog on every run because the runtime takes it from there.
+ *
+ * The second half is about cost, and it is the answer to a gap found in a live
+ * run: asked to add task priorities to a small project, the agent spent most of a
+ * ~6 minute turn writing its own headless-browser test harness — unprompted, and
+ * more elaborate than the change. The instinct is right and the result was good,
+ * but nothing bounded it, and a run that quietly triples its own length is
+ * indistinguishable from one that is stuck. So: verify with what the project
+ * already has (`npm run build`, its tests, its own dev server); build new
+ * verification only when the task asks for it.
+ *
+ * This is an expectation, not an enforcement. It cannot be proven by reading
+ * code, and a single run cannot show it works — the honest statement is that it
+ * sets the ceiling the agent was missing, and that a hard wall-clock cap would
+ * be the enforcing version of this.
+ *
+ * The third part is precedence, and it is the counterweight to the host-skill
+ * note above: those skills are worth having, but a *policy* skill that says
+ * "present a design and wait" does not fit a panel where the user has already
+ * said what they want and nobody else is going to answer. Reproduced live on
+ * current code — "Create stats.js … and stats.test.js … Then run the tests with
+ * node" came back as "Using superpowers:brainstorming … Proposed design: … If
+ * that looks good, reply yes and I'll implement it", and the turn ended with
+ * nothing on disk. The panel *can* answer a question, but only through the
+ * structured tool (`features.default_mode_request_user_input`); a question
+ * written as plain text is a dead end, which is why that is called out
+ * separately from just "do the work".
+ */
+export const AGENT_BASE_INSTRUCTIONS =
+  "You are a coding assistant. Help the user complete their task accurately, use available tools, and verify your changes. " +
+  "Verify with the checks the project already has — its build, its tests, its own dev server — and prefer the smallest change that satisfies the request. " +
+  "Do not build new test harnesses or verification infrastructure unless the task asks for it. " +
+  "The user is in a chat panel, so a concrete instruction is the assignment: carry it out and verify it before you stop. " +
+  "Skills, MCP servers and other capabilities are tools for doing the work, not a gate on starting it — if one asks you to present a plan and wait, plan briefly, then make the smallest correct version of the change and say what you assumed. " +
+  "When you genuinely need a decision before continuing, ask with the `request_user_input` tool so the panel can show it as a question card; a question written as plain text ends the turn with no way for the user to answer it.";
+
 import { appStore } from "../services/appStore";
 import {
   syncProjectIndex,
@@ -1119,6 +1273,16 @@ export interface UsePipelineReturn {
   deleteFile: (path: string) => Promise<void>;
   createProject: (name: string, template: string, parentDir?: string) => Promise<void>;
   refreshProjectFiles: () => Promise<FileNode[]>;
+  /**
+   * How many times the workspace has been re-read.
+   *
+   * Every path that looks at the filesystem again — a branch switch, an agent's
+   * writes, the tree's own refresh, a new project — goes through
+   * `refreshProjectFiles`, so this is the one honest signal that the files on disk
+   * may have moved. The repository page re-reads its own view when it changes;
+   * without that it kept describing the branch it had seen when it mounted.
+   */
+  workspaceRevision: number;
 
   // Code Intelligence & Indexer State
   indexStatus: ProjectIndexState;
@@ -1130,6 +1294,10 @@ export interface UsePipelineReturn {
    * before running something. Empty when it is not waiting.
    */
   waitingForUser: string;
+  /** Working time on the current turn, excluding time blocked on the human. */
+  turnElapsedMs: number;
+  /** The ceiling applied to one turn, in minutes; zero means no limit. */
+  turnLimitMinutes: number;
   isIndexing: boolean;
   syncIndex: () => Promise<void>;
 
@@ -1163,6 +1331,16 @@ export interface UsePipelineReturn {
     images?: string[]
   ) => Promise<void>;
   cancelPipeline: () => void;
+  /**
+   * Add a message to the turn that is already running. Resolves to `null` on
+   * success, or a sentence to show the user — and to put the unsent text back for.
+   */
+  steerPipeline: (text: string) => Promise<string | null>;
+  /**
+   * Put the last turn's file changes back, from the snapshot taken before it ran.
+   * Resolves to `null` on success, or a sentence to show.
+   */
+  undoLastTurn: () => Promise<string | null>;
   clearLog: () => void;
   isTauriAvailable: boolean;
 }
@@ -1187,15 +1365,27 @@ const DEFAULT_AI_SETTINGS: AISettings = {
  * deliberately not duplicated there). Hydrate the key, base URL and model from
  * the provider registry so editor AI and the pipeline always see the
  * credentials the user actually configured.
+ *
+ * Which provider is *active* is not decided here. The model picker writes that
+ * choice to `selected_model`, and this record keeps its own copy of it — and the
+ * two versions can drift, because nothing kept them in step. Found in the real
+ * database: `ai_settings.provider` was `ollama` / `qwen2.5-coder:7b` while the
+ * selection was `deepseek` / `deepseek-flash`, so the editor chat and the agent
+ * were silently pointed at different models, and "why didn't it use the
+ * DeepSeek key I configured?" had no answer on screen. The selection wins here,
+ * and the stale copy is repaired on boot.
  */
-function hydrateAiSettings(settings: AISettings): AISettings {
+export function hydrateAiSettings(settings: AISettings): AISettings {
   try {
     const providers = loadAllProviders() as Record<string, any>;
-    const cfg = providers?.[settings.provider];
+    const selected = getActiveSelectedModel();
+    const provider = selected?.providerId || settings.provider;
+    const cfg = providers?.[provider];
     if (!cfg) return settings;
     return {
       ...settings,
-      model: settings.model || cfg.selectedModel || "",
+      provider,
+      model: selected?.model || settings.model || cfg.selectedModel || "",
       apiKey: cfg.apiKey ?? settings.apiKey ?? "",
       baseUrl: cfg.baseUrl ?? settings.baseUrl ?? "",
     };
@@ -1298,6 +1488,22 @@ export function usePipeline(): UsePipelineReturn {
             /* storage disabled */
           }
         }
+        // Repair a drifted copy rather than only ignoring it. The writer below
+        // keeps appending its own provider/model to this record, so without this
+        // the database goes on holding a second, contradictory answer that
+        // whoever debugs the next "why didn't it use my key?" has to reconcile by
+        // hand. Repaired once, on boot, from the selection that actually decides.
+        const selection = getActiveSelectedModel();
+        if (savedAi?.provider && selection?.providerId && savedAi.provider !== selection.providerId) {
+          void appStore
+            .setSetting("ai_settings", {
+              ...savedAi,
+              provider: selection.providerId,
+              model: selection.model,
+            })
+            .catch(() => {});
+        }
+
         if (savedAi?.provider) {
           // Every saved field is restored, by spreading them in rather than
           // listing them. The list is what broke this: it silently dropped each
@@ -1367,6 +1573,8 @@ export function usePipeline(): UsePipelineReturn {
   };
 
   const [projectFiles, setProjectFiles] = useState<FileNode[]>([]);
+  /** See `workspaceRevision` in the context: a count, not a value. */
+  const [workspaceRevision, setWorkspaceRevision] = useState(0);
   const [selectedFile, setSelectedFile] = useState<FileNode | null>(null);
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
@@ -1501,6 +1709,10 @@ export function usePipeline(): UsePipelineReturn {
 
   // ── File Tree Loading ─────────────────────────────────────────────────────
   const refreshProjectFiles = useCallback(async (): Promise<FileNode[]> => {
+    // Bumped before the read rather than after: what a consumer of this signal
+    // needs is "look again", and a read that fails still means the app asked the
+    // filesystem a question it should not keep assuming the answer to.
+    setWorkspaceRevision((count) => count + 1);
     if (!activeProject.path) {
       setProjectFiles([]);
       return [];
@@ -1919,6 +2131,66 @@ export function usePipeline(): UsePipelineReturn {
     void appStore.setSetting("agent_threads", trimmed).catch(() => {});
   }, []);
 
+  /**
+   * The snapshot taken for the turn in flight, or null.
+   *
+   * The id is ours rather than the runtime's: the snapshot has to exist *before*
+   * the turn starts, and the runtime's turn id only arrives in the reply to
+   * `turn/start`, which is after the point of no return.
+   */
+  const turnSnapshotRef = useRef<string | null>(null);
+
+  const beginTurnSnapshot = useCallback(async (projectRoot: string) => {
+    if (!projectRoot) {
+      turnSnapshotRef.current = null;
+      return;
+    }
+    const id = `snap-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const taken = await takeTurnSnapshot(projectRoot, id);
+    // Null means the engine could not take one at all; the turn still runs, and
+    // Undo will say it has nothing to undo rather than pretending.
+    turnSnapshotRef.current = taken ? id : null;
+  }, []);
+
+  /**
+   * Put the last turn's changes back.
+   *
+   * Returns `null` on success, or a sentence to show. The paths come from the turn
+   * itself (`turnChanges`), so files the turn did not touch are not ours to move —
+   * which is what keeps this from becoming a second `git checkout --` that also
+   * discards work the user did by hand.
+   */
+  const undoLastTurn = useCallback(async (): Promise<string | null> => {
+    const id = turnSnapshotRef.current;
+    const root = activeProject.path;
+    const paths = turnChanges.map((change) => change.path);
+    if (!id) return "There is no snapshot for the last turn, so it cannot be undone.";
+    if (!root || paths.length === 0) return "There is nothing to undo.";
+    try {
+      const result = await restoreTurnSnapshot(root, id, paths);
+      turnSnapshotRef.current = null;
+      setTurnChanges([]);
+      setNoFileChanges(false);
+      // The tree and the symbol index both describe the project as it was a moment
+      // ago now; the same refresh an agent turn does.
+      await refreshProjectFiles();
+      void syncIndex();
+      const files = result.restored.length + result.removed.length;
+      setActivityLog((prev) => [
+        ...prev,
+        {
+          line_number: prev.length + 1,
+          content: `Undid the last turn: ${result.restored.length} file(s) restored, ${result.removed.length} removed.`,
+          stream: "stdout" as const,
+          is_json: false,
+        },
+      ]);
+      return files === 0 ? "Nothing needed changing." : null;
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  }, [activeProject.path, turnChanges, refreshProjectFiles, syncIndex]);
+
   const runPipeline = useCallback(
     async (
       customPrompt?: string,
@@ -2094,6 +2366,8 @@ export function usePipeline(): UsePipelineReturn {
             },
             onWaitingForUser: setWaitingForUser,
             onQuestion: setPendingQuestion,
+            // Last moment before the runtime can touch a file.
+            onBeforeTurn: () => beginTurnSnapshot(activeProject.path),
             onEvent: onAgentEvent,
             resumeThreadId: resume,
             images: usableImages,
@@ -2222,6 +2496,7 @@ export function usePipeline(): UsePipelineReturn {
       refreshWorkspace,
       persistAgentThreads,
       projectFiles,
+      beginTurnSnapshot,
     ]
   );
 
@@ -2237,9 +2512,90 @@ export function usePipeline(): UsePipelineReturn {
     setStatus("idle");
   }, [isTauriAvailable]);
 
+  /**
+   * How long the current turn has actually been working.
+   *
+   * Ticks only while a turn is running and is *not* blocked on the human, so the
+   * clock matches what the user is waiting for. It is shown in the composer
+   * beside the stop button, because "rolling for 500s with no idea what is
+   * happening" is the complaint this answers, and it is what the limit reads.
+   */
+  const [turnElapsedMs, setTurnElapsedMs] = useState(0);
+  useEffect(() => {
+    if (status !== "running" || waitingForUser) return;
+    const startedAt = Date.now() - turnElapsedMs;
+    const id = window.setInterval(() => setTurnElapsedMs(Date.now() - startedAt), 1000);
+    return () => window.clearInterval(id);
+    // `turnElapsedMs` is deliberately not a dependency: it is the accumulated
+    // value at the moment this effect starts, and re-running on every tick would
+    // rebuild the interval each second.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, waitingForUser]);
+
+  // A new turn starts from zero, and a finished one stops showing a clock.
+  useEffect(() => {
+    setTurnElapsedMs(0);
+  }, [status]);
+
+  /**
+   * The ceiling. Stops the turn through the same path as the Stop button — this
+   * adds a reason, not a second way to cancel — and says why in OUTPUT so a
+   * stopped run is never indistinguishable from a crashed one.
+   */
+  const turnLimitMinutes = aiSettings.turnLimitMinutes ?? DEFAULT_TURN_LIMIT_MINUTES;
+  useEffect(() => {
+    if (status !== "running") return;
+    if (!shouldStopTurn({ elapsedMs: turnElapsedMs, limitMinutes: turnLimitMinutes, blockedOnUser: Boolean(waitingForUser) })) {
+      return;
+    }
+    setActivityLog((prev) => [
+      ...prev,
+      {
+        line_number: prev.length + 1,
+        content: turnLimitNotice(turnLimitMinutes),
+        stream: "stderr" as const,
+        is_json: false,
+      },
+    ]);
+    void cancelPipeline();
+  }, [status, turnElapsedMs, turnLimitMinutes, waitingForUser, cancelPipeline]);
+
   const clearLog = useCallback(() => {
     setActivityLog([]);
   }, []);
+
+  /**
+   * Add a message to the turn that is already running.
+   *
+   * Returns `null` on success, or a sentence to show on failure — it does not
+   * throw, because every failure here is one the user can act on and the caller
+   * needs to put the unsent text back rather than lose it.
+   *
+   * The failures are real and distinguishable. The runtime refuses a steer whose
+   * `expectedTurnId` no longer matches ("the turn moved on"), and refuses one
+   * aimed at a turn that cannot accept same-turn steering — `/review` and manual
+   * `/compact` answer `ActiveTurnNotSteerable`. Say which, rather than leaving a
+   * message that appeared to send and did nothing.
+   */
+  const steerPipeline = useCallback(async (text: string): Promise<string | null> => {
+    const message = text.trim();
+    if (!message) return "There is nothing to send.";
+    if (!isTauriAvailable) return DESKTOP_REQUIRED_MESSAGE;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("agent_steer", { text: message });
+      return null;
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      if (/ActiveTurnNotSteerable|not steerable/i.test(raw)) {
+        return "This turn cannot be steered — a review or a compaction is running. Wait for it to finish.";
+      }
+      if (/expectedTurnId|precondition|no turn is running/i.test(raw)) {
+        return "That turn had already finished, so the message was not sent.";
+      }
+      return `Could not send: ${raw}`;
+    }
+  }, [isTauriAvailable]);
 
   return {
     activeProject,
@@ -2273,9 +2629,12 @@ export function usePipeline(): UsePipelineReturn {
     deleteFile,
     createProject,
     refreshProjectFiles,
+    workspaceRevision,
     indexStatus,
     noFileChanges,
     waitingForUser,
+    turnElapsedMs,
+    turnLimitMinutes,
     isIndexing,
     syncIndex,
     sliders,
@@ -2286,6 +2645,8 @@ export function usePipeline(): UsePipelineReturn {
     setActiveCenterView,
     runPipeline,
     cancelPipeline,
+    steerPipeline,
+    undoLastTurn,
     clearLog,
     isTauriAvailable,
     streamingAnswer,
@@ -2300,3 +2661,74 @@ export function usePipeline(): UsePipelineReturn {
 }
 
 export default usePipeline;
+
+/**
+ * One model's entry in the catalog the runtime reads.
+ *
+ * Extracted so the modality question is testable: this catalog is built inline
+ * inside a long agent run, and its `input_modalities` was `["text"]` for every
+ * model for several releases. The runtime believes the catalog over the request,
+ * so a vision model declared text-only has its `view_image` tool refused with
+ * "you do not support image inputs" and any attached image is dropped — reported
+ * from a run that fell back to OCR-ing a screenshot off the Desktop.
+ */
+export function agentCatalogEntry(providerId: string, providerName: string, slug: string) {
+  return {
+
+        slug,
+        display_name: slug,
+    description: `${slug} via ${providerName}.`,
+        default_reasoning_level: defaultReasoningLevel(slug),
+        supported_reasoning_levels: [
+          { effort: "low", description: "Low reasoning" },
+          { effort: "high", description: "High reasoning" },
+        ],
+        shell_type: "shell_command",
+        visibility: "list",
+        supported_in_api: true,
+        priority: 1,
+        base_instructions: AGENT_BASE_INSTRUCTIONS,
+        context_window: 131072,
+        max_context_window: 131072,
+        effective_context_window_percent: 95,
+        truncation_policy: { mode: "tokens", limit: 10000 },
+        // Per model, not per app. This said `["text"]` for everything, and the
+        // runtime believes its catalog over the request: a vision model declared
+        // text-only gets its `view_image` tool refused with "you do not support
+        // image inputs", and any attached image is dropped. Reported from a run
+        // where the model hunted for a screenshot on disk and then had to OCR it.
+        // `isModelVisionCapable` is the same gate the attach path uses, so the
+        // two cannot disagree about what a model can read.
+        input_modalities: isModelVisionCapable(providerId, slug)
+          ? ["text", "image"]
+          : ["text"],
+        apply_patch_tool_type: "freeform",
+        support_verbosity: true,
+        default_verbosity: "low",
+        default_reasoning_summary: "none",
+        supports_parallel_tool_calls: true,
+        use_responses_lite: false,
+        prefer_websockets: false,
+    experimental_supported_tools: [],
+  };
+}
+
+/**
+ * How hard the runtime asks a model to think, before the user has even sent
+ * anything.
+ *
+ * Every entry used to declare `"high"`, which is the wrong default for the cheap
+ * tiers: a vendor ships a `flash`/`mini`/`nano` model precisely so it answers
+ * quickly and cheaply, and asking it for deep reasoning fights that design and
+ * pays in latency. Measured on NVIDIA NIM with `deepseek-ai/deepseek-v4.1-flash`,
+ * on a two-step read-only task: of a 232s turn, about 212s was the reasoning
+ * phase — the tool itself took milliseconds. The lever is ours; the tier is the
+ * vendor's own statement about what the model is for. Frontier models keep
+ * `"high"`, and both levels stay declared, so either can still be asked for.
+ */
+export function defaultReasoningLevel(slug: string): "low" | "high" {
+  return FAST_TIER_PATTERN.test(slug) ? "low" : "high";
+}
+
+/** The tier words vendors use for the cheap-and-quick variant of a model. */
+const FAST_TIER_PATTERN = /(^|[-_/])(flash|mini|nano|tiny|small|lite|turbo|fast|haiku)([-_.:]|$)/i;

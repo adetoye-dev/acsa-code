@@ -89,6 +89,27 @@
 }
 
 @layer base {
+  /**
+   * Motion, for people whose system asks for less of it.
+   *
+   * Nothing here respected `prefers-reduced-motion`, so a spinner, a pulsing
+   * status dot, an entrance animation on every dialog and a sidebar that animates
+   * its own width were all unavoidable. A blanket rule is right for this app rather
+   * than a per-animation opt-out, because none of the motion carries information
+   * that disappears when it stops — the state is in the text beside it. The rail
+   * still changes width; it arrives instead of travelling.
+   */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
   body {
     @apply bg-zinc-950 text-zinc-100 antialiased selection:bg-zinc-700/60 selection:text-white font-sans;
     font-family: var(--ide-ui-font);
@@ -239,16 +260,30 @@
      stacking order the text layer sits on top of the review cards, so every
      click and hover lands on the text layer instead of the buttons. */
   z-index: 30;
+  /* A zone is a full-width band as tall as its card, and it is the zone — not
+     the card, and not the wrapper inside it — that the hit test lands on. So a
+     `pointer-events: none` wrapper was only half the fix: the band itself still
+     swallowed the click, and the lines a finding covers stayed unclickable. The
+     card turns pointer events back on for itself below. */
+  pointer-events: none;
 }
 
 .acsa-review-card-wrap {
   /* Tailwind provides absolute inset-x-0 top-0 h-full; the card itself is
-     absolutely laid out so its natural height stays measurable. */
-  pointer-events: auto;
+     absolutely laid out so its natural height stays measurable.
+
+     `pointer-events: none` is load-bearing. The wrapper covers the whole editor —
+     that is how a card gets positioned at its line — so with clicks enabled on it,
+     every click landed on the wrapper instead of the code beneath: the caret never
+     moved, the editor never took focus, and the file could not be edited by hand
+     for as long as a single finding existed. The card turns clicks back on for
+     itself below, so the findings stay usable. */
+  pointer-events: none;
   z-index: 30;
 }
 
 .acsa-review-card {
+  pointer-events: auto;
   margin-left: 8px;
   margin-right: 8px;
 }
@@ -262,4 +297,56 @@
 }
 .monaco-editor .acsa-review-line-info {
   background: rgba(56, 189, 248, 0.07);
+}
+
+/* ── Empty-state halftone field ──────────────────────────────────────────────
+   The quick-action panel is centred on the halfway line of the empty editor, so
+   everything below that line is pattern and everything above it is plain: the
+   panel reads as sitting on the field's edge rather than floating in the middle
+   of nothing.
+
+   Two dot grids, not an image: the coarse one gives the field its texture and
+   the fine one fills in between, and the element's own height ends the whole
+   thing exactly at the halfway line. `::after` then paints the page background
+   back over the dots, which is what gives the field a dome instead of a
+   rectangle. Painting the background back is what makes this cheap: a mask
+   cannot multiply two shapes together, but an opaque overlay can subtract one.
+
+   Dots are decorative, so they carry no text and no contrast obligation; keep
+   them faint enough that they never compete with the panel. */
+.acsa-watermark-field {
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 50%;
+  pointer-events: none;
+  background-image:
+    radial-gradient(circle, rgba(161, 161, 170, 0.34) 1.2px, transparent 1.7px),
+    radial-gradient(circle, rgba(113, 113, 122, 0.18) 1.9px, transparent 2.4px);
+  background-size: 15px 15px, 30px 30px;
+  background-position: 0 0, 7px 8px;
+  /* Densest at the bottom edge, still clearly present where the panel crosses
+     it. The field must *reach* the halfway line: fading it out early is what made
+     the panel look like it was floating above the pattern rather than sitting on
+     it. */
+  -webkit-mask-image: linear-gradient(to top, #000 0%, rgba(0, 0, 0, 0.78) 34%, rgba(0, 0, 0, 0.5) 72%, rgba(0, 0, 0, 0.34) 100%);
+  mask-image: linear-gradient(to top, #000 0%, rgba(0, 0, 0, 0.78) 34%, rgba(0, 0, 0, 0.5) 72%, rgba(0, 0, 0, 0.34) 100%);
+}
+
+.acsa-watermark-field::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  /* The dome's inside is transparent, so the dots survive there, and it is
+     anchored far below the field with a very tall radius so the whole top edge
+     stays inside it. That is what keeps dots behind the panel's lower half
+     instead of fading them out before the line. */
+  background:
+    radial-gradient(ellipse 74% 260% at 50% 160%, transparent 54%, var(--vscode-editor-bg) 88%),
+    linear-gradient(
+      to right,
+      var(--vscode-editor-bg) 0%,
+      transparent 20%,
+      transparent 80%,
+      var(--vscode-editor-bg) 100%
+    );
 }

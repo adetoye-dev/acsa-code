@@ -1,19 +1,20 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicegui/tauri-v2-schema/main/tauri.conf.schema.json",
   "productName": "ACSA Code",
-  "version": "0.2.4",
+  "version": "0.2.19",
   "identifier": "com.acsacode.app",
   "build": {
     "beforeBuildCommand": "npm run build",
     "beforeDevCommand": "npm run dev",
     "frontendDist": "../dist",
-    "devUrl": "http://localhost:5173"
+    "devUrl": "http://127.0.0.1:5173"
   },
   "app": {
     "windows": [
       {
         "title": "ACSA Code",
         "label": "main",
+        "dragDropEnabled": false,
         "width": 1440,
         "height": 900,
         "minWidth": 960,

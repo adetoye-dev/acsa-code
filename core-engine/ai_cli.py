@@ -24,6 +24,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import tls_context
+
 # Vendors that speak the OpenAI wire format (`GET /models`, bearer token).
 OPENAI_COMPATIBLE = {
     "openai",
@@ -50,7 +52,11 @@ DEFAULT_BASE_URLS = {
     "perplexity": "https://api.perplexity.ai",
     "huggingface": "https://api-inference.huggingface.co/v1",
     "anthropic": "https://api.anthropic.com",
-    "google": "https://generativelanguage.googleapis.com",
+    # Gemini's OpenAI-compatible surface. The bare host is a different API: a call
+    # to `{host}/chat/completions` 404s, and `{host}/v1beta/models` answers — which
+    # is exactly the combination that made "Test Connection" pass while every chat
+    # and agent turn failed.
+    "google": "https://generativelanguage.googleapis.com/v1beta/openai",
     "ollama": "http://127.0.0.1:11434",
 }
 
@@ -71,7 +77,11 @@ def _resolve_key(provider: str, explicit: str) -> str:
 def _get(url: str, headers: dict[str, str], timeout: float = 12.0):
     request = urllib.request.Request(url, headers=headers, method="GET")
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        # The engine ships frozen, and the interpreter that froze it decides
+        # whether TLS can verify anything at all. See tls_context.
+        with urllib.request.urlopen(
+            request, timeout=timeout, context=tls_context.https_context()
+        ) as response:
             return response.status, json.loads(response.read().decode("utf-8", "replace"))
     except urllib.error.HTTPError as exc:
         detail = ""
@@ -85,6 +95,37 @@ def _get(url: str, headers: dict[str, str], timeout: float = 12.0):
         return 0, {"error": str(exc)}
 
 
+def _error_text(body: object) -> str:
+    """A provider's failure, as one string.
+
+    Every hosted provider nests the reason differently — OpenAI and Anthropic put a
+    `message` inside an `error` object, others return a bare string, Gemini returns a
+    list of attempts — and this used to hand whatever it found straight to the UI. A
+    dict arrived as "[object Object]", and the settings page reads `.message`, so the
+    real reason was dropped and every failure read "Connection failed. Please check
+    endpoint or API key." whatever had actually happened. Which is what a person sees
+    when a key is rejected, when an account has no credit, and when the network is
+    down — the same sentence for three different fixes.
+    """
+    if isinstance(body, str):
+        return body.strip()
+    if not isinstance(body, dict):
+        return ""
+    error = body.get("error")
+    if isinstance(error, str):
+        return error.strip()
+    if isinstance(error, dict):
+        for key in ("message", "detail", "reason"):
+            value = error.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    for key in ("message", "detail", "reason", "error_description"):
+        value = body.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 def _names(payload: dict) -> list[str]:
     """OpenAI-shaped `{"data": [{"id": ...}]}` or Gemini's `{"models": [...]}`."""
     entries = payload.get("data") or payload.get("models") or []
@@ -95,7 +136,13 @@ def _names(payload: dict) -> list[str]:
         name = entry.get("id") or entry.get("name") or entry.get("model")
         # Gemini reports `models/gemini-2.0-flash`.
         if isinstance(name, str) and name:
-            names.append(name.split("/", 1)[-1])
+            # `models/` is a route prefix Gemini puts on every id, and its call takes
+            # the bare id. Any *other* slash is part of the id: `deepseek-ai/deepseek-v4.1-flash`
+            # and `anthropic/claude-3.7-sonnet` are what those providers serve, and
+            # stripping the owner produced models they had never heard of — so the app
+            # listed a model and then 404ed on the very next call. NVIDIA NIM is the
+            # case that surfaced it: all 82 of its ids are owner-qualified.
+            names.append(name[len("models/"):] if name.startswith("models/") else name)
     return names
 
 
@@ -116,7 +163,7 @@ def test_connection(payload: dict) -> dict:
                 "ok": False,
                 "success": False,
                 "latencyMs": latency,
-                "error": body.get("error") or "Ollama is not reachable on 127.0.0.1:11434.",
+                "error": _error_text(body) or "Ollama is not reachable on 127.0.0.1:11434.",
             }
         return {
             "ok": True,
@@ -139,9 +186,9 @@ def test_connection(payload: dict) -> dict:
             f"{base_url}/v1/models",
             {"x-api-key": key, "anthropic-version": "2023-06-01"},
         )
-    elif provider == "google":
-        status, body = _get(f"{base_url}/v1beta/models?key={key}", {})
     else:
+        # Gemini's OpenAI-compatible surface lists models with the same bearer it
+        # takes for chat, now that the base URL is that surface rather than the host.
         status, body = _get(f"{base_url}/models", {"Authorization": f"Bearer {key}"})
 
     latency = int((time.monotonic() - started) * 1000)
@@ -150,7 +197,11 @@ def test_connection(payload: dict) -> dict:
             "ok": False,
             "success": False,
             "latencyMs": latency,
-            "error": body.get("error") or f"Provider returned HTTP {status or 'unreachable'}",
+            "error": (
+                f"HTTP {status or 'unreachable'}: {_error_text(body)}"
+                if _error_text(body)
+                else f"Provider returned HTTP {status or 'unreachable'}"
+            ),
         }
 
     models = _names(body)
@@ -168,7 +219,11 @@ def _post_json(url: str, headers: dict[str, str], body: dict, timeout: float):
         url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST"
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        # The engine ships frozen, and the interpreter that froze it decides
+        # whether TLS can verify anything at all. See tls_context.
+        with urllib.request.urlopen(
+            request, timeout=timeout, context=tls_context.https_context()
+        ) as response:
             return response.status, json.loads(response.read().decode("utf-8", "replace"))
     except urllib.error.HTTPError as exc:
         return exc.code, {"error": f"HTTP {exc.code}"}
@@ -675,7 +730,9 @@ def _stream_completion(provider, model, base_url, api_key, messages, images, on_
         request = urllib.request.Request(
             url, data=json.dumps(payload_body).encode("utf-8"), headers=headers, method="POST"
         )
-        return urllib.request.urlopen(request, timeout=300.0)
+        return urllib.request.urlopen(
+            request, timeout=300.0, context=tls_context.https_context()
+        )
 
     try:
         try:

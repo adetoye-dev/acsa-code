@@ -32,7 +32,12 @@
   --text-accent: var(--vscode-accent, var(--obsidian-100));
   --text-primary-icon: var(--vscode-accent, var(--obsidian-100));
   --text-inverse: #09090b;
-  --action-primary: var(--vscode-accent, var(--obsidian-accent-purple));
+  /* A filled action, so it needs a *filled* colour — not the neutral "crisp zinc"
+     accent, which is near-white. Pointing this at `--vscode-accent` made every
+     primary button white text on a near-white background (measured: #e4e4e7
+     behind #ffffff, 1.05:1). It reads the brand accent ramp instead, so the
+     button follows the accent the user picked. */
+  --action-primary: var(--accent-600, #4f46e5);
 
   /* ── Universal 5-Glyph Lifecycle Taxonomy Roles ── */
   --status-success: #10b981; /* Emerald Checkmark: completed, healthy, passed */

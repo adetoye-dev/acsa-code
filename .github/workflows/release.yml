@@ -166,6 +166,10 @@ jobs:
           set -euo pipefail
           APP=".tauri/target/release/bundle/macos/ACSA Code.app"
           test -x "$APP/Contents/Resources/engine/acsa-engine/acsa-engine"
+          # The agent runtime, for the same reason: it is fetched at build time and
+          # shipped, so a user needs no Codex install of their own. A build that lost
+          # this step starts, opens a chat, and cannot run an agent.
+          test -x "$APP/Contents/Resources/engine-codex/codex"
           # `acsa_engine.py` is the entry point; `manager.py` was deleted with
           # the deterministic harness and this checked for it anyway.
           test -f "$APP/Contents/Resources/core-engine/acsa_engine.py"
@@ -264,5 +268,12 @@ jobs:
           body: |
             Built from ${{ github.sha }}.
 
-            Auto-update artifacts are not produced yet — see
-            `docs/RELEASING.md` for the signing key and manifest host that step needs.
+            **Download:** `ACSA-Code.app.zip` — signed with a Developer ID,
+            notarised and stapled, so it opens without the Gatekeeper prompt.
+            Unzip and drag `ACSA Code.app` to Applications.
+
+            **Already installed?** The app checks `latest.json` on launch and
+            offers an update in the title bar, and the zip above can simply be
+            replaced. The updater's own artifacts (`ACSA-Code.app.tar.gz` and its
+            `.sig`) and the manifest are attached for that check; the `.sig` is
+            minisign, verified against the public key compiled into the app.

@@ -364,7 +364,14 @@ if (update) {
 
 ## Release checklist
 
-1. Bump `version` in `.tauri/tauri.conf.json` (and `package.json`).
+1. Bump `version` in `.tauri/tauri.conf.json` (and `package.json`). There are
+   **four** carriers, not two — `package.json`, `package-lock.json`,
+   `.tauri/tauri.conf.json` and `.tauri/Cargo.toml` — and the two this step used to
+   name were the two that got bumped: the lockfile sat at `0.2.1` while
+   `package.json` went to `0.2.4`, and `Cargo.toml` stayed at `0.2.4` when
+   everything else moved to `0.2.5`. `npm version X --no-git-tag-version
+   --ignore-scripts` covers the two npm files; the other two are edited by hand.
+   `tests/test_version_consistency.py` now fails if they disagree.
 2. `npm run verify` — typecheck plus the Python suite. `npm run notices:check` runs in CI and fails if a dependency change left the notices stale.
 3. `tauri build` with the signing key set.
 4. Launch the `.app` and confirm the engine resolves from `Contents/Resources`.

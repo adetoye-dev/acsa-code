@@ -554,6 +554,134 @@ fn pick_open_file(prompt: String) -> Result<Option<String>, String> {
     }
 }
 
+/// Only http(s) ever reaches the OS opener. This takes a string from the page
+/// and hands it to `open`/`explorer`/`xdg-open`, so the scheme is checked here
+/// rather than trusted, and the argument is passed after `--` so a URL that
+/// begins with a dash cannot become a flag.
+fn is_openable_url(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    (lower.starts_with("http://") || lower.starts_with("https://")) && !lower.contains('\n')
+}
+
+/// Open a link in the user's browser. The webview cannot do this itself: a plain
+/// anchor with `target="_blank"` is a dead click in a Tauri window, which is
+/// exactly how every marketplace link behaved.
+#[tauri::command]
+fn open_external(url: String) -> Result<(), String> {
+    if !is_openable_url(&url) {
+        return Err(format!("refusing to open a non-http(s) url: {}", url));
+    }
+
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        // `start` is a shell builtin; `explorer` opens a URL without one.
+        std::process::Command::new("explorer")
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = std::process::Command::new("xdg-open");
+
+    command.arg("--").arg(url.trim());
+    if command.status().is_err() {
+        // Some openers reject `--`; retry without it rather than failing the click.
+        #[cfg(target_os = "macos")]
+        let mut retry = std::process::Command::new("open");
+        #[cfg(target_os = "windows")]
+        let mut retry = std::process::Command::new("explorer");
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let mut retry = std::process::Command::new("xdg-open");
+        retry
+            .arg(url.trim())
+            .status()
+            .map_err(|error| format!("could not open {}: {}", url, error))?;
+    }
+    Ok(())
+}
+
+/// A skill file with only the two keys the runtime documents. Our loader also
+/// writes `triggers`, and an unknown key in someone else's frontmatter parser is
+/// a gamble not worth taking with a file the agent has to load.
+fn normalise_skill_markdown(raw: &str, fallback_name: &str) -> String {
+    let trimmed = raw.trim_start_matches('\u{feff}');
+    let mut name = fallback_name.to_string();
+    let mut description = format!("Project skill {}", fallback_name);
+    let mut body = trimmed.to_string();
+
+    if let Some(rest) = trimmed.strip_prefix("---") {
+        if let Some(end) = rest.find("\n---") {
+            let front = &rest[..end];
+            body = rest[end + 4..].trim_start_matches(['\n', '\r']).to_string();
+            for line in front.lines() {
+                let Some((key, value)) = line.split_once(':') else { continue };
+                let value = value.trim().trim_matches('"').trim_matches('\'').to_string();
+                match key.trim() {
+                    "name" if !value.is_empty() => name = value,
+                    "description" if !value.is_empty() => description = value,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    format!("---\nname: {}\ndescription: {}\n---\n\n{}", name, description, body.trim_start_matches(['\n', '\r']))
+}
+
+/// Copy the project's installed skills into the runtime's home.
+///
+/// The marketplace writes `<project>/.acsa/skills/<name>.md` — our loader's shape,
+/// one flat file per skill. The runtime reads `<CODEX_HOME>/skills/<name>/SKILL.md`,
+/// so a skill installed from the marketplace was invisible to the agent: the file
+/// was real, in the wrong shape, in the wrong place. MCP servers are handed over in
+/// the config; this is the same job for skills.
+///
+/// The destination is the app's own home (nothing else writes there), so it is
+/// rebuilt from the project each run: that is also what makes uninstalling work.
+///
+/// Checked against the bundled runtime rather than assumed: with a skill mirrored
+/// this way, `codex debug prompt-input` lists it in `<skills_instructions>` beside
+/// the host's own skills — `verify-skill: … (file: r0/verify-skill/SKILL.md)`,
+/// where `r0` is the CODEX_HOME this function writes into.
+fn sync_project_skills(codex_home: &Path, project_root: &Path) -> Result<usize, String> {
+    let source = project_root.join(".acsa").join("skills");
+    let dest = codex_home.join("skills");
+    std::fs::create_dir_all(&dest).map_err(|e| format!("could not create {}: {}", dest.display(), e))?;
+
+    let mut wanted: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&source) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+            let raw = std::fs::read_to_string(&path)
+                .map_err(|e| format!("could not read {}: {}", path.display(), e))?;
+            let dir = dest.join(stem);
+            std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {}", dir.display(), e))?;
+            std::fs::write(dir.join("SKILL.md"), normalise_skill_markdown(&raw, stem))
+                .map_err(|e| format!("could not write the skill {}: {}", stem, e))?;
+            wanted.push(stem.to_string());
+        }
+    }
+
+    // Anything we wrote last run that is no longer installed goes with it.
+    if let Ok(entries) = std::fs::read_dir(&dest) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+            if !wanted.iter().any(|kept| kept == name) {
+                let _ = std::fs::remove_dir_all(&path);
+            }
+        }
+    }
+
+    Ok(wanted.len())
+}
+
 /// Show a file or folder in the OS file manager, so "where is my data?" has an
 /// answer that does not require the user to read a path out of a text box.
 #[tauri::command]
@@ -1195,6 +1323,100 @@ const MIN_SECRET_LEN: usize = 6;
 
 const MASK: &str = "***";
 
+/// What to do with one line of the child's stderr before the user reads it.
+enum AgentLine {
+    /// Show it as written (after redaction).
+    Keep,
+    /// Show this sentence instead.
+    Replace(String),
+    /// Do not show it at all.
+    Hide,
+}
+
+/// Rewrite the runtime's internal bookkeeping into something a person can act on.
+///
+/// The runtime logs to stderr in its own tracing format, and some of that is not
+/// news the user can use. The clearest case, measured on a real run of an
+/// eight-file task: DeepSeek emits a malformed freeform patch twice, the runtime's
+/// patch parser rejects it, and the rejection is handed back to the model as a
+/// tool error — which is why the model then fixes it and the files appear. Printed
+/// raw, with a tracing prefix and several hundred characters of the parser's own
+/// header grammar, that recovered retry reads as "this app is broken", and it is
+/// how a working outcome got reported as a defect.
+///
+/// Only the cause is kept, and the sentence says what is actually happening:
+/// rejected before it was applied, and being retried. Nothing is hidden that
+/// changes the outcome of the run — if the retry also fails, the agent says so in
+/// the transcript like any other failure.
+fn friendly_agent_line(line: &str) -> AgentLine {
+    if line.contains("apply_patch verification failed") {
+        let reason = line
+            .split("verification failed:")
+            .nth(1)
+            .map(|rest| {
+                // The parser appends its accepted-header grammar, which is a
+                // paragraph. Keep the first clause and drop the rest.
+                rest.split(" Valid ").next().unwrap_or(rest).trim()
+            })
+            .filter(|reason| !reason.is_empty())
+            .unwrap_or("the patch did not parse");
+        return AgentLine::Replace(format!(
+            "patch rejected before it was applied ({reason}) — the agent is retrying with a corrected patch"
+        ));
+    }
+    // The runtime resolves a model for its own internals — `gpt-5.6-luna`, for
+    // auto-review and title generation — and warns that it has no metadata for it.
+    // That is never the user's model: the app writes every one of the user's
+    // models into `model_catalog_json` on each run, so an unknown slug here is
+    // always one this app did not ask for, and the fallback metadata it warns
+    // about is only that. Verified rather than assumed: auto-review still works
+    // on a third-party provider with this warning present (a read-only sandbox
+    // forced an approval and the write was approved). It was, however, the line
+    // the user read as "the metadata errors".
+    if line.contains("codex_models_manager") && line.contains("fallback model metadata") {
+        return AgentLine::Hide;
+    }
+    // A provider that only implements chat completions is the most common way an
+    // agent run fails on a non-OpenAI-compatible provider, and the runtime's own
+    // words for it are ten lines of noise for one fact: five
+    // `WARN ... retrying sampling request` lines, each with a body, and five
+    // `ERROR: Reconnecting... n/5` lines. None of it says the useful part — that
+    // the endpoint does not exist and retrying cannot help.
+    //
+    // Measured against the runtime this build ships, on three providers that
+    // offer chat completions only, with the same config the app writes:
+    //
+    //     unexpected status 404 Not Found: Not found, url: https://api.anthropic.com/v1/responses
+    //     unexpected status 404 Not Found: { },       url: https://api.mistral.ai/v1/responses
+    //     unexpected status 404 Not Found: Unknown error, url: https://generativelanguage.googleapis.com/responses
+    //
+    // OpenAI and DeepSeek answer on the same path, which is why those two are the
+    // providers that work — a property of the provider, not a preference here.
+    // The URL is carried through because it is also what names a misconfigured
+    // base URL (the `generativelanguage.googleapis.com` case above is exactly
+    // that: Gemini's OpenAI-compatible surface lives under `/v1beta/openai`).
+    if line.contains("404 Not Found") && line.contains("/responses") {
+        let url = line
+            .split("url: ")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .map(|url| url.trim_end_matches(','))
+            .filter(|url| !url.is_empty())
+            .unwrap_or("this provider");
+        return AgentLine::Replace(format!(
+            "{url} answered 404 — this provider does not serve the Responses API the agent runtime \
+             requires (it speaks Responses, not chat completions). The model still works in chat; \
+             agent runs need a provider that implements Responses, as OpenAI and DeepSeek do."
+        ));
+    }
+    // The retry the runtime prints around that 404 is the same sentence again,
+    // with no information the line above does not already carry.
+    if line.contains("Reconnecting...") {
+        return AgentLine::Hide;
+    }
+    AgentLine::Keep
+}
+
 /// Mask credential-shaped text before it reaches a panel the user may screenshot.
 ///
 /// The runtime's stderr is forwarded verbatim, and on purpose: it is the only
@@ -1820,15 +2042,21 @@ const ENGINE_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 /// subcommands emit more than a pipe buffer's worth of JSON (`index` returns the
 /// whole symbol table), and a child blocked writing to a full pipe looks exactly
 /// like a hung one if nobody is reading.
-fn run_with_timeout(
+/// `run_with_timeout`, with environment variables for the child.
+///
+/// A separate function rather than a parameter on every caller: most of them want
+/// a clean environment, and the one that does not is handing over credentials.
+fn run_with_timeout_env(
     program: &Path,
     args: &[String],
+    envs: &[(String, String)],
     timeout: std::time::Duration,
 ) -> Result<std::process::Output, String> {
     use std::io::Read;
 
     let mut child = Command::new(program)
         .args(args)
+        .envs(envs.iter().map(|(key, value)| (key.as_str(), value.as_str())))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1881,9 +2109,9 @@ fn run_with_timeout(
 /// page is compromised. `pty` and `adapter` are deliberately absent — the
 /// terminal and the local-model adapter are spawned by Rust with arguments Rust
 /// picked, not with arguments the webview supplies.
-const ALLOWED_ENGINE_SUBCOMMANDS: [&str; 12] = [
-    "db", "ollama", "index", "git", "indexer", "skills", "mcp", "ai", "project", "fs", "backup",
-    "support",
+const ALLOWED_ENGINE_SUBCOMMANDS: [&str; 15] = [
+    "db", "ollama", "index", "git", "gh", "indexer", "skills", "mcp", "ai", "project", "fs",
+    "backup", "support", "snapshot", "crash",
 ];
 
 fn engine_subcommand_allowed(subcommand: &str) -> bool {
@@ -1904,8 +2132,12 @@ async fn engine_call(
     let (program, mut argv) = engine_invocation(resource_dir.as_deref(), &subcommand);
     argv.extend(args);
 
+    // Any credential the keychain holds, for the engine's own lookups. The engine
+    // resolves secrets environment-first, which is what lets a keychain-only
+    // credential reach it without the sidecar knowing anything about keychains.
+    let secrets = engine_env_secrets(&app_handle);
     let output = tauri::async_runtime::spawn_blocking(move || {
-        run_with_timeout(&program, &argv, ENGINE_CALL_TIMEOUT)
+        run_with_timeout_env(&program, &argv, &secrets, ENGINE_CALL_TIMEOUT)
     })
     .await
     .map_err(|e| format!("engine task failed: {}", e))?
@@ -2310,7 +2542,325 @@ fn resolve_codex_bin(resource_dir: Option<&Path>) -> Option<PathBuf> {
 /// The key must not travel over IPC: passing it down from the frontend would undo the
 /// write-only property the credential migration established, and it is already in the
 /// engine's database. Same server-side resolution the review and inline-edit paths use.
+/// The keychain service these credentials are grouped under.
+const KEYCHAIN_SERVICE: &str = "ACSA Code";
+
+/// Where a provider credential is kept.
+///
+/// A trait rather than a direct call so the migration below can be tested without
+/// touching the real keychain — and not with the crate's own mock, which keeps its
+/// data *inside* each credential object: a freshly built `Entry` starts empty, so
+/// it cannot exercise a write-then-read-back, which is the one thing worth proving.
+trait SecretStore {
+    fn get(&self, name: &str) -> Option<String>;
+    fn set(&self, name: &str, value: &str) -> Result<(), String>;
+    /// Remove a credential. Used when the *user* removes one — the migration's own
+    /// delete is a separate, deferred step.
+    fn delete(&self, name: &str) -> Result<(), String>;
+}
+
+struct KeychainStore;
+
+impl SecretStore for KeychainStore {
+    fn get(&self, name: &str) -> Option<String> {
+        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, name).ok()?;
+        entry.get_password().ok().filter(|value| !value.trim().is_empty())
+    }
+
+    fn set(&self, name: &str, value: &str) -> Result<(), String> {
+        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, name).map_err(|e| e.to_string())?;
+        entry.set_password(value).map_err(|e| e.to_string())?;
+        // Read it back through a *fresh* entry before reporting success. A store
+        // that accepts a write and cannot return it is worse than one that
+        // refused, because the caller's next step is to delete its own copy.
+        let check = keyring::Entry::new(KEYCHAIN_SERVICE, name).map_err(|e| e.to_string())?;
+        match check.get_password() {
+            Ok(readback) if readback == value => Ok(()),
+            Ok(_) => Err("the keychain returned a different value than it was given".to_string()),
+            Err(e) => Err(format!("the keychain accepted the write but could not read it back: {e}")),
+        }
+    }
+
+    fn delete(&self, name: &str) -> Result<(), String> {
+        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, name).map_err(|e| e.to_string())?;
+        match entry.delete_credential() {
+            Ok(()) => Ok(()),
+            // Already gone is the outcome the caller wanted.
+            Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+}
+
+/// The engine spells a provider's credential `{provider}_api_key`; this is that
+/// name, in one place so the two sides cannot drift.
+fn secret_name_for_provider(provider: &str) -> String {
+    format!("{provider}_api_key")
+}
+
+/// Where the *names* of keychain-held credentials are kept.
+///
+/// An OS keychain cannot be enumerated — a property of the API, not of this code —
+/// so "which providers are connected?" needs a list somewhere. This is names only:
+/// nothing here is sensitive, and the credential itself never appears.
+const SECRET_NAMES_SETTING: &str = "secret_names";
+
+/// Call the engine and return its `data`, or `None` for any failure.
+///
+/// Every caller of this has somewhere else to look, so a failed call is not an
+/// error to propagate — it is a missing answer.
+fn engine_json(
+    app_handle: &tauri::AppHandle,
+    subcommand: &str,
+    args: &[String],
+) -> Option<serde_json::Value> {
+    if !engine_subcommand_allowed(subcommand) {
+        return None;
+    }
+    let resource_dir = app_handle.path().resource_dir().ok();
+    let (program, mut argv) = engine_invocation(resource_dir.as_deref(), subcommand);
+    argv.extend(args.iter().cloned());
+    let output = Command::new(&program).args(&argv).output().ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let last = stdout.lines().rev().find(|line| !line.trim().is_empty())?;
+    let parsed: serde_json::Value = serde_json::from_str(last).ok()?;
+    if parsed.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+        parsed.get("data").cloned()
+    } else {
+        None
+    }
+}
+
+fn read_secret_names(app_handle: &tauri::AppHandle) -> Vec<String> {
+    engine_json(app_handle, "db", &["settings.get".to_string(), "{}".to_string()])
+        .and_then(|settings| settings.get(SECRET_NAMES_SETTING).cloned())
+        .and_then(|value| value.as_array().cloned())
+        .map(|list| {
+            list.iter()
+                .filter_map(|name| name.as_str().map(str::to_string))
+                .filter(|name| !name.trim().is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn write_secret_names(app_handle: &tauri::AppHandle, names: &[String]) -> Result<(), String> {
+    let payload = serde_json::json!({ "key": SECRET_NAMES_SETTING, "value": names }).to_string();
+    engine_json(app_handle, "db", &["settings.set".to_string(), payload])
+        .map(|_| ())
+        .ok_or_else(|| "could not record which credential names are stored".to_string())
+}
+
+/// The environment variable an engine-side lookup reads for a given name.
+///
+/// The engine resolves `ACSA_SECRET_<NAME>` case-insensitively by lowercasing the
+/// suffix (`app_db._env_secret_names`), so the variable has to be the upper-cased
+/// name: `deepseek_api_key` -> `ACSA_SECRET_DEEPSEEK_API_KEY`.
+fn secret_env_var(name: &str) -> String {
+    format!("ACSA_SECRET_{}", name.to_ascii_uppercase())
+}
+
+/// Every credential the keychain holds, as environment for the engine.
+///
+/// This is how a keychain-only credential reaches the engine at all: it already
+/// resolves secrets environment-first (`get_secret` checks `ACSA_SECRET_*` before
+/// the database), so the stdlib-only, frozen sidecar needs no change.
+fn engine_env_secrets(app_handle: &tauri::AppHandle) -> Vec<(String, String)> {
+    secret_env_pairs(&KeychainStore, &read_secret_names(app_handle))
+}
+
+/// The environment pairs for the names that actually resolve.
+///
+/// Split out from the handle so it can be tested: a name with no value is left out
+/// rather than injected as empty, because an empty `ACSA_SECRET_*` reads as "not
+/// set" in the engine and there is no reason to say that out loud.
+fn secret_env_pairs(store: &dyn SecretStore, names: &[String]) -> Vec<(String, String)> {
+    names
+        .iter()
+        .filter_map(|name| store.get(name).map(|value| (secret_env_var(name), value)))
+        .collect()
+}
+
+/// Store a credential in the OS keychain.
+///
+/// Deliberately **not** written to the engine's database: new credentials never
+/// reach the plaintext file. The engine is handed them through `ACSA_SECRET_*` at
+/// spawn instead. An empty value clears the credential.
+#[tauri::command]
+async fn secrets_set(
+    app_handle: tauri::AppHandle,
+    name: String,
+    value: String,
+) -> Result<serde_json::Value, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("a credential name cannot be empty".to_string());
+    }
+    if value.is_empty() {
+        return secrets_forget(&app_handle, &name).map(|_| serde_json::json!({ "stored": "removed" }));
+    }
+    // The keychain first, and it verifies its own write: if it cannot hold the
+    // value, the caller is told which store took it rather than being left to
+    // believe it is encrypted.
+    match KeychainStore.set(&name, &value) {
+        Ok(()) => {
+            let mut names = read_secret_names(&app_handle);
+            if !names.iter().any(|existing| existing == &name) {
+                names.push(name);
+            }
+            write_secret_names(&app_handle, &names)?;
+            Ok(serde_json::json!({ "stored": "keychain" }))
+        }
+        Err(keychain_error) => {
+            // The keychain is not usable here — no Secret Service on a headless
+            // Linux box, a locked keyring, or a build the OS refuses to recognise
+            // (measured: an ad-hoc-signed binary is told the write succeeded and
+            // then cannot read it back). Refusing the credential would break
+            // provider setup on those machines, so it goes where it went before and
+            // the caller is told which happened. This is not a fake encryption: the
+            // value is stored as it always was, in the `0600` file.
+            let payload = serde_json::json!({ "name": name, "value": value }).to_string();
+            engine_json(&app_handle, "db", &["secrets.set".to_string(), payload])
+                // The reason travels with the answer. Without it this fallback is
+                // invisible: the settings page said the key was in the keychain
+                // while every key sat in the database, and the cause — a `keyring`
+                // built with no platform backend — took a `cargo tree` and a
+                // signed rebuild to find. A user hitting this deserves the sentence.
+                .map(|_| serde_json::json!({ "stored": "file", "reason": keychain_error }))
+                .ok_or_else(|| format!("could not store the credential: {keychain_error}"))
+        }
+    }
+}
+
+/// Forget a credential everywhere it might be.
+#[tauri::command]
+async fn secrets_delete(app_handle: tauri::AppHandle, name: String) -> Result<(), String> {
+    secrets_forget(&app_handle, name.trim())
+}
+
+fn secrets_forget(app_handle: &tauri::AppHandle, name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("a credential name cannot be empty".to_string());
+    }
+    KeychainStore.delete(name)?;
+    // The engine's copy as well. The migration's own delete is deferred, so an old
+    // row would otherwise still resolve the credential the user just removed.
+    let payload = serde_json::json!({ "name": name }).to_string();
+    let _ = engine_json(app_handle, "db", &["secrets.delete".to_string(), payload]);
+    let remaining: Vec<String> = read_secret_names(app_handle)
+        .into_iter()
+        .filter(|existing| existing != name)
+        .collect();
+    write_secret_names(app_handle, &remaining)
+}
+
+/// The names this app can currently resolve a credential for.
+///
+/// The union of what the engine still holds (its rows, plus anything from a real
+/// `ACSA_SECRET_*` in the environment) and what the keychain actually returns for
+/// the names on the index. A keychain that will not answer contributes nothing,
+/// which is the honest answer rather than an optimistic one.
+#[tauri::command]
+async fn secrets_list(app_handle: tauri::AppHandle) -> Result<Vec<String>, String> {
+    let mut names: Vec<String> =
+        engine_json(&app_handle, "db", &["secrets.list".to_string(), "{}".to_string()])
+            .and_then(|value| value.as_array().cloned())
+            .map(|list| {
+                list.iter()
+                    .filter_map(|name| name.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+    let store = KeychainStore;
+    for name in read_secret_names(&app_handle) {
+        if store.get(&name).is_some() && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+/// Resolve a provider credential, preferring the OS keychain.
+///
+/// A value found only in the old store is *copied* into the keychain, read back
+/// through a fresh entry to prove it landed, and only then is `after_copy` allowed
+/// to let the plaintext original go. That gate is the whole reason the delete waited:
+/// a copy that cannot be read back is not a copy, and deleting on that evidence would
+/// lose a key while looking successful. It was held open until a *hardened,
+/// Developer-ID-signed* build demonstrated the round trip — measured on one
+/// (`flags=0x10000(runtime)`, `TeamIdentifier=TFNTZSW82U`), which is the execution
+/// context the app actually runs in. See the encryption-at-rest row in
+/// `docs/PRODUCTION_CHECKLIST.md`.
+///
+/// Copying is best effort in the other direction too: a keychain that refuses — a
+/// headless Linux box with no Secret Service, a locked keyring — must not stop a run
+/// we already have a credential for. The failure is silent here on purpose; the read
+/// path is what matters, and the old copy survives precisely because the copy failed.
+fn resolve_provider_key(
+    store: &dyn SecretStore,
+    provider: &str,
+    from_old_store: impl FnOnce() -> Option<String>,
+    after_copy: impl FnOnce(&str),
+) -> Option<String> {
+    let name = secret_name_for_provider(provider);
+    if let Some(key) = store.get(&name) {
+        return Some(key);
+    }
+    let key = from_old_store()?;
+    if store.set(&name, &key).is_ok() && store.get(&name).as_deref() == Some(key.as_str()) {
+        after_copy(&name);
+    }
+    Some(key)
+}
+
 fn engine_resolve_key(app_handle: &tauri::AppHandle, provider: &str) -> Option<String> {
+    resolve_provider_key(
+        &KeychainStore,
+        provider,
+        || engine_resolve_key_from_old_store(app_handle, provider),
+        |name| engine_forget_old_store(app_handle, name),
+    )
+}
+
+/// Drop the engine's plaintext copy of a credential the keychain now holds.
+///
+/// Best effort, and only ever reached once the keychain has been shown to return the
+/// value: if this fails the key simply stays in both places and the next run tries
+/// again, which is the state every release before this one shipped in.
+fn engine_forget_old_store(app_handle: &tauri::AppHandle, name: &str) {
+    // The name has to be indexed *before* the plaintext copy goes.
+    //
+    // `engine_env_secrets` resolves credentials by name from this index, and a
+    // keychain entry no name points at cannot be found again — there is no way to
+    // enumerate a keychain (that is a property of the API, not of this code). The
+    // first build that deleted the old copy skipped this step and orphaned the
+    // two credentials of the machine it ran on: present in the Keychain, invisible
+    // to the app, which then reported no key and failed provider calls. Copying
+    // *and* indexing is the migration; deleting without indexing is data loss that
+    // looks like success.
+    let mut names = read_secret_names(app_handle);
+    if !names.iter().any(|existing| existing == name) {
+        names.push(name.to_string());
+        let _ = write_secret_names(app_handle, &names);
+    }
+
+    let resource_dir = app_handle.path().resource_dir().ok();
+    let (program, mut argv) = engine_invocation(resource_dir.as_deref(), "db");
+    argv.push("secrets.delete".to_string());
+    argv.push(format!("{{\"name\":\"{}\"}}", name));
+    let _ = Command::new(&program).args(&argv).output();
+}
+
+/// The database-backed lookup this replaces. Kept as the fallback until the
+/// keychain has been proven from a signed build, and as the reading half of the
+/// migration above.
+fn engine_resolve_key_from_old_store(
+    app_handle: &tauri::AppHandle,
+    provider: &str,
+) -> Option<String> {
     let resource_dir = app_handle.path().resource_dir().ok();
     let (program, mut argv) = engine_invocation(resource_dir.as_deref(), "db");
     argv.push("providers.resolveKey".to_string());
@@ -2346,6 +2896,7 @@ fn prepare_agent_home(
     config_toml: &str,
     provider_id: &str,
     catalog_json: &str,
+    project_root: &str,
 ) -> Result<(PathBuf, PathBuf), String> {
     let resource_dir = app_handle.path().resource_dir().ok();
     let program = resolve_codex_bin(resource_dir.as_deref()).ok_or_else(|| {
@@ -2381,6 +2932,16 @@ fn prepare_agent_home(
         };
         std::fs::write(codex_home.join("config.toml"), config)
             .map_err(|e| format!("could not write Codex config: {}", e))?;
+    }
+
+    if Path::new(project_root).is_dir() {
+        match sync_project_skills(&codex_home, &PathBuf::from(project_root)) {
+            Ok(count) if count > 0 => {
+                eprintln!("[ACSA Code] agent: {} project skill(s) mirrored for the runtime", count);
+            }
+            Ok(_) => {}
+            Err(error) => eprintln!("[ACSA Code] agent: could not mirror project skills: {}", error),
+        }
     }
 
     Ok((program, codex_home))
@@ -2483,7 +3044,12 @@ impl AgentSession {
             std::thread::spawn(move || {
                 for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                     if !line.trim().is_empty() {
-                        stderr_emitter("agent:stderr", redact_for_display(&line, &known_secrets));
+                        let shown = match friendly_agent_line(&line) {
+                            AgentLine::Replace(message) => message,
+                            AgentLine::Keep => line.clone(),
+                            AgentLine::Hide => continue,
+                        };
+                        stderr_emitter("agent:stderr", redact_for_display(&shown, &known_secrets));
                     }
                 }
             });
@@ -2628,6 +3194,12 @@ async fn agent_start(
     project_root: String,
     config_toml: String,
     provider_id: String,
+    // The id the runtime routes with, which is not always the provider's own name.
+    // `openai` is built into the runtime and cannot be overridden — offering a
+    // `[model_providers.openai]` table is a hard config error, so the caller
+    // namespaces it. `provider_id` stays the real name because that is what the
+    // credential lookup and the catalog file are keyed by.
+    runtime_provider_id: String,
     catalog_json: String,
     model: String,
     resume_thread_id: Option<String>,
@@ -2635,7 +3207,8 @@ async fn agent_start(
     approvals_reviewer: String,
     sandbox_mode: String,
 ) -> Result<String, String> {
-    let (program, codex_home) = prepare_agent_home(&app_handle, &config_toml, &provider_id, &catalog_json)?;
+    let (program, codex_home) =
+        prepare_agent_home(&app_handle, &config_toml, &provider_id, &catalog_json, &project_root)?;
 
     let working_dir = if Path::new(&project_root).is_dir() {
         project_root.clone()
@@ -2695,7 +3268,7 @@ async fn agent_start(
     let resuming = resume_thread_id.as_deref().map(str::trim).unwrap_or("").to_string();
     let mut thread_params = serde_json::json!({
         "model": model,
-        "modelProvider": provider_id,
+        "modelProvider": runtime_provider_id,
         "cwd": working_dir,
         "approvalPolicy": approval_policy,
         "approvalsReviewer": approvals_reviewer,
@@ -2728,11 +3301,69 @@ async fn agent_start(
 }
 
 /// Send one turn to the open thread. Events stream as `agent:event`.
+/// The model-visible input for one turn: the text, then any images.
+///
+/// Shape taken from the app-server itself rather than from documentation. Sending
+/// it a variant with no fields names what that variant needs:
+///
+///     turn/start: {"code":-32600,"message":"Invalid request: missing field `path`"}
+///
+/// and the accepted enums are `text`, `image`, `localImage`, `audio`, `localAudio`,
+/// `skill`, `mention` — note that there is no `input_image`, which is the
+/// *model-visible* shape `codex debug prompt-input` renders for the Responses API.
+/// Trusting that renderer produced this, from a real run:
+///
+///     unknown variant `input_image`, expected one of `text`, `image`, `localImage`, …
+///
+/// The runtime rejected the turn, the app fell back to one-shot exec, and the user
+/// got "Task completed. No files were added, removed or resized" for a request with
+/// two screenshots attached.
+///
+/// `localImage` takes a path, so the attachments go to disk exactly as the exec
+/// path writes them for `--image=` — one file, two transports, no base64 in the
+/// protocol.
+fn turn_input(text: &str, images: &[PathBuf]) -> Vec<serde_json::Value> {
+    let mut input = vec![serde_json::json!({ "type": "text", "text": text })];
+    for path in images {
+        input.push(serde_json::json!({
+            "type": "localImage",
+            "path": path.to_string_lossy(),
+        }));
+    }
+    input
+}
+
+/// Write the composer's data URLs to files, the way the exec path does.
+///
+/// Returns the paths that were written; an image that could not be written is left
+/// out rather than sent as a broken reference.
+fn write_turn_attachments(app_handle: &tauri::AppHandle, images: &[String]) -> Vec<PathBuf> {
+    if images.is_empty() {
+        return Vec::new();
+    }
+    let Ok(codex_home) = app_handle.path().app_data_dir().map(|dir| dir.join("codex")) else {
+        return Vec::new();
+    };
+    let mut written = Vec::new();
+    for (index, data_url) in images.iter().enumerate() {
+        if let Some(path) = write_attachment(&codex_home, data_url, index) {
+            written.push(path);
+        }
+    }
+    if !written.is_empty() {
+        prune_attachments(&codex_home.join("attachments"), 20);
+    }
+    written
+}
+
 #[tauri::command]
 async fn agent_turn(
+    app_handle: tauri::AppHandle,
     state: State<'_, AgentState>,
     text: String,
+    images: Vec<String>,
 ) -> Result<(), String> {
+    let attachment_paths = write_turn_attachments(&app_handle, &images);
     let guard = state.session.lock().map_err(|e| e.to_string())?;
     let session = guard.as_ref().ok_or("no agent session is running")?;
     let thread_id = session
@@ -2746,7 +3377,7 @@ async fn agent_turn(
         "turn/start",
         serde_json::json!({
             "threadId": thread_id,
-            "input": [{ "type": "text", "text": text }],
+            "input": turn_input(&text, &attachment_paths),
         }),
         std::time::Duration::from_secs(30),
     )?;
@@ -2804,6 +3435,73 @@ async fn agent_interrupt(
     Ok(())
 }
 
+/// The `turn/steer` params, built in one place.
+///
+/// `expectedTurnId` is the field worth having a test for: the schema marks it
+/// required and calls it a precondition — "the request fails when it does not
+/// match the currently active turn" — so a steer is refused rather than silently
+/// becoming a new turn when the turn it was aimed at has finished.
+fn steer_params(thread_id: &str, turn_id: &str, text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "threadId": thread_id,
+        "expectedTurnId": turn_id,
+        "input": [{ "type": "text", "text": text }],
+    })
+}
+
+/// Add a message to the turn that is already running, instead of starting another.
+///
+/// The schema is read, not inferred (`codex app-server generate-json-schema`):
+/// `TurnSteerParams` requires `threadId`, the `input` array, and — the part worth
+/// knowing — `expectedTurnId`, described there as a "required active turn id
+/// precondition. The request fails when it does not match the currently active
+/// turn." So this names the turn it believes is running, and a steer aimed at a
+/// turn that has since finished is refused by the runtime rather than silently
+/// becoming a new turn.
+///
+/// It can still be refused for a reason the caller has to show: a turn that cannot
+/// accept same-turn steering (`/review`, manual `/compact`) answers
+/// `ActiveTurnNotSteerable`. That error travels back to the composer, which says
+/// so rather than dropping the message.
+#[tauri::command]
+async fn agent_steer(
+    state: State<'_, AgentState>,
+    text: String,
+) -> Result<(), String> {
+    let guard = state.session.lock().map_err(|e| e.to_string())?;
+    let session = guard.as_ref().ok_or("no agent session is running")?;
+    let thread_id = session
+        .thread_id
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone()
+        .filter(|id| !id.is_empty())
+        .ok_or("no thread is open")?;
+    let turn_id = session
+        .turn_id
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone()
+        .filter(|id| !id.is_empty())
+        // Same reason as the interrupt: the schema marks it required, so a
+        // request without it is discarded.
+        .ok_or("no turn is running to steer")?;
+
+    let reply = session.request(
+        "turn/steer",
+        steer_params(&thread_id, &turn_id, &text),
+        std::time::Duration::from_secs(30),
+    )?;
+    // The reply names the turn the message landed in. It should be the same one,
+    // and storing it keeps the slot right if the runtime ever reports otherwise.
+    if let Some(id) = reply.pointer("/result/turnId").and_then(|v| v.as_str()) {
+        if let Ok(mut slot) = session.turn_id.lock() {
+            *slot = Some(id.to_string());
+        }
+    }
+    Ok(())
+}
+
 /// A local-model tool adapter, if one is running.
 ///
 /// It speaks the Responses API to the runtime and Ollama's native `/api/chat` to
@@ -2820,6 +3518,29 @@ struct LocalAdapter {
     child: std::process::Child,
     port: u16,
     provider_id: String,
+    /// Which upstream shape it was started for, so a provider whose address
+    /// changed gets a new adapter instead of the old one answering.
+    upstream: String,
+    upstream_base: String,
+}
+
+/// `host:port` from a base URL.
+///
+/// The Ollama branch of the adapter takes them as separate flags — that is the
+/// shape its CLI already had — while a hosted provider is handed the whole URL.
+fn host_and_port(base_url: &str) -> Option<(String, u16)> {
+    let rest = base_url.split("://").nth(1).unwrap_or(base_url);
+    let hostport = rest.split('/').next().unwrap_or(rest);
+    if hostport.is_empty() {
+        return None;
+    }
+    match hostport.rsplit_once(':') {
+        Some((host, port)) => port.parse::<u16>().ok().map(|p| (host.to_string(), p)),
+        None => Some((
+            hostport.to_string(),
+            if base_url.starts_with("https") { 443 } else { 80 },
+        )),
+    }
 }
 
 /// A port nothing is listening on, offered by the OS and released for the child.
@@ -2830,17 +3551,68 @@ fn free_local_port() -> Option<u16> {
         .map(|addr| addr.port())
 }
 
+/// Is the local tool adapter on `port` answering?
+///
+/// A bare TCP connect is not enough. The adapter is reused across runs, and one that
+/// has died leaves either nothing listening or — worse — a socket that accepts and
+/// then says nothing, which passes a connect test and fails the first real request.
+/// So this asks the adapter's own `/health` for a 200, with short timeouts: a wedged
+/// process must not be able to hang the start of a run.
+fn adapter_alive(port: u16) -> bool {
+    use std::io::{Read, Write};
+
+    let timeout = std::time::Duration::from_millis(750);
+    let Ok(mut stream) = std::net::TcpStream::connect(("127.0.0.1", port)) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+    if stream
+        .write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .is_err()
+    {
+        return false;
+    }
+    // `Connection: close` means the adapter hangs up, so read to EOF rather than
+    // guessing a length — the response is two lines.
+    let mut response = String::new();
+    if stream.read_to_string(&mut response).is_err() {
+        return false;
+    }
+    response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200")
+}
+
 /// Start (or reuse) the adapter for one provider and return its Responses base URL.
 #[tauri::command]
 async fn local_adapter_start(
     app_handle: tauri::AppHandle,
     state: State<'_, LocalAdapterState>,
     provider_id: String,
+    // `upstream` is `"ollama"` (its own API) or `"openai"` (any
+    // `/chat/completions`); `base_url` is the provider's address, so either branch
+    // reaches the model the user actually picked — a non-default Ollama port as
+    // much as a hosted host.
+    upstream: Option<String>,
+    base_url: Option<String>,
 ) -> Result<String, String> {
+    let upstream = upstream
+        .map(|value| value.trim().to_lowercase())
+        .filter(|value| value == "openai")
+        .unwrap_or_else(|| "ollama".to_string());
+    let upstream_base = base_url.unwrap_or_default().trim().trim_end_matches('/').to_string();
     {
         let guard = state.server.lock().map_err(|e| e.to_string())?;
         if let Some(existing) = guard.as_ref() {
-            if existing.provider_id == provider_id {
+            // Alive as well as matching: this used to return the cached URL on the
+            // provider id alone, so an adapter that had died between runs handed the
+            // next run a port with nothing behind it, and every tool call in it
+            // failed as though the model were at fault. Asking it is cheap and it is
+            // the only way to know.
+            if existing.provider_id == provider_id
+                && existing.upstream == upstream
+                && existing.upstream_base == upstream_base
+                && adapter_alive(existing.port)
+            {
                 return Ok(format!("http://127.0.0.1:{}/v1", existing.port));
             }
         }
@@ -2859,13 +3631,74 @@ async fn local_adapter_start(
     args.push("--port".to_string());
     args.push(port.to_string());
 
+    // The credential travels in the environment, never in argv: this process's
+    // command line is readable by any process running as the user.
+    let mut env: Vec<(String, String)> = vec![
+        ("ACSA_ADAPTER_UPSTREAM".to_string(), upstream.clone()),
+        ("ACSA_ADAPTER_URL".to_string(), upstream_base.clone()),
+        // Ties the adapter's lifetime to this process — see the stdin note below.
+        ("ACSA_ADAPTER_WATCH_STDIN".to_string(), "1".to_string()),
+    ];
+    if upstream == "openai" {
+        args.push("--upstream".to_string());
+        args.push("openai".to_string());
+        if !upstream_base.is_empty() {
+            args.push("--base-url".to_string());
+            args.push(upstream_base.clone());
+        }
+        // Same resolution the `exec` and app-server paths use, so the adapter
+        // reaches the provider with the credential the user configured.
+        if let Some(key) = engine_resolve_key(&app_handle, &provider_id) {
+            env.push(("ACSA_ADAPTER_KEY".to_string(), key));
+        }
+    } else if let Some((host, ollama_port)) = host_and_port(&upstream_base) {
+        args.push("--ollama-host".to_string());
+        args.push(host);
+        args.push("--ollama-port".to_string());
+        args.push(ollama_port.to_string());
+    }
+
+    // Its stderr goes to a file — not to a pipe, and no longer to /dev/null.
+    //
+    // A pipe was wrong because nothing drains it and a full buffer blocks the
+    // adapter mid-turn. Discarding it was wrong too, and less obviously: the
+    // adapter is the only component that knows *why* a provider stalled or refused
+    // a request, and it was throwing that away. A request to NVIDIA NIM that never
+    // answered left no trace anywhere on the machine, which is exactly the kind of
+    // failure that needs one.
+    let adapter_log = app_handle
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|dir| dir.join("logs"))
+        .and_then(|dir| {
+            std::fs::create_dir_all(&dir).ok()?;
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dir.join("adapter.log"))
+                .ok()
+        });
+    let adapter_stderr = match adapter_log {
+        Some(file) => Stdio::from(file),
+        None => Stdio::null(),
+    };
+
     let mut child = Command::new(&program)
         .args(&args)
-        .stdin(Stdio::null())
+        .envs(env.iter().map(|(key, value)| (key.clone(), value.clone())))
+        // A pipe this process holds open and never writes to, so the adapter can
+        // tell when we are gone.
+        //
+        // It is handed the provider's credential in its environment, and it used
+        // to outlive us: killing the app left the adapter running with the key
+        // until the machine was rebooted (found by reading the environment of an
+        // orphan from a killed run). When this pipe closes — on a clean quit, a
+        // crash, or `kill -9` — the adapter exits. `Stdio::null()` gave it nothing
+        // to notice with.
+        .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        // Discarded rather than piped: nothing drains a piped stderr, and a full
-        // pipe buffer would block the adapter mid-turn.
-        .stderr(Stdio::null())
+        .stderr(adapter_stderr)
         .spawn()
         .map_err(|e| {
             format!(
@@ -2879,7 +3712,10 @@ async fn local_adapter_start(
     // listener and dies with a connection error that reads like a provider fault.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     loop {
-        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+        // `/health`, not a bare connect: a socket that accepts and then says nothing
+        // passes a connect test and fails the first real request, which is the same
+        // race in a different disguise.
+        if adapter_alive(port) {
             break;
         }
         if let Ok(Some(status)) = child.try_wait() {
@@ -2901,6 +3737,8 @@ async fn local_adapter_start(
         child,
         port,
         provider_id,
+        upstream,
+        upstream_base,
     });
     Ok(url)
 }
@@ -2920,9 +3758,66 @@ fn local_adapter_stop(state: State<'_, LocalAdapterState>) -> Result<(), String>
 ///
 /// `@tauri-apps/plugin-process` exists for this, and pulling in a whole plugin —
 /// plus a capability entry — for one call is not worth it, so it is a command.
+///
+/// It deliberately does not just call `app_handle.restart()`. Tauri relaunches
+/// by spawning the bundle's *inner* executable (`Contents/MacOS/acsa-code`) with
+/// `Command::new`, and on macOS a GUI app started that way is never registered
+/// with LaunchServices: it runs with no window and no Dock item, which from the
+/// outside is indistinguishable from a launch that failed. Measured on 0.2.17 —
+/// "Restart now" left a live process, no windows in the accessibility tree, and
+/// the app only came back when it was launched from the bundle again.
+///
+/// `open -n` asks LaunchServices to start the bundle instead, which is what
+/// produces a real window. The `-n` is load-bearing: without it `open` would just
+/// activate the instance that is on its way out, and nothing would relaunch. The
+/// exit status is checked, so a bundle path that does not work falls back to
+/// Tauri's own restart rather than quitting into nothing.
 #[tauri::command]
 fn app_restart(app_handle: tauri::AppHandle) {
+    if let Some(bundle) = app_handle
+        .path()
+        .resource_dir()
+        .ok()
+        .as_deref()
+        .and_then(bundle_from_resource_dir)
+    {
+        let bundle = bundle.to_path_buf();
+        if launch_bundle(&bundle) {
+            app_handle.exit(0);
+            return;
+        }
+    }
+
     app_handle.restart();
+}
+
+/// The bundle a resource directory belongs to: `<bundle>.app/Contents/Resources`
+/// is the shipped layout, `target/debug` is a development one, and anything that
+/// is not a `.app` has no bundle to relaunch through LaunchServices.
+fn bundle_from_resource_dir(resources: &Path) -> Option<&Path> {
+    let bundle = resources.parent()?.parent()?;
+    if bundle.extension().map(|extension| extension == "app").unwrap_or(false) {
+        Some(bundle)
+    } else {
+        None
+    }
+}
+
+/// Start the bundle through LaunchServices. Returns whether `open` accepted it.
+#[cfg(target_os = "macos")]
+fn launch_bundle(bundle: &Path) -> bool {
+    Command::new("open")
+        .arg("-n")
+        .arg(bundle)
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// Nothing to launch into: only macOS spawns the inner executable directly.
+#[cfg(not(target_os = "macos"))]
+fn launch_bundle(_bundle: &Path) -> bool {
+    false
 }
 
 /// End the session entirely.
@@ -2947,6 +3842,9 @@ async fn codex_exec(
     project_root: String,
     config_toml: String,
     provider_id: String,
+    // The id the runtime routes with. Separate from `provider_id` for the same
+    // reason as `agent_start`: the reserved built-in names are not ours to use.
+    runtime_provider_id: String,
     catalog_json: String,
     // The model the run should use. Needed as a CLI argument for local runs,
     // where `--oss` would otherwise choose (and download) its own default.
@@ -2970,6 +3868,7 @@ async fn codex_exec(
         &config_toml,
         &provider_id,
         &catalog_json,
+        &project_root,
     )?;
 
     if let Some(mut previous) = state.child.lock().map_err(|e| e.to_string())?.take() {
@@ -3004,7 +3903,7 @@ async fn codex_exec(
         // name is already the `[model_providers.*]` table we write.
         command
             .arg("-c")
-            .arg(format!("model_provider=\"{}\"", provider_id.trim()));
+            .arg(format!("model_provider=\"{}\"", runtime_provider_id.trim()));
     } else if let Some(local) = local_provider.as_deref().filter(|p| !p.trim().is_empty()) {
         // `-m` is not optional here. `--oss` has its own default model and will go
         // and download it — verified the hard way: without this, a run against the
@@ -3112,9 +4011,20 @@ async fn codex_exec(
             );
         }
         let stderr_text = stderr_thread.join().unwrap_or_default();
+        // The same translation the streaming path applies: this is the same text,
+        // joined, and it would otherwise reappear raw in the exit line.
+        let shown = stderr_text
+            .lines()
+            .filter_map(|line| match friendly_agent_line(line) {
+                AgentLine::Replace(message) => Some(message),
+                AgentLine::Keep => Some(line.to_string()),
+                AgentLine::Hide => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         let _ = stderr_handle.emit(
             "codex:exit",
-            redact_for_display(stderr_text.trim(), &known_secrets),
+            redact_for_display(shown.trim(), &known_secrets),
         );
     });
 
@@ -3149,6 +4059,7 @@ fn main() {
         .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![
             fetch_system_metrics,
+            open_external,
             fetch_system_storage,
             fetch_system_processes,
             system_cleanup,
@@ -3176,6 +4087,10 @@ fn main() {
             agent_turn,
             agent_respond,
             agent_interrupt,
+            agent_steer,
+            secrets_set,
+            secrets_delete,
+            secrets_list,
             agent_stop,
             local_adapter_start,
             local_adapter_stop,
@@ -3206,6 +4121,122 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "acsa-skills-{}-{}-{}",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The relaunch derives the bundle from the resource directory, and a wrong
+    /// derivation has two bad endings: `open` on a path that is not there, or
+    /// quitting into nothing because the exit status was never checked. Pinning
+    /// the derivation is what keeps that out of a release — the command itself
+    /// cannot be exercised end to end until a *later* build is the one running
+    /// when an update is installed.
+    #[test]
+    fn the_bundle_is_derived_from_the_shipped_resource_layout() {
+        assert_eq!(
+            bundle_from_resource_dir(Path::new("/Applications/ACSA Code.app/Contents/Resources")),
+            Some(Path::new("/Applications/ACSA Code.app"))
+        );
+        // A name that merely contains a dot is not a bundle.
+        assert_eq!(
+            bundle_from_resource_dir(Path::new("/Applications/Sierra.app.store/Contents/Resources")),
+            None
+        );
+    }
+
+    #[test]
+    fn a_development_layout_has_no_bundle_to_relaunch_through() {
+        // `tauri dev` runs the binary out of `target/`, where there is no `.app`
+        // around it, so the command must fall back to Tauri's own restart — and
+        // it must not panic on a path with no parents at all.
+        assert_eq!(bundle_from_resource_dir(Path::new("/repo/.tauri/target/debug")), None);
+        assert_eq!(bundle_from_resource_dir(Path::new("/Resources")), None);
+        assert_eq!(bundle_from_resource_dir(Path::new("")), None);
+    }
+
+    #[test]
+    fn a_project_skill_reaches_the_runtime_in_the_shape_it_reads() {
+        let root = scratch("mirror");
+        let project = root.join("project");
+        let home = root.join("codex");
+        std::fs::create_dir_all(project.join(".acsa/skills")).unwrap();
+        // Our loader's shape: a flat file, with a key the runtime does not document.
+        std::fs::write(
+            project.join(".acsa/skills/code-review.md"),
+            "---\nname: code-review\ndescription: Reviews a diff\ntriggers: [\"/code-review\"]\n---\n\n# Steps\nRead it.",
+        )
+        .unwrap();
+
+        assert_eq!(sync_project_skills(&home, &project).unwrap(), 1);
+
+        let written = std::fs::read_to_string(home.join("skills/code-review/SKILL.md")).unwrap();
+        assert!(written.starts_with("---\nname: code-review\ndescription: Reviews a diff\n---"));
+        assert!(!written.contains("triggers"));
+        assert!(written.contains("# Steps"));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_removed_skill_stops_being_offered() {
+        let root = scratch("stale");
+        let project = root.join("project");
+        let home = root.join("codex");
+        std::fs::create_dir_all(project.join(".acsa/skills")).unwrap();
+        std::fs::write(project.join(".acsa/skills/one.md"), "one").unwrap();
+        std::fs::write(project.join(".acsa/skills/two.md"), "two").unwrap();
+        assert_eq!(sync_project_skills(&home, &project).unwrap(), 2);
+
+        // Uninstall one, and re-run: the mirrored copy has to go too, or the agent
+        // keeps a skill the user removed.
+        std::fs::remove_file(project.join(".acsa/skills/two.md")).unwrap();
+        assert_eq!(sync_project_skills(&home, &project).unwrap(), 1);
+        assert!(home.join("skills/one/SKILL.md").exists());
+        assert!(!home.join("skills/two").exists());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_project_with_no_skills_is_not_an_error() {
+        let root = scratch("empty");
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        assert_eq!(sync_project_skills(&root.join("codex"), &project).unwrap(), 0);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn frontmatter_without_a_description_still_parses() {
+        let out = normalise_skill_markdown("---\nname: plain\n---\n\nBody", "plain");
+        assert!(out.contains("name: plain"));
+        assert!(out.contains("description: Project skill plain"));
+        assert!(out.ends_with("Body"));
+    }
+
+    #[test]
+    fn only_http_urls_are_handed_to_the_os() {
+        // This is the whole guard between a page string and the OS opener.
+        assert!(is_openable_url("https://example.com/a?b=c"));
+        assert!(is_openable_url("http://example.com"));
+        assert!(is_openable_url("  https://example.com  "));
+        assert!(!is_openable_url("file:///etc/passwd"));
+        assert!(!is_openable_url("javascript:alert(1)"));
+        assert!(!is_openable_url("-R /Applications"));
+        assert!(!is_openable_url("https://example.com\nrm -rf /"));
+        assert!(!is_openable_url(""));
+    }
 
     #[test]
     fn base64_matches_the_reference_encoder() {
@@ -3322,6 +4353,12 @@ for line in sys.stdin:
                          "startedAtMs": 0}})
         note("item/completed", {"item": {"type": "agentMessage", "text": "done", "id": "m1"}})
         note("turn/completed", {"threadId": "fake-thread-1", "turn": turn})
+    elif method == "turn/steer":
+        # Echo the params back, so a test can prove the request carried the
+        # thread, the *expected* turn id and the message — the three required
+        # fields, one of which is a precondition rather than a name.
+        note("acsa/test/steerParams", msg.get("params"))
+        send({"id": rid, "result": {"turnId": "fake-turn-1"}})
     elif method == "turn/interrupt":
         send({"id": rid, "result": {}})
 "#,
@@ -3784,14 +4821,120 @@ for line in sys.stdin:
     }
 
     #[test]
+    fn a_rejected_patch_reads_as_a_retry_not_a_failure() {
+        // Copied from a real run: the tracing prefix, the parser's complaint, then
+        // a paragraph of the header grammar it will accept.
+        let raw = "2026-09-23T13:15:22.927139Z ERROR codex_core::tools::router: \
+error=apply_patch verification failed: invalid hunk at line 362, '' is not a valid hunk header. \
+Valid hunk headers: '*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}'";
+        match friendly_agent_line(raw) {
+            AgentLine::Replace(message) => {
+                assert!(message.contains("invalid hunk at line 362"), "{message}");
+                assert!(!message.contains("Valid hunk headers"), "grammar dropped: {message}");
+                assert!(!message.contains("codex_core::tools::router"), "prefix dropped: {message}");
+                assert!(message.contains("retrying"), "says what is happening: {message}");
+            }
+            AgentLine::Keep => panic!("a rejected patch should be translated, not printed raw"),
+            AgentLine::Hide => panic!("a rejected patch should be translated, not hidden"),
+        }
+    }
+
+    #[test]
+    fn a_rejected_patch_with_no_cause_still_reads_as_a_retry() {
+        // The second shape seen in the same run: no reason after the colon.
+        match friendly_agent_line("ERROR codex_core::tools::router: error=apply_patch verification failed") {
+            AgentLine::Replace(message) => {
+                assert!(message.contains("did not parse"), "{message}");
+                assert!(message.contains("retrying"), "{message}");
+            }
+            AgentLine::Keep => panic!("expected a translation"),
+            AgentLine::Hide => panic!("expected a translation, not a hide"),
+        }
+    }
+
+    /// Captured verbatim from the runtime this build ships, against the three
+    /// providers checked with the same config the app writes. Each is a provider
+    /// that offers chat completions only — the failure a user hits when they pick
+    /// a capable model whose API has no Responses endpoint.
+    const CHAT_ONLY_PROVIDER_404S: [&str; 3] = [
+        "2026-09-26T23:38:08.762940Z  WARN codex_core::responses_retry: stream disconnected - retrying sampling request (1/5 in 196ms)... turn_id=01a0e015 retries=1 max_retries=5 sampling_error=unexpected status 404 Not Found: Not found, url: https://api.anthropic.com/v1/responses, cf-ray: a41619b98dc11b60-NBO",
+        "2026-09-26T23:38:26.461468Z  WARN codex_core::responses_retry: stream disconnected - retrying sampling request (1/5 in 201ms)... sampling_error=unexpected status 404 Not Found: {\n}, url: https://api.mistral.ai/v1/responses, cf-ray: a4161a27fabcb0f0-NBO",
+        "2026-09-26T23:38:47.087611Z  WARN codex_core::responses_retry: stream disconnected - retrying sampling request (1/5 in 206ms)... sampling_error=unexpected status 404 Not Found: Unknown error, url: https://generativelanguage.googleapis.com/responses",
+    ];
+
+    #[test]
+    fn a_provider_without_the_responses_api_says_so_once() {
+        for raw in CHAT_ONLY_PROVIDER_404S {
+            match friendly_agent_line(raw) {
+                AgentLine::Replace(message) => {
+                    assert!(message.contains("404"), "{message}");
+                    assert!(message.contains("/responses"), "names the endpoint: {message}");
+                    assert!(message.contains("chat"), "says where it still works: {message}");
+                    assert!(
+                        !message.contains("codex_core::responses_retry"),
+                        "tracing prefix dropped: {message}"
+                    );
+                    assert!(
+                        !message.contains("retrying sampling request"),
+                        "the retry noise is dropped: {message}"
+                    );
+                }
+                AgentLine::Keep => panic!("a chat-only provider must be explained, not printed raw"),
+                AgentLine::Hide => panic!("a chat-only provider must be explained, not hidden"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_retry_echo_around_that_404_is_dropped() {
+        // The runtime prints these beside the warning above; they add nothing.
+        for line in ["ERROR: Reconnecting... 1/5", "ERROR: Reconnecting... 5/5"] {
+            assert!(matches!(friendly_agent_line(line), AgentLine::Hide), "kept: {line}");
+        }
+    }
+
+    #[test]
+    fn ordinary_stderr_is_not_rewritten() {
+        // The translation is display-only and must not swallow a real diagnosis.
+        for line in [
+            "warning: something the user can act on",
+            r#"{"type":"turn.completed","usage":{"input_tokens":10}}"#,
+            "apply_patch succeeded",
+            "error=apply_patch failed to find the file",
+        ] {
+            assert!(matches!(friendly_agent_line(line), AgentLine::Keep), "rewrote: {line}");
+        }
+    }
+
+    #[test]
+    fn the_runtimes_own_model_metadata_warning_is_dropped() {
+        // The line the user read as "the metadata errors". The app writes every
+        // model the user picked into the catalog on each run, so an unknown slug
+        // here is always one of the runtime's own internals, and the warning says
+        // it falls back to metadata — it is not actionable.
+        let raw = "2026-09-23T14:06:26.977051Z  WARN codex_models_manager::model_info: \
+Unknown model gpt-5.6-luna is used. This will use fallback model metadata.";
+        assert!(matches!(friendly_agent_line(raw), AgentLine::Hide));
+    }
+
+    #[test]
+    fn a_model_warning_the_user_could_act_on_is_kept() {
+        // Anything else from the same logger is left alone, so this does not
+        // become a blanket silence on model problems.
+        let raw = "WARN codex_models_manager::model_info: model provider timed out";
+        assert!(matches!(friendly_agent_line(raw), AgentLine::Keep));
+    }
+
+    #[test]
     fn run_with_timeout_kills_a_wedged_child() {
         // The real failure this exists for: the engine sat inside one `open()`
         // for minutes while a permission prompt went unanswered, so the request
         // never returned and the process never exited.
         let started = std::time::Instant::now();
-        let result = run_with_timeout(
+        let result = run_with_timeout_env(
             &PathBuf::from("/bin/sleep"),
             &["30".to_string()],
+            &[],
             std::time::Duration::from_millis(300),
         );
         assert!(result.is_err(), "a wedged child must not be reported as success");
@@ -3809,9 +4952,10 @@ for line in sys.stdin:
             "-c".into(),
             "head -c 300000 /dev/zero | tr '\\0' 'x'".into(),
         ];
-        let out = run_with_timeout(
+        let out = run_with_timeout_env(
             &PathBuf::from("/bin/sh"),
             &args,
+            &[],
             std::time::Duration::from_secs(20),
         )
         .expect("large output must not time out");
@@ -3820,9 +4964,10 @@ for line in sys.stdin:
 
     #[test]
     fn run_with_timeout_returns_the_exit_status() {
-        let out = run_with_timeout(
+        let out = run_with_timeout_env(
             &PathBuf::from("/bin/sh"),
             &["-c".into(), "exit 3".into()],
+            &[],
             std::time::Duration::from_secs(20),
         )
         .expect("a failing command still runs");
@@ -3852,7 +4997,7 @@ for line in sys.stdin:
         // arguments — including the two added for Data & backups.
         for allowed in [
             "db", "ollama", "index", "git", "indexer", "skills", "mcp", "ai", "project", "fs",
-            "backup", "support",
+            "backup", "support", "snapshot",
         ] {
             assert!(engine_subcommand_allowed(allowed), "{allowed} must be reachable");
         }
@@ -3994,5 +5139,379 @@ for line in sys.stdin:
         assert!(result.is_err(), "an unknown template must not silently succeed");
         // Nothing half-made left behind, and above all no stray main.py.
         assert!(!root.exists(), "an unknown template created {}", root.display());
+    }
+
+    #[test]
+    fn a_steer_names_the_turn_it_expects() {
+        // The schema marks `expectedTurnId` required and calls it a precondition,
+        // so this is the field a wrong guess would silently turn into a second
+        // turn. Read from `codex app-server generate-json-schema`, not inferred.
+        let params = steer_params("thread-7", "turn-9", "actually, use tabs");
+        assert_eq!(params["threadId"], "thread-7");
+        assert_eq!(params["expectedTurnId"], "turn-9");
+        assert_eq!(params["input"][0]["type"], "text");
+        assert_eq!(params["input"][0]["text"], "actually, use tabs");
+        // Exactly the three required keys, so nothing is sent that the runtime
+        // would have to ignore.
+        let keys: Vec<&String> = params.as_object().unwrap().keys().collect();
+        assert_eq!(keys.len(), 3, "unexpected keys: {keys:?}");
+    }
+
+    #[test]
+    fn a_steer_reaches_the_runtime_and_its_message_survives_the_pipe() {
+        let script = fake_app_server();
+        let events: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let emitter: AgentEmitter = std::sync::Arc::new(move |name: &str, line: String| {
+            sink.lock().unwrap().push((name.to_string(), line));
+        });
+
+        let session = AgentSession::spawn(&script, &std::env::temp_dir(), ".", &[], emitter)
+            .expect("spawn the fake runtime");
+        session
+            .request("initialize", serde_json::json!({}), std::time::Duration::from_secs(5))
+            .expect("initialize answers");
+        session
+            .request("thread/start", serde_json::json!({}), std::time::Duration::from_secs(5))
+            .expect("thread/start answers");
+        let turn = session
+            .request("turn/start", serde_json::json!({}), std::time::Duration::from_secs(5))
+            .expect("turn/start answers");
+        let turn_id = turn["result"]["turn"]["id"].as_str().unwrap().to_string();
+
+        let reply = session
+            .request(
+                "turn/steer",
+                steer_params("fake-thread-1", &turn_id, "stop and do X instead"),
+                std::time::Duration::from_secs(5),
+            )
+            .expect("turn/steer answers");
+        // The reply names the turn the message landed in, which is what the command
+        // writes back into the session's turn slot.
+        assert_eq!(reply["result"]["turnId"], "fake-turn-1");
+
+        // And the runtime saw the message itself, not just the envelope.
+        let seen = events.lock().unwrap();
+        let echo = seen
+            .iter()
+            .find(|(name, line)| name == "agent:event" && line.contains("acsa/test/steerParams"))
+            .map(|(_, line)| line.clone())
+            .expect("the fake echoed the steer params");
+        assert!(echo.contains("stop and do X instead"), "{echo}");
+        assert!(echo.contains("expectedTurnId"), "{echo}");
+    }
+
+    /// A one-shot HTTP server for the adapter's health check: it answers exactly one
+    /// connection with `status_line` and then drops it, which is also what makes
+    /// `Connection: close` observable.
+    fn mock_health_server(status_line: &'static str) -> u16 {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a port");
+        let port = listener.local_addr().expect("a local address").port();
+        // Not joined, on purpose: if the code under test never connects, joining
+        // would hang the suite instead of failing it. The thread dies with the
+        // process, and the only thing it owns is a listener on a random port.
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut discard = [0u8; 512];
+                let _ = stream.read(&mut discard);
+                let _ = stream.write_all(status_line.as_bytes());
+            }
+        });
+        port
+    }
+
+    #[test]
+    fn a_port_nothing_is_listening_on_is_not_alive() {
+        // The case that mattered: an adapter that died between runs left this in the
+        // cache, and the next run was handed a URL with nothing behind it.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        assert!(!adapter_alive(port));
+    }
+
+    #[test]
+    fn a_healthy_adapter_is_alive() {
+        let port = mock_health_server(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}",
+        );
+        assert!(adapter_alive(port));
+    }
+
+    #[test]
+    fn a_socket_that_accepts_but_does_not_answer_health_is_not_alive() {
+        // The disguise a bare connect test falls for: the port is open, so `connect`
+        // succeeds, and the first real request is the one that fails.
+        let port = mock_health_server("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        assert!(!adapter_alive(port));
+    }
+
+    /// An in-memory `SecretStore` for the migration tests.
+    ///
+    /// Not the crate's `mock`: that keeps its data *inside* the credential object,
+    /// so a freshly built entry starts empty and it cannot exercise the one thing
+    /// worth proving — that a value written through one entry can be read back
+    /// through another.
+    #[derive(Default)]
+    struct MemoryStore {
+        values: std::sync::Mutex<std::collections::HashMap<String, String>>,
+        refuse_writes: bool,
+        /// Accepts a write and does not keep it — what `keyring` does when no
+        /// platform backend is compiled in, and the reason 0.2.6 put every
+        /// credential in the database while the page said "keychain".
+        lose_writes: bool,
+    }
+
+    impl SecretStore for MemoryStore {
+        fn get(&self, name: &str) -> Option<String> {
+            self.values.lock().unwrap().get(name).cloned()
+        }
+
+        fn set(&self, name: &str, value: &str) -> Result<(), String> {
+            if self.refuse_writes {
+                return Err("the keychain is not available".to_string());
+            }
+            if self.lose_writes {
+                return Ok(());
+            }
+            self.values.lock().unwrap().insert(name.to_string(), value.to_string());
+            Ok(())
+        }
+
+        fn delete(&self, name: &str) -> Result<(), String> {
+            self.values.lock().unwrap().remove(name);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_keychain_value_wins_and_the_old_store_is_never_asked() {
+        let store = MemoryStore::default();
+        store.set("deepseek_api_key", "sk-from-keychain").unwrap();
+        let mut asked = false;
+        let resolved = resolve_provider_key(
+            &store,
+            "deepseek",
+            || {
+                asked = true;
+                Some("sk-from-the-database".to_string())
+            },
+            |_| panic!("nothing was copied, so nothing may be deleted"),
+        );
+        assert_eq!(resolved.as_deref(), Some("sk-from-keychain"));
+        // Once the keychain has it, the old store is not consulted at all — which
+        // matters because that lookup spawns the engine.
+        assert!(!asked, "the fallback should not have been reached");
+    }
+
+    #[test]
+    fn a_value_from_the_old_store_is_copied_and_only_then_let_go() {
+        let store = MemoryStore::default();
+        let old = std::sync::Mutex::new(Some("sk-from-the-database".to_string()));
+        let dropped = std::sync::Mutex::new(Vec::<String>::new());
+
+        let resolved = resolve_provider_key(
+            &store,
+            "deepseek",
+            || old.lock().unwrap().clone(),
+            |name| {
+                dropped.lock().unwrap().push(name.to_string());
+                *old.lock().unwrap() = None;
+            },
+        );
+
+        assert_eq!(resolved.as_deref(), Some("sk-from-the-database"));
+        assert_eq!(
+            store.get("deepseek_api_key").as_deref(),
+            Some("sk-from-the-database"),
+            "the value should have been copied into the keychain"
+        );
+        // The plaintext copy is released only after the keychain was shown to hold
+        // the value, and the run still gets its credential from this call.
+        assert_eq!(
+            dropped.lock().unwrap().as_slice(),
+            ["deepseek_api_key"],
+            "the copy should have been let go exactly once, and under its own name"
+        );
+        assert!(old.lock().unwrap().is_none(), "the old copy should be gone");
+    }
+
+    #[test]
+    fn a_keychain_that_refuses_the_copy_still_returns_the_key() {
+        // A headless Linux box with no Secret Service, or a locked keyring: the run
+        // has a credential and must not be stopped because a copy failed.
+        let store = MemoryStore { refuse_writes: true, ..Default::default() };
+        let resolved = resolve_provider_key(
+            &store,
+            "deepseek",
+            || Some("sk-old".to_string()),
+            |_| panic!("the keychain never held it, so the only copy must survive"),
+        );
+        assert_eq!(resolved.as_deref(), Some("sk-old"));
+        assert_eq!(store.get("deepseek_api_key"), None);
+    }
+
+    #[test]
+    fn a_store_that_loses_the_write_keeps_the_only_copy() {
+        // The failure that shipped in 0.2.6: the store reports success, a fresh
+        // entry cannot see the value, and the old copy is therefore the only real
+        // one. The read-back check is what stands between that and a deleted key.
+        let store = MemoryStore { lose_writes: true, ..Default::default() };
+        let old = std::sync::Mutex::new(Some("sk-only-copy".to_string()));
+
+        let resolved = resolve_provider_key(
+            &store,
+            "deepseek",
+            || old.lock().unwrap().clone(),
+            |_| *old.lock().unwrap() = None,
+        );
+
+        assert_eq!(resolved.as_deref(), Some("sk-only-copy"));
+        assert!(store.get("deepseek_api_key").is_none(), "nothing was stored");
+        assert!(
+            old.lock().unwrap().is_some(),
+            "the store never proved it held the value, so the only copy must survive"
+        );
+    }
+
+    #[test]
+    fn a_missing_credential_resolves_to_nothing_and_writes_nothing() {
+        let store = MemoryStore::default();
+        assert_eq!(
+            resolve_provider_key(
+                &store,
+                "deepseek",
+                || None,
+                |_| panic!("nothing was copied, so nothing may be deleted"),
+            ),
+            None
+        );
+        // Especially not an empty string: a stored "" would then read as "present".
+        assert_eq!(store.get("deepseek_api_key"), None);
+    }
+
+    #[test]
+    fn the_secret_name_is_the_spelling_the_engine_uses() {
+        // The engine writes and reads `{provider}_api_key`
+        // (app_db.secret_name_for_provider). Two spellings of the same idea would
+        // silently resolve nothing.
+        assert_eq!(secret_name_for_provider("deepseek"), "deepseek_api_key");
+        assert_eq!(secret_name_for_provider("ollama"), "ollama_api_key");
+    }
+
+    #[test]
+    fn a_keychain_credential_reaches_the_engine_as_its_own_environment_variable() {
+        // The engine resolves `ACSA_SECRET_<NAME>` by lowercasing the suffix
+        // (`app_db._env_secret_names`), so the variable has to be the upper-cased
+        // name. Getting the case wrong means a keychain-only credential is invisible
+        // to the engine, and invisibly so: a missing variable simply means "not set".
+        assert_eq!(
+            secret_env_var("deepseek_api_key"),
+            "ACSA_SECRET_DEEPSEEK_API_KEY"
+        );
+
+        let store = MemoryStore::default();
+        store.set("deepseek_api_key", "sk-live").unwrap();
+        let pairs = secret_env_pairs(
+            &store,
+            &["deepseek_api_key".to_string(), "openai_api_key".to_string()],
+        );
+        // Only the name that resolves is handed over. The other is absent rather
+        // than present-and-empty, which is a different thing to the engine.
+        assert_eq!(
+            pairs,
+            vec![(
+                "ACSA_SECRET_DEEPSEEK_API_KEY".to_string(),
+                "sk-live".to_string()
+            )]
+        );
+    }
+
+    /// The real keychain, end to end: write, read back through a fresh entry, delete.
+    ///
+    /// Ignored by default because it needs an actual OS keychain — and because on a
+    /// machine without one it would fail for a reason that has nothing to do with
+    /// this code. Run it deliberately on a Mac:
+    ///
+    ///     cargo test --manifest-path .tauri/Cargo.toml -- --ignored --nocapture
+    ///
+    /// It is the test that would have caught the missing `keyring` features. With
+    /// no backend compiled in the crate falls back to a store that keeps its data
+    /// *inside each credential object*: `set_password` returns `Ok`, and a fresh
+    /// `Entry` for the same name then answers `NoEntry`. So the write looks like it
+    /// worked, `KeychainStore::set`'s read-back check correctly rejects it, and every
+    /// credential lands in the database while the settings page says "stored in your
+    /// system keychain". `cargo tree -p keyring -e features` showed only `log` — that
+    /// is the one-line check to repeat if this ever regresses, because nothing else
+    /// in the build can tell the difference.
+    #[test]
+    fn a_turn_with_an_image_sends_it_as_the_runtime_accepts_it() {
+        // The app-server transport sent text alone, so an attached image was
+        // dropped there while the same image went through `--image=` on `exec` —
+        // the asymmetry a user hit when their message arrived as "text only".
+        //
+        // The variant and field are the runtime's, asked rather than assumed: an
+        // empty `{"type":"localImage"}` answers `missing field \`path\``, and
+        // `input_image` — the shape `codex debug prompt-input` renders for the
+        // Responses API — is rejected outright as an unknown variant.
+        let input = turn_input("look at this", &[PathBuf::from("/tmp/attachments/0.png")]);
+        assert_eq!(input.len(), 2);
+        assert_eq!(input[0]["type"], "text");
+        assert_eq!(input[0]["text"], "look at this");
+        assert_eq!(input[1]["type"], "localImage");
+        assert_eq!(input[1]["path"], "/tmp/attachments/0.png");
+    }
+
+    #[test]
+    fn a_turn_without_images_is_just_the_text() {
+        // The common case must not acquire an empty image item, which the runtime
+        // would reject as malformed rather than ignore.
+        let input = turn_input("no pictures", &[]);
+        assert_eq!(input.len(), 1);
+        assert_eq!(input[0]["type"], "text");
+    }
+
+    #[test]
+    #[ignore = "needs a real OS keychain; run explicitly on a Mac"]
+    fn the_os_keychain_round_trips_a_credential() {
+        let store = KeychainStore;
+        let name = "acsa-self-test";
+        let value = "round-trip-probe";
+
+        store.set(name, value).expect(
+            "the keychain refused the write — see the doc comment: this is the \
+             signature of a `keyring` build with no platform backend",
+        );
+        assert_eq!(store.get(name).as_deref(), Some(value));
+        store.delete(name).expect("delete should succeed");
+        assert_eq!(store.get(name), None, "the probe entry should be gone");
+    }
+
+    /// Opt-in, like the real-runtime tests: it needs a real OS keychain and it
+    /// writes to it. Run with `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "needs a real OS keychain (writes and removes a throwaway entry)"]
+    fn a_real_keychain_round_trips_a_throwaway_credential() {
+        let name = format!("keychain-probe-{}", std::process::id());
+        let store = KeychainStore;
+        // `set` reads back through a fresh entry and only reports success if the
+        // value came back, so a successful set *is* the round trip.
+        if let Err(error) = store.set(&name, "throwaway-value") {
+            // The reason is the point of this test existing at all: an unsigned or
+            // ad-hoc-signed binary may be refused by the OS keychain, and that is
+            // exactly why the plaintext copy is not deleted until a *signed* build
+            // has been shown to read the keychain back.
+            eprintln!("no usable OS keychain here: {error}");
+            return;
+        }
+        assert_eq!(store.get(&name).as_deref(), Some("throwaway-value"));
+        // Clean up behind ourselves — through the crate directly, because the
+        // production store deliberately has no delete yet.
+        if let Ok(entry) = keyring::Entry::new(KEYCHAIN_SERVICE, &name) {
+            let _ = entry.delete_credential();
+        }
+        assert_eq!(store.get(&name), None, "the probe entry should be gone");
     }
 }

@@ -11,15 +11,16 @@
  * they read it from WorkbenchContext instead, which is also the only way an
  * open panel can see a file change. See WorkbenchContext.tsx.
  */
-import { lazy, Suspense, useCallback } from "react";
+import { lazy, useCallback } from "react";
 import type { IDockviewPanelProps } from "dockview-react";
 import { AssetPreview } from "../editor/AssetPreview";
-import { SurfaceFallback } from "../ui/SurfaceFallback";
+import { LazySurface } from "../ui/LazySurface";
 import { useWorkbench } from "./WorkbenchContext";
 import { DESKTOP_REQUIRED_MESSAGE } from "../../services/engineBridge";
 
 /* Lazily-loaded heavy surfaces: Monaco dominates the bundle but is not needed
-   to paint the workbench, so each of these defers until a tab needs it. */
+   to paint the workbench, so each of these defers until a tab needs it. They stay
+   module constants so the identity React and dockview see never changes. */
 const MonacoEditorContainer = lazy(() =>
   import("../editor/MonacoEditorContainer").then((m) => ({ default: m.MonacoEditorContainer }))
 );
@@ -56,7 +57,7 @@ const EditorPanel = (props: IDockviewPanelProps<{ filePath: string }>) => {
   }
 
   return (
-    <Suspense fallback={<SurfaceFallback label="editor" />}>
+    <LazySurface label="editor">
       <MonacoEditorContainer
         path={tab.path}
         content={tab.content}
@@ -70,7 +71,7 @@ const EditorPanel = (props: IDockviewPanelProps<{ filePath: string }>) => {
         onSelectionChange={live.onSelectionChange}
         projectRoot={live.projectRoot}
       />
-    </Suspense>
+    </LazySurface>
   );
 };
 
@@ -90,7 +91,7 @@ const DiffPanel = (
   const path = isGit ? (props.params?.filePath ?? "git.diff") : "patch.diff";
 
   return (
-    <Suspense fallback={<SurfaceFallback label="diff viewer" />}>
+    <LazySurface label="diff viewer">
       <MonacoDiffContainer
         originalContent={original}
         modifiedContent={modified}
@@ -123,7 +124,7 @@ const DiffPanel = (
           live.setCurrentDiff("");
         }}
       />
-    </Suspense>
+    </LazySurface>
   );
 };
 

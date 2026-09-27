@@ -41,15 +41,12 @@ from tree_sitter_cfg import (  # noqa: E402
     parse_file,
 )
 
-logger = logging.getLogger("ProjectIndexer")
-_handler = logging.StreamHandler(sys.stdout)
-_handler.setFormatter(
-    logging.Formatter(
-        '{"ts":"%(asctime)s","level":"%(levelname)s","component":"ProjectIndexer","message":"%(message)s"}'
-    )
-)
-logger.addHandler(_handler)
-logger.setLevel(logging.INFO)
+# One shared setup: the same JSON line to stdout and to a rotating file in the
+# data directory, with the component taken from the logger name rather than
+# written into a format string per module. See core-engine/log_setup.py.
+from log_setup import configure
+
+logger = configure("ProjectIndexer")
 
 # ── Ignored Directories & File Patterns ─────────────────────────────────────
 IGNORED_DIRS = {

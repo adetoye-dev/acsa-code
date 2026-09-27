@@ -12,6 +12,7 @@
 import { useState, useEffect } from "react";
 import { Trash2, Globe, Star, CheckCircle2, RefreshCw, Eye, Download, Loader2, Zap, Play, Cpu, AlertCircle, ShieldCheck, ChevronDown } from "lucide-react";
 import { Icon } from "../ui/Icon";
+import { openExternal } from "../../services/openExternal";
 import { ProviderLogo } from "../ui/BrandLogos";
 import { OllamaSetupWizard } from "../ui/OllamaSetupWizard";
 import { HashProgressBar } from "../ui/HashProgressBar";
@@ -25,6 +26,7 @@ import {
   addCustomModelToProvider,
   curateProviderModels,
   saveActiveSelectedModel,
+  setProviderApiKey,
 } from "../../services/aiModelManager";
 import {
   checkOllamaStatus,
@@ -37,6 +39,7 @@ import {
   type OllamaProgressEvent,
 } from "../../services/ollamaSetup";
 import { aiFetch } from "../../services/aiClient";
+import { explainProviderFailure } from "../../services/providerErrors";
 
 interface AiManagementDashboardProps {
   onModelSettingsChanged?: () => void;
@@ -53,6 +56,10 @@ export function AiManagementDashboard({
   const [showApiKey, setShowApiKey] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; latencyMs?: number; message?: string } | null>(null);
+  // Which store took the last credential, and why it was not the keychain. Without
+  // this the fallback is silent, and a build with no working keychain looks exactly
+  // like one whose keys are encrypted by the OS.
+  const [keyStorage, setKeyStorage] = useState<{ stored: "keychain" | "file"; reason?: string } | null>(null);
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
   const [isStartingOllama, setIsStartingOllama] = useState(false);
   const [showOllamaWizard, setShowOllamaWizard] = useState(false);
@@ -191,7 +198,7 @@ export function AiManagementDashboard({
     }
   };
 
-  const handleSaveProvider = (modelValue = selectedModel, baseUrlValue = baseUrlInput) => {
+  const handleSaveProvider = async (modelValue = selectedModel, baseUrlValue = baseUrlInput) => {
     let isConnected = false;
     if (activeProvider.id === "ollama") {
       isConnected = ollamaStatus?.running ?? activeProvider.isConnected;
@@ -199,9 +206,13 @@ export function AiManagementDashboard({
       isConnected = !!(apiKeyInput && apiKeyInput.trim().length > 3);
     }
 
+    const key = apiKeyInput.trim();
     const updated: AIProviderConfig = {
       ...activeProvider,
-      apiKey: apiKeyInput.trim(),
+      // Deliberately empty: the credential is written below, awaited, so the
+      // destination is known. Passing it here would be a second, unobserved write —
+      // `saveProviderConfig` fires that one off with `void … .catch(() => {})`.
+      apiKey: "",
       baseUrl: baseUrlValue.trim(),
       selectedModel: modelValue,
       isConnected,
@@ -213,6 +224,19 @@ export function AiManagementDashboard({
     }
     setProviders(newMap);
     onModelSettingsChanged?.();
+
+    if (activeProvider.category === "cloud" && key) {
+      try {
+        const result = await setProviderApiKey(activeProvider.id, key);
+        setKeyStorage(
+          result?.stored === "file"
+            ? { stored: "file", reason: result.reason }
+            : { stored: "keychain" },
+        );
+      } catch (error) {
+        setKeyStorage({ stored: "file", reason: String((error as Error)?.message || error) });
+      }
+    }
   };
 
   const handleSetDefault = () => {
@@ -243,7 +267,15 @@ export function AiManagementDashboard({
 
       if (res.ok) {
         const data = await res.json();
-        setTestResult(data);
+        // The engine reports a failure in `error`; this used to store the payload
+        // whole and then render only `.message`, which is absent on every failure —
+        // so a rejected key, an account with no credit and a dead network all read
+        // "Connection failed. Please check endpoint or API key." `explainProviderFailure`
+        // turns the reason into the fix, and falls back to the provider's own words.
+        const reason =
+          explainProviderFailure(String(data?.error ?? "")) ?? String(data?.error ?? data?.message ?? "");
+        setTestResult({ ok: Boolean(data?.success ?? data?.ok), latencyMs: data?.latencyMs, message: reason });
+        const success = Boolean(data?.success ?? data?.ok);
         const rawList = data.models && data.models.length > 0 ? data.models : activeProvider.availableModels;
         const newModels: string[] = curateProviderModels(activeProvider.id, rawList);
         const currentModel = selectedModel || activeProvider.selectedModel;
@@ -255,7 +287,7 @@ export function AiManagementDashboard({
           ...activeProvider,
           apiKey: apiKeyInput.trim() || activeProvider.apiKey,
           baseUrl: (baseUrlInput || activeProvider.baseUrl || "").trim(),
-          isConnected: !!data.ok,
+          isConnected: success,
           latencyMs: data.latencyMs,
           availableModels: newModels,
           selectedModel: resolvedModel,
@@ -930,14 +962,13 @@ export function AiManagementDashboard({
                           </form>
                           <p className="text-3xs text-zinc-500 mt-1">
                             Supports any model tag from the official{" "}
-                            <a
-                              href="https://ollama.com/library"
-                              target="_blank"
-                              rel="noreferrer"
+                            <button
+                              type="button"
+                              onClick={() => void openExternal("https://ollama.com/library")}
                               className="text-purple-400 hover:underline"
                             >
                               Ollama Library
-                            </a>.
+                            </button>.
                           </p>
                         </div>
                       </div>
@@ -1029,7 +1060,7 @@ export function AiManagementDashboard({
                       <label htmlFor="aimanagementdashboard-api-key-secret-token-stored-in-the-app-3" className="text-xs font-semibold text-zinc-300 flex items-center justify-between">
                         <span>API Key / Secret Token</span>
                         <span className="text-2xs text-zinc-500 font-normal">
-                          Stored in the app database on this device — never read back into the page
+                          Stored in your system keychain — never read back into the page
                         </span>
                       </label>
                       <div className="flex items-center gap-2">
@@ -1039,6 +1070,14 @@ export function AiManagementDashboard({
                             value={apiKeyInput}
                             onChange={(e) => setApiKeyInput(e.target.value)}
                             placeholder="sk-••••••••••••••••••••••••"
+                            // A credential is not prose. Measured: with "Show key" on,
+                            // WebKit capitalised the first character and the app saved
+                            // `Sk-…` — a key that looks right and authenticates as 401.
+                            // Nothing about a key wants autocapitalisation, autocorrect
+                            // or spellcheck, and none of them can be recovered from.
+                            autoCapitalize="none"
+                            autoCorrect="off"
+                            spellCheck={false}
                             className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-3.5 pr-10 py-2.5 text-xs text-zinc-100 font-mono placeholder-zinc-500 focus:outline-none focus:border-purple-500/60 transition-colors"
                           />
                           <button
@@ -1058,6 +1097,21 @@ export function AiManagementDashboard({
                           Save Key
                         </button>
                       </div>
+                      {keyStorage && (
+                        <p
+                          className={
+                            keyStorage.stored === "keychain"
+                              ? "mt-2 text-2xs text-emerald-300/80"
+                              : "mt-2 text-2xs text-amber-300/90"
+                          }
+                        >
+                          {keyStorage.stored === "keychain"
+                            ? "Saved to your system keychain."
+                            : `Saved to the app database, not your keychain — ${
+                                keyStorage.reason || "the keychain was not usable here"
+                              }`}
+                        </p>
+                      )}
                     </div>
                   ) : (
                     <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-300 flex items-start gap-2.5">
@@ -1125,7 +1179,7 @@ export function AiManagementDashboard({
                 </div>
                 {activeProvider.category === "cloud" && (
                   <p className="text-3xs text-zinc-500">
-                    API keys are stored in the app database on this device and used by the agent, editor review and inline edit. They are write-only across the app's own API: the page can set or clear a key and ask whether one exists, but never receives the value.
+                    API keys are kept in your operating system's keychain — macOS Keychain, Windows Credential Manager, Linux Secret Service — and used by the agent, editor review and inline edit. Where a keychain is unavailable the key falls back to the app database with `0600` permissions, and the save reports which happened. They are write-only across the app's own API: the page can set or clear a key and ask whether one exists, but never receives the value.
                   </p>
                 )}
 

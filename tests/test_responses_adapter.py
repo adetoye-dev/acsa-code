@@ -7,8 +7,11 @@ exact shapes rather than a plausible-looking approximation.
 """
 
 import importlib
+import io
 import json
+import os
 import sys
+import threading
 import unittest
 from pathlib import Path
 
@@ -215,3 +218,331 @@ class MessageTranslationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+import ai_cli  # noqa: E402  (the engine's provider client)
+
+
+class TestConnectionErrorTextTests(unittest.TestCase):
+    """A failed provider test has to say why.
+
+    Every hosted provider nests its reason differently, and the settings page reads
+    one field. Handing the payload through unchanged meant a dict arrived as
+    "[object Object]" and, on the page that read `message`, nothing arrived at all —
+    so a rejected key, an account with no credit and a dead network all produced
+    "Connection failed. Please check endpoint or API key."
+    """
+
+    def test_reads_the_message_openai_nests_inside_error(self):
+        body = {"error": {"message": "Incorrect API key provided: sk-***", "type": "invalid_request_error"}}
+        self.assertEqual(ai_cli._error_text(body), "Incorrect API key provided: sk-***")
+
+    def test_reads_a_bare_string_and_a_bare_message(self):
+        self.assertEqual(ai_cli._error_text("rate limit exceeded"), "rate limit exceeded")
+        self.assertEqual(ai_cli._error_text({"message": "quota exhausted"}), "quota exhausted")
+
+    def test_says_nothing_rather_than_guessing_at_an_unknown_shape(self):
+        # Gemini returns a list of attempts, and some providers return nothing useful.
+        # An empty string is what lets the caller fall back to the status code.
+        self.assertEqual(ai_cli._error_text({"error": [{"reason": "x"}]}), "")
+        self.assertEqual(ai_cli._error_text(None), "")
+        self.assertEqual(ai_cli._error_text({"error": {}}), "")
+
+    def test_the_failure_keeps_the_status(self):
+        # The status is half the diagnosis: 401 and 429 need different fixes, and the
+        # frontend's classifier keys off it.
+        source = (Path(__file__).resolve().parent.parent / "core-engine" / "ai_cli.py").read_text(encoding="utf-8")
+        self.assertIn('f"HTTP {status or \'unreachable\'}: {_error_text(body)}"', source)
+
+
+class OpenAIUpstream(unittest.TestCase):
+    """The second upstream shape: any OpenAI-compatible `/chat/completions`.
+
+    This is the path every provider without a Responses API has to take — NVIDIA
+    NIM among them, which is why it exists: measured against NIM's public host,
+    `POST /v1/responses` is `404 page not found` while `/chat/completions` answers
+    403 without a key. The runtime will not speak chat completions itself, so the
+    adapter has to, and the translation is what these tests pin down.
+    """
+
+    def setUp(self):
+        self.saved = (adapter.UPSTREAM_MODE, adapter.UPSTREAM_URL, adapter.UPSTREAM_KEY)
+        adapter.UPSTREAM_MODE = "openai"
+        adapter.UPSTREAM_URL = "https://integrate.api.nvidia.com/v1"
+        adapter.UPSTREAM_KEY = "nvapi-test"
+
+    def tearDown(self):
+        adapter.UPSTREAM_MODE, adapter.UPSTREAM_URL, adapter.UPSTREAM_KEY = self.saved
+
+    def test_the_base_url_splits_into_scheme_host_port_and_path(self):
+        self.assertEqual(
+            adapter.upstream_endpoint(),
+            ("https", "integrate.api.nvidia.com", 443, "/v1/chat/completions"),
+        )
+
+    def test_a_plain_http_base_url_keeps_its_port(self):
+        adapter.UPSTREAM_URL = "http://127.0.0.1:11434/v1"
+        self.assertEqual(
+            adapter.upstream_endpoint(),
+            ("http", "127.0.0.1", 11434, "/v1/chat/completions"),
+        )
+
+    def test_a_non_streaming_reply_becomes_an_ollama_message(self):
+        result = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "hi",
+                        "tool_calls": [
+                            {"id": "call_1", "function": {"name": "f", "arguments": '{"a": 1}'}}
+                        ],
+                    }
+                }
+            ]
+        }
+        message = adapter.upstream_message(result)
+        self.assertEqual(message["content"], "hi")
+        self.assertEqual(message["tool_calls"][0]["function"]["arguments"], '{"a": 1}')
+        self.assertEqual(message["tool_calls"][0]["id"], "call_1")
+
+    def test_tool_history_keeps_the_string_and_pairs_the_call_id(self):
+        # OpenAI wants the Responses shape as it already is: a JSON *string*, and
+        # the id that pairs a call with the message answering it. Ollama is the
+        # opposite on both counts, which is why the direction is explicit.
+        messages = adapter.chat_messages(
+            {
+                "input": [
+                    {
+                        "type": "function_call",
+                        "name": "f",
+                        "arguments": '{"a": 1}',
+                        "call_id": "call_1",
+                    },
+                    {"type": "function_call_output", "call_id": "call_1", "output": "done"},
+                ]
+            }
+        )
+        self.assertEqual(messages[0]["tool_calls"][0]["function"]["arguments"], '{"a": 1}')
+        self.assertEqual(messages[1]["tool_call_id"], "call_1")
+        self.assertNotIn("tool_name", messages[1])
+
+    def test_the_ollama_direction_is_untouched_by_the_mode(self):
+        adapter.UPSTREAM_MODE = "ollama"
+        messages = adapter.chat_messages(
+            {"input": [{"type": "function_call", "name": "f", "arguments": '{"a": 1}'}]}
+        )
+        self.assertEqual(messages[0]["tool_calls"][0]["function"]["arguments"], {"a": 1})
+
+    def test_a_fragmented_streamed_tool_call_arrives_complete_and_once(self):
+        # The reason the accumulator exists: OpenAI sends the name in one chunk and
+        # the JSON arguments over the next few, and the consumer emits on first
+        # sight of a call — without this it would hand the runtime `{}` for every
+        # tool the model called.
+        stream = adapter.OpenAiStream()
+        chunks = []
+        for obj in [
+            # The name arrives whole in the first delta; the arguments are the part
+            # that is streamed in pieces.
+            {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_1", "function": {"name": "get_weather", "arguments": ""}}]}}]},
+            {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": '{"ci'}}]}}]},
+            {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": 'ty": "Lagos"}'}}]}}]},
+            {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+            {"choices": [], "usage": {"prompt_tokens": 11, "completion_tokens": 3}},
+        ]:
+            chunks.extend(stream.feed(obj))
+
+        calls = [
+            call
+            for chunk in chunks
+            for call in (chunk.get("message") or {}).get("tool_calls") or []
+        ]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["function"]["name"], "get_weather")
+        self.assertEqual(calls[0]["function"]["arguments"], '{"city": "Lagos"}')
+        self.assertEqual(calls[0]["id"], "call_1")
+        counters = [chunk for chunk in chunks if "eval_count" in chunk]
+        self.assertEqual(len(counters), 1, "usage is reported once, not per chunk")
+        self.assertEqual(counters[0]["prompt_eval_count"], 11)
+
+    def test_a_call_still_open_at_the_end_is_flushed(self):
+        # A stream that ends without `finish_reason` — a dropped connection, a
+        # provider that omits it — must not swallow the call the model made.
+        stream = adapter.OpenAiStream()
+        stream.feed({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c", "function": {"name": "f", "arguments": "{}"}}]}}]})
+        flushed = stream.flush()
+        self.assertEqual(flushed[0]["message"]["tool_calls"][0]["function"]["name"], "f")
+        self.assertEqual(stream.flush(), [], "flushing twice must not repeat the call")
+
+    def test_text_deltas_pass_through_untouched(self):
+        stream = adapter.OpenAiStream()
+        self.assertEqual(
+            stream.feed({"choices": [{"delta": {"content": "hel"}}]})[0]["message"]["content"],
+            "hel",
+        )
+
+
+class ModelCatalogIds(unittest.TestCase):
+    """How a provider's `/v1/models` reply becomes the app's model ids."""
+
+    def test_an_owner_prefix_is_kept(self):
+        # NIM, OpenRouter, Together and HuggingFace all report `owner/name`, and the
+        # whole string is what the model is called by. Stripping the owner listed a
+        # model and then 404ed on it — which is what emptied NIM's list of
+        # `deepseek-ai/deepseek-v4.1-flash`.
+        payload = {
+            "data": [
+                {"id": "deepseek-ai/deepseek-v4.1-flash"},
+                {"id": "moonshotai/kimi-k3"},
+                {"id": "gpt-5.3-codex"},
+            ]
+        }
+        self.assertEqual(
+            ai_cli._names(payload),
+            ["deepseek-ai/deepseek-v4.1-flash", "moonshotai/kimi-k3", "gpt-5.3-codex"],
+        )
+
+    def test_the_gemini_route_prefix_is_still_removed(self):
+        # Gemini puts a route on every id — `models/gemini-2.0-flash` — and its call
+        # takes the bare one, so that prefix is not part of the name.
+        self.assertEqual(
+            ai_cli._names({"models": [{"name": "models/gemini-2.0-flash"}]}),
+            ["gemini-2.0-flash"],
+        )
+
+    def test_gemini_is_configured_with_its_openai_compatible_surface(self):
+        # The bare host answers `/v1beta/models` and 404s `/chat/completions` — which
+        # is how a connection test passed while every chat and agent turn failed.
+        self.assertTrue(ai_cli.DEFAULT_BASE_URLS["google"].endswith("/v1beta/openai"))
+
+
+class AdapterLifetime(unittest.TestCase):
+    """The adapter must not outlive the app that handed it a credential.
+
+    It is started with the provider's key in its environment. Killing the app used
+    to leave it running — still holding a live key — until the machine was
+    rebooted, which is how this was found: an orphan from a killed run, with
+    `ACSA_ADAPTER_KEY` still readable in its environment. The app holds the write
+    end of the adapter's stdin and never writes to it, so the pipe closing *is* the
+    app being gone, whatever killed it.
+    """
+
+    def test_a_closed_pipe_reads_as_ended(self):
+        self.assertTrue(adapter.stdin_ended(io.BytesIO(b"")))
+
+    def test_a_read_error_reads_as_ended(self):
+        class Broken:
+            def read(self, _size):
+                raise OSError("bad file descriptor")
+
+        self.assertTrue(adapter.stdin_ended(Broken()))
+
+    def test_an_open_pipe_keeps_it_waiting_until_it_closes(self):
+        read_fd, write_fd = os.pipe()
+        source = os.fdopen(read_fd, "rb")
+        seen: list[bool] = []
+        worker = threading.Thread(
+            target=lambda: seen.append(adapter.stdin_ended(source)), daemon=True
+        )
+        try:
+            worker.start()
+            worker.join(0.3)
+            self.assertEqual(seen, [], "an open pipe must not read as ended")
+            # Data on it means the app is still there and writing; also not ended.
+            os.write(write_fd, b"still here")
+            worker.join(0.3)
+            self.assertEqual(seen, [], "data on the pipe must not end it")
+        finally:
+            os.close(write_fd)
+        worker.join(2)
+        self.assertEqual(seen, [True], "closing the pipe must end it")
+        source.close()
+
+
+class ReasoningEffort(unittest.TestCase):
+    """The thinking budget we ask for has to reach the provider, or it is decoration.
+
+    The runtime sends `reasoning: {"effort": …}` on every request — confirmed by
+    dumping one from the app with `ACSA_ADAPTER_DEBUG=1` — so the level our model
+    catalog declares does arrive. It was being discarded one hop later, which is
+    why lowering it changed nothing: the model went on reasoning as hard as it
+    liked.
+    """
+
+    def setUp(self):
+        self.saved = adapter.UPSTREAM_MODE
+        adapter.UPSTREAM_MODE = "openai"
+
+    def tearDown(self):
+        adapter.UPSTREAM_MODE = self.saved
+
+    def test_it_reads_the_effort_the_runtime_asked_for(self):
+        self.assertEqual(adapter.reasoning_effort_of({"reasoning": {"effort": "low"}}), "low")
+
+    def test_an_absent_or_odd_shape_reads_as_no_effort(self):
+        for body in (
+            {},
+            {"reasoning": None},
+            {"reasoning": "low"},
+            {"reasoning": {}},
+            {"reasoning": {"effort": 3}},
+        ):
+            self.assertEqual(adapter.reasoning_effort_of(body), "", repr(body))
+
+    def test_the_effort_is_carried_into_the_chat_body(self):
+        body = {"input": "hi", "reasoning": {"effort": "low"}}
+        self.assertEqual(adapter.chat_body_for_request(body, "m")["reasoning_effort"], "low")
+
+    def test_nothing_is_sent_when_no_effort_was_asked_for(self):
+        self.assertNotIn("reasoning_effort", adapter.chat_body_for_request({"input": "hi"}, "m"))
+
+    def test_the_ollama_direction_is_not_sent_a_field_it_lacks(self):
+        adapter.UPSTREAM_MODE = "ollama"
+        body = {"input": "hi", "reasoning": {"effort": "low"}}
+        self.assertNotIn("reasoning_effort", adapter.chat_body_for_request(body, "m"))
+
+    def test_the_tools_still_travel(self):
+        body = {"input": "hi", "tools": [{"type": "function", "name": "f", "parameters": {}}]}
+        self.assertEqual(len(adapter.chat_body_for_request(body, "m")["tools"]), 1)
+
+    def test_any_refusal_is_worth_one_retry_without_our_field(self):
+        # Not every OpenAI-compatible server has `reasoning_effort`. Waiting for the
+        # refusal to *name* it was the first version, and a real one arrived as a
+        # single `{` — so the retry never fired and a provider looked broken for a
+        # reason we introduced. Any 400/422 now costs one request to settle.
+        with_field = {"model": "m", "reasoning_effort": "low", "stream": True}
+        self.assertTrue(adapter.should_retry_without_effort(400, with_field))
+        self.assertTrue(adapter.should_retry_without_effort(422, with_field))
+
+    def test_it_retries_only_where_retrying_can_help(self):
+        with_field = {"model": "m", "reasoning_effort": "low", "stream": True}
+        without = {"model": "m", "stream": True}
+        # A 500 is the provider breaking; a 200 is not a failure; and nothing is
+        # retried when we never sent the field in the first place.
+        self.assertFalse(adapter.should_retry_without_effort(500, with_field))
+        self.assertFalse(adapter.should_retry_without_effort(200, with_field))
+        self.assertFalse(adapter.should_retry_without_effort(400, without))
+
+    def test_the_field_can_be_taken_back_out_for_the_retry(self):
+        body = {"model": "m", "reasoning_effort": "low", "stream": True}
+        self.assertEqual(adapter.without_reasoning_effort(body), {"model": "m", "stream": True})
+
+    def test_a_refusal_body_is_quoted_only_when_it_says_something(self):
+        # The real 400 body was a single `{`: the gateway got one byte out before the
+        # connection went. Printed after a sentence it reads as a broken message
+        # rather than a broken request.
+        self.assertEqual(adapter.body_hint(b"{"), "")
+        self.assertEqual(adapter.body_hint(b""), "")
+        self.assertEqual(
+            adapter.body_hint(b'{"error":{"message":"model not found"}}'), "model not found"
+        )
+        self.assertEqual(adapter.body_hint(b'{"detail":"context length exceeded"}'), "context length exceeded")
+        self.assertEqual(adapter.body_hint(b"plain words about the failure"), "plain words about the failure")
+
+    def test_a_400_reads_as_a_refusal_not_a_number(self):
+        sentence = adapter.upstream_failure_message(400, b"{")
+        self.assertIn("refused the request", sentence)
+        self.assertNotIn("{", sentence, "the unusable fragment is dropped")
+        self.assertIn(
+            "model not found", adapter.upstream_failure_message(400, b'{"error":{"message":"model not found"}}')
+        )

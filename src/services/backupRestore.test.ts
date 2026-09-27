@@ -7,6 +7,7 @@ let picker: string | null = null;
 let pickerThrows = false;
 let engineThrows = false;
 let includeSecrets = false;
+let secretsRemoved = 2;
 
 vi.mock("./engineBridge", () => ({
   hasIpc: () => ipc,
@@ -16,7 +17,7 @@ vi.mock("./engineBridge", () => ({
     if (engineThrows) throw new Error("engine unavailable");
     if (subcommand === "db") return { dataDir: "/data/dir", dbPath: "/data/dir/app.db" };
     if (subcommand === "backup" && args[0] === "export") {
-      return { secretsIncluded: includeSecrets, secretsRemoved: 2 };
+      return { secretsIncluded: includeSecrets, secretsRemoved };
     }
     if (subcommand === "backup") return { previousKeptAt: "/data/dir/app.db.before-import" };
     return { path: args[1], bytes: 42 };
@@ -49,6 +50,7 @@ beforeEach(() => {
   pickerThrows = false;
   engineThrows = false;
   includeSecrets = false;
+  secretsRemoved = 2;
 });
 
 describe("the suggested names", () => {
@@ -144,5 +146,25 @@ describe("revealing the data folder", () => {
   it("returns null for the path readout instead of an error box when there is no app", async () => {
     ipc = false;
     expect(await dataFolderInfo()).toBeNull();
+  });
+});
+
+/**
+ * Once credentials live in the OS keychain, an export has nothing to strip — so the
+ * count reaches zero, and "(0 removed)" reads as a bug rather than as the truth.
+ * What matters is that a user does not walk away believing their keys are inside a
+ * file that has none.
+ */
+describe("a backup taken once credentials live in the keychain", () => {
+  it("says where the keys are, rather than reporting zero removals", async () => {
+    picker = "/tmp/after-keychain.db";
+    secretsRemoved = 0;
+    const outcome = await exportBackup();
+    expect(outcome.kind).toBe("done");
+    if (outcome.kind === "done") {
+      expect(outcome.detail).toContain("without API keys");
+      expect(outcome.detail).toContain("keychain");
+      expect(outcome.detail).not.toContain("(0 removed)");
+    }
   });
 });

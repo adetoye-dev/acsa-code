@@ -1,0 +1,41 @@
+# Dependency updates on a schedule, rather than when someone remembers.
+#
+# Three ecosystems, which is all this repository has:
+#
+# - npm: the app's whole tree. Most of it is devDependencies, and those still
+#   matter — they run in CI on a runner that holds the release secrets.
+# - cargo: the Tauri shell in `/\.tauri` (its own manifest and lockfile).
+# - github-actions: the actions this repo's own workflows pin, which is how a
+#   deprecated action runtime goes unnoticed until it is force-upgraded.
+#
+# There is deliberately no pip entry: the engine is stdlib-only, and the frozen
+# sidecar is built from it, so there is no Python dependency file to watch.
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # One pull request a week for the routine bumps. Majors are left out of the
+      # groups on purpose: a major needs reading, not merging.
+      dev-minor-and-patch:
+        dependency-type: development
+        update-types: ["minor", "patch"]
+      prod-minor-and-patch:
+        dependency-type: production
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: cargo
+    directory: "/.tauri"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

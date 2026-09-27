@@ -58,6 +58,9 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "pty": ("pty_bridge", "main"),
     "ollama": ("ollama_cli", "run"),
     "git": ("git_cli", "run"),
+    # The remote's state — checks, pull requests, your issues — through the `gh`
+    # the user already signed into. See gh_cli for why it is not a token of ours.
+    "gh": ("gh_cli", "run"),
     "indexer": ("indexer_cli", "run"),
     "skills": ("skills_cli", "run"),
     "mcp": ("mcp_cli", "run"),
@@ -68,7 +71,48 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "crash": ("crash_log", "main"),
     "backup": ("backup", "main"),
     "support": ("support", "main"),
+    # The file half of "undo this turn": the runtime's own rollback/revert
+    # primitives both state that they do not revert local file changes, so the
+    # pre-turn state has to be captured before a turn runs.
+    "snapshot": ("snapshot_cli", "run"),
 }
+
+
+def _selftest_report() -> tuple[dict[str, object], dict[str, str]]:
+    """Every reason this build cannot work, as `(tls, failures)`.
+
+    Split from the printing so a test can assert on it directly: the TLS check
+    below is the only thing standing between a capless freeze and a user whose
+    every hosted-model call fails, and it has to be falsifiable.
+    """
+    failures: dict[str, str] = {}
+    for name, (module_name, _func) in COMMANDS.items():
+        try:
+            importlib.import_module(module_name)
+        except Exception as exc:  # noqa: BLE001 - the report is the point
+            failures[name] = f"{type(exc).__name__}: {exc}"
+
+    # A frozen engine inherits the CA store of whatever interpreter froze it, and
+    # PyInstaller adds none. A python.org framework build missing its
+    # `etc/openssl/cert.pem` (that file only appears after the installer's
+    # `Install Certificates.command`) reports ZERO roots, and then nothing
+    # over HTTPS can be verified: every hosted-model call — provider test, chat,
+    # inline edit, review — dies with CERTIFICATE_VERIFY_FAILED, on a machine
+    # where the browser is fine. That is not hypothetical: 0.2.6 shipped that way.
+    # Asserting it here makes the `sidecar` job fail instead of the user.
+    try:
+        import tls_context
+
+        tls: dict[str, object] = dict(tls_context.describe())
+        if not tls.get("certificates"):
+            failures["tls"] = (
+                "no CA certificates: every HTTPS call will fail with "
+                "CERTIFICATE_VERIFY_FAILED"
+            )
+    except Exception as exc:  # noqa: BLE001 - report, do not traceback at the user
+        tls = {"error": f"{type(exc).__name__}: {exc}"}
+        failures["tls"] = str(tls["error"])
+    return tls, failures
 
 
 def _selftest() -> int:
@@ -79,12 +123,8 @@ def _selftest() -> int:
     `scripts/` path silently broke the integrated terminal. This makes the whole
     surface checkable in one call, in both source and frozen mode.
     """
-    failures: dict[str, str] = {}
-    for name, (module_name, _func) in COMMANDS.items():
-        try:
-            importlib.import_module(module_name)
-        except Exception as exc:  # noqa: BLE001 - the report is the point
-            failures[name] = f"{type(exc).__name__}: {exc}"
+    tls, failures = _selftest_report()
+
     print(
         json.dumps(
             {
@@ -93,6 +133,7 @@ def _selftest() -> int:
                     "root": str(ROOT),
                     "frozen": bool(getattr(sys, "_MEIPASS", None)),
                     "checked": sorted(COMMANDS),
+                    "tls": tls,
                     "failures": failures,
                 },
             }

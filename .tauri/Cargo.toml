@@ -1,6 +1,6 @@
 [package]
 name = "acsa-code"
-version = "0.2.4"
+version = "0.2.19"
 edition = "2021"
 description = "ACSA Code — local-first AI engineering workbench with deterministic verification"
 license = "MIT"
@@ -14,7 +14,37 @@ tauri-plugin-fs = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sysinfo = "0.32"
-tauri-plugin-updater = "2.11.0"
+# Minor-locked on purpose. Tauri refuses to bundle when a plugin crate and its
+# npm package disagree on major.minor, and `"2.11.0"` is a caret range: adding an
+# unrelated dependency re-resolved the lockfile, took this from 2.11 to 2.12, and
+# the failure only appeared at bundle time — after a tag, on the release build.
+# `tests/test_tauri_versions_align.py` checks every pair now.
+tauri-plugin-updater = "~2.11.0"
+# OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret
+# Service). The cipher is the operating system's; nothing here implements
+# crypto, which is why this can live in a signed shell rather than in the
+# stdlib-only Python engine. Tests go through our own in-memory store rather
+# than the crate's mock, which keeps data inside each credential object.
+#
+# The backends are named explicitly, and that matters more than it looks:
+# `keyring` 3 declares **no default feature** and no `default = [...]` in its
+# manifest, so a bare `keyring = "3"` compiles the crate with *no store at all*.
+# `Entry::new` then fails immediately with "no storage access" on every platform,
+# which our fallback quietly absorbed by writing the credential to the database
+# instead — so "keys are in your system keychain" was false in every shipped
+# build, ad-hoc and notarised alike. `cargo tree -p keyring -e features` showed
+# only `log`; that is the check to repeat if this ever regresses, and
+# `a_keychain_backend_is_compiled_in` in `src/main.rs` asserts it behaviourally.
+#
+# `linux-native-sync-persistent` is the crate's own recommendation: kernel
+# keyutils, with the Secret Service as the fallback, which is why CI installs
+# libdbus-1-dev.
+keyring = { version = "3", features = [
+    "apple-native",
+    "windows-native",
+    "linux-native-sync-persistent",
+    "crypto-rust",
+] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

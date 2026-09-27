@@ -1,4 +1,4 @@
-import { GitBranch, Activity, FileCode, Cpu, HardDrive, Database, RefreshCw } from "lucide-react";
+import { GitBranch, Activity, AlertCircle, FileCode, Cpu, HardDrive, Database, RefreshCw } from "lucide-react";
 import { Icon } from "../ui/Icon";
 import type { ProjectIndexState } from "../../hooks/usePipeline";
 import { useSystemMetrics } from "../../hooks/useSystemMetrics";
@@ -10,6 +10,25 @@ export interface StatusBarProps {
   indexStatus?: ProjectIndexState;
   isIndexing?: boolean;
   onSyncIndex?: () => void;
+  /**
+   * Non-empty while the agent is stopped waiting on the user — the runtime's own
+   * status name (`waitingOnApproval` / `waitingOnUserInput`).
+   */
+  agentBlockedOn?: string;
+}
+
+/**
+ * The runtime's status name, in words.
+ *
+ * This is surfaced in the status bar rather than only inside the chat because a
+ * run parked on an approval used to be invisible from anywhere else: the
+ * reported symptom was a run that sat blocked for about six minutes with nothing
+ * on screen to say why, and the only way to find out was the accessibility tree.
+ */
+export function blockedLabel(status: string): string {
+  if (status === "waitingOnApproval") return "Agent waiting for your approval";
+  if (status === "waitingOnUserInput") return "Agent waiting for your answer";
+  return "Agent waiting for you";
 }
 
 export function StatusBar({
@@ -19,6 +38,7 @@ export function StatusBar({
   indexStatus,
   isIndexing = false,
   onSyncIndex,
+  agentBlockedOn = "",
 }: StatusBarProps) {
   // Fetched here rather than handed down: see hooks/useSystemMetrics.ts for why a
   // host metric should not re-render the workbench three times a second.
@@ -28,6 +48,16 @@ export function StatusBar({
   return (
     <div className="h-[24px] bg-canvas border-t border-hairline flex items-center justify-between px-4 text-xs text-muted select-none w-full">
       <div className="flex items-center space-x-4">
+        {/* Always present, so the announcement fires when the text appears rather
+            than when the region is inserted. */}
+        <div role="status" aria-live="polite" className="flex items-center">
+          {agentBlockedOn ? (
+            <span className="flex items-center space-x-1 text-amber-300 font-medium">
+              <Icon icon={AlertCircle} className="w-3.5 h-3.5" />
+              <span>{blockedLabel(agentBlockedOn)}</span>
+            </span>
+          ) : null}
+        </div>
         <div className="flex items-center space-x-1">
           <Icon icon={GitBranch} className="w-3.5 h-3.5" />
           <span>{gitBranch}</span>

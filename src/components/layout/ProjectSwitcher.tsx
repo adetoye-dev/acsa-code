@@ -190,6 +190,7 @@ export function ProjectSwitcher({
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
+        data-testid="project-switcher"
         className={`flex items-center gap-2 px-2.5 py-1 rounded-pill border transition-all ${
           isOpen
             ? "bg-surface border-zinc-500 text-white shadow-elevation-1"
@@ -229,6 +230,7 @@ export function ProjectSwitcher({
             <button
               type="button"
               role="menuitem"
+              data-testid="project-switcher-new"
               onClick={() => {
                 setIsOpen(false);
                 onNewProject();

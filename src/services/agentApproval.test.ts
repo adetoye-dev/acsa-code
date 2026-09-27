@@ -7,6 +7,7 @@ import {
   isAgentTransport,
   localProviderFor,
   localToolCallingNote,
+  needsToolAdapter,
   resolveApprovalMode,
   type ApprovalDecision,
 } from "./agentApproval";
@@ -105,5 +106,42 @@ describe("local providers", () => {
     expect(note).toContain("ollama");
     expect(note).toMatch(/Responses API/);
     expect(localToolCallingNote("deepseek")).toBeNull();
+  });
+});
+
+/**
+ * Which providers the agent reaches directly, and which the tool adapter fronts.
+ *
+ * This is the guard against the trap the registry kept falling into: fifteen
+ * providers were offered, the runtime speaks Responses and nothing else, and
+ * only two implement it — so the rest were advertised as agent-capable and
+ * answered 404 on their first tool call (measured on NVIDIA NIM, Mistral and
+ * Anthropic). Anything new added to the registry now lands in the adapter by
+ * default, which is the branch that works for every OpenAI-compatible provider.
+ */
+describe("how the agent reaches a provider", () => {
+  it("goes straight to the two providers whose Responses support was verified", () => {
+    expect(needsToolAdapter("openai")).toBe(false);
+    expect(needsToolAdapter("deepseek")).toBe(false);
+  });
+
+  it("fronts everything else with the adapter, including a provider added later", () => {
+    // NVIDIA NIM is chat-completions only — its `/v1/responses` is a 404 — so it
+    // is exactly the provider that must not be pointed at directly.
+    for (const id of ["nvidia", "groq", "mistral", "xai", "moonshot", "together", "openrouter"]) {
+      expect(needsToolAdapter(id), id).toBe(true);
+    }
+    expect(needsToolAdapter("something-the-user-added")).toBe(true);
+  });
+
+  it("does not pretend Anthropic can be adapted", () => {
+    // `/v1/messages` is not OpenAI-shaped, so there is nothing to translate to
+    // and agent mode is honestly unavailable rather than silently empty.
+    expect(needsToolAdapter("anthropic")).toBe(false);
+  });
+
+  it("adds no hop when nothing is selected", () => {
+    expect(needsToolAdapter(undefined)).toBe(false);
+    expect(needsToolAdapter("")).toBe(false);
   });
 });

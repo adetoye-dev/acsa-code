@@ -10,6 +10,10 @@
 
 import type { AIProviderConfig, AIProviderId } from "../types/workbench";
 import { appStore, type StoredProvider } from "./appStore";
+// The one list of "this is a local engine, not an API". Imported rather than
+// repeated: this codebase has been bitten by the same set existing twice and
+// drifting (see `RESERVED_RUNTIME_PROVIDER_IDS`).
+import { LOCAL_PROVIDER_IDS } from "./agentApproval";
 
 const STORAGE_KEY = "acsa_code_ai_providers_v4";
 const DEFAULT_PROVIDER_KEY = "acsa_code_default_provider_v4";
@@ -37,32 +41,22 @@ export const INITIAL_PROVIDERS: Record<AIProviderId, AIProviderConfig> = {
     isDefault: false,
     apiKey: "",
     baseUrl: "https://api.openai.com/v1",
-    selectedModel: "gpt-4o",
-    availableModels: ["gpt-4o", "gpt-4o-mini", "o3", "o1", "o1-pro", "gpt-4-turbo"],
-    speedBadge: "Fast",
-  },
-  anthropic: {
-    id: "anthropic",
-    name: "Anthropic",
-    category: "cloud",
-    isConnected: false,
-    isDefault: false,
-    apiKey: "",
-    baseUrl: "https://api.anthropic.com/v1",
-    selectedModel: "claude-3-7-sonnet-latest",
-    availableModels: ["claude-3-7-sonnet-latest", "claude-3-5-sonnet-latest", "claude-3-5-haiku-latest", "claude-3-opus-latest"],
-    speedBadge: "Thinking",
-  },
-  google: {
-    id: "google",
-    name: "Google Gemini",
-    category: "cloud",
-    isConnected: false,
-    isDefault: false,
-    apiKey: "",
-    baseUrl: "https://generativelanguage.googleapis.com",
-    selectedModel: "gemini-2.0-flash",
-    availableModels: ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro", "gemini-1.5-flash"],
+    selectedModel: "gpt-5.3-codex",
+    // The starting list, for a provider whose key has just been entered and no
+    // fetch has run yet. It used to be `gpt-4o / o3 / o1 / o1-pro` — generation-old
+    // names that made a fresh install look stale before its first fetch, which is
+    // exactly when a user judges the app. These are the coding models the live
+    // `/v1/models` returns and `curateProviderModels` ranks to the top of it; the
+    // fetch replaces this list with whatever is current, so it only has to be
+    // honest, not exhaustive.
+    availableModels: [
+      "gpt-5.3-codex",
+      "gpt-5.2-codex",
+      "gpt-5.1-codex-max",
+      "gpt-5.1-codex",
+      "gpt-5-pro",
+      "o4-mini",
+    ],
     speedBadge: "Fast",
   },
   groq: {
@@ -76,18 +70,6 @@ export const INITIAL_PROVIDERS: Record<AIProviderId, AIProviderConfig> = {
     selectedModel: "deepseek-r1-distill-llama-70b",
     availableModels: ["deepseek-r1-distill-llama-70b", "llama-3.3-70b-versatile"],
     speedBadge: "Fast",
-  },
-  mistral: {
-    id: "mistral",
-    name: "Mistral AI",
-    category: "cloud",
-    isConnected: false,
-    isDefault: false,
-    apiKey: "",
-    baseUrl: "https://api.mistral.ai/v1",
-    selectedModel: "codestral-latest",
-    availableModels: ["codestral-latest", "mistral-large-latest", "mistral-small-latest"],
-    speedBadge: "Medium",
   },
   deepseek: {
     id: "deepseek",
@@ -115,6 +97,56 @@ export const INITIAL_PROVIDERS: Record<AIProviderId, AIProviderConfig> = {
     availableModels: ["grok-2-latest", "grok-2-vision-1212", "grok-beta"],
     speedBadge: "Fast",
   },
+  nvidia: {
+    id: "nvidia",
+    name: "NVIDIA NIM",
+    category: "cloud",
+    isConnected: false,
+    isDefault: false,
+    apiKey: "",
+    // `integrate.api.nvidia.com` is the public NIM endpoint that the free tier
+    // uses. It is OpenAI-compatible *chat completions* and nothing else: measured
+    // with a probe, `POST /v1/responses` answers `404 page not found` while
+    // `/chat/completions` answers 403 without a key (present, needs auth), and
+    // `GET /v1/models` is open and lists 82 models. So NIM cannot front the agent
+    // runtime directly — the runtime only speaks Responses — and it is reached
+    // through the tool adapter like every other chat-completions provider. See
+    // `needsToolAdapter` in `agentApproval.ts`.
+    baseUrl: "https://integrate.api.nvidia.com/v1",
+    selectedModel: "deepseek-ai/deepseek-v4.1-flash",
+    // A short, coding-first list rather than all 82. Every id here was read back
+    // from the live `/v1/models` catalog, because a model this app offers has to
+    // be one the provider actually serves — an advertised-but-absent model is the
+    // failure mode this whole provider path keeps getting bitten by.
+    availableModels: [
+      "deepseek-ai/deepseek-v4.1-flash",
+      "z-ai/glm-5.3",
+      "moonshotai/kimi-k3",
+      "mistralai/codestral-22b-instruct-v0.1",
+      "openai/gpt-oss-20b",
+    ],
+    speedBadge: "Fast",
+  },
+  google: {
+    id: "google",
+    name: "Google Gemini",
+    category: "cloud",
+    isConnected: false,
+    isDefault: false,
+    apiKey: "",
+    // Gemini's *OpenAI-compatible* surface, not the bare host. The host answers
+    // `/v1beta/models` and 404s `/chat/completions` — which is how "Test Connection"
+    // could pass while every chat and agent turn failed. Measured against this
+    // surface: `/chat/completions` answers (400 to a bogus credential), and there is
+    // no `/responses`, so Gemini reaches the agent through the tool adapter like the
+    // other chat-completions providers.
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+    selectedModel: "gemini-2.5-flash",
+    // A starting list only — the free tier is the reason this provider is here, so
+    // "Fetch Latest Models" replaces it with what the account can actually reach.
+    availableModels: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
+    speedBadge: "Fast",
+  },
   moonshot: {
     id: "moonshot",
     name: "Moonshot AI",
@@ -137,30 +169,6 @@ export const INITIAL_PROVIDERS: Record<AIProviderId, AIProviderConfig> = {
     baseUrl: "https://api.cohere.ai/v1",
     selectedModel: "command-r-plus",
     availableModels: ["command-r-plus", "command-r", "c4ai-aya-expanse-32b"],
-    speedBadge: "Medium",
-  },
-  perplexity: {
-    id: "perplexity",
-    name: "Perplexity AI",
-    category: "cloud",
-    isConnected: false,
-    isDefault: false,
-    apiKey: "",
-    baseUrl: "https://api.perplexity.ai",
-    selectedModel: "sonar-pro",
-    availableModels: ["sonar-pro", "sonar-reasoning-pro", "sonar", "sonar-reasoning"],
-    speedBadge: "Fast",
-  },
-  huggingface: {
-    id: "huggingface",
-    name: "Hugging Face",
-    category: "cloud",
-    isConnected: false,
-    isDefault: false,
-    apiKey: "",
-    baseUrl: "https://api-inference.huggingface.co/v1",
-    selectedModel: "Qwen/Qwen2.5-Coder-32B-Instruct",
-    availableModels: ["Qwen/Qwen2.5-Coder-32B-Instruct", "meta-llama/Llama-3.3-70B-Instruct", "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"],
     speedBadge: "Medium",
   },
   together: {
@@ -282,6 +290,17 @@ export function scoreModelForCoding(_providerId: string, modelName: string): num
  */
 export function curateProviderModels(providerId: string, rawModels: string[]): string[] {
   if (!Array.isArray(rawModels)) return [];
+
+  // A local engine reports what is *installed*, and that is the user's set rather
+  // than a catalog to curate: the coding-model filter below would hide a model they
+  // deliberately pulled — an embedding or a vision one — and the twelve cap would
+  // truncate an installation that has more. The same list also feeds the "installed
+  // models" panel, so hiding a local model is doubly wrong. `syncOllamaModels`
+  // already treats the daemon as the source of truth; this is the other entrance.
+  if (LOCAL_PROVIDER_IDS.has(providerId)) {
+    return Array.from(new Set(rawModels.filter(Boolean)));
+  }
+
   const valid = Array.from(new Set(rawModels.filter(Boolean).filter(isCodingChatModel)));
 
   if (valid.length === 0) {
@@ -296,7 +315,18 @@ export function curateProviderModels(providerId: string, rawModels: string[]): s
   const scored = valid.map((m) => ({ model: m, score: scoreModelForCoding(providerId, m) }));
   scored.sort((a, b) => b.score - a.score);
 
-  return scored.slice(0, 12).map((s) => s.model);
+  // The registry's own entries first, then the best of the rest.
+  //
+  // A fetch must not be able to *remove* a model the registry curates. The score
+  // below has nothing to go on but the name — size and version words — so it
+  // ranks an older 70B above a current cheap tier, and NVIDIA NIM's list lost
+  // `deepseek-ai/deepseek-v4.1-flash` to exactly that. Entries the provider still
+  // reports stay; whatever budget is left goes to the ranking.
+  const curated = (INITIAL_PROVIDERS[providerId as AIProviderId]?.availableModels ?? []).filter(
+    (id) => valid.includes(id)
+  );
+  const merged = Array.from(new Set([...curated, ...scored.map((s) => s.model)]));
+  return merged.slice(0, Math.max(12, curated.length));
 }
 
 /** In-memory mirror of the registry so `loadAllProviders()` can stay synchronous. */
@@ -473,13 +503,24 @@ export async function persistProviderConfig(config: AIProviderConfig): Promise<v
   });
 }
 
-/** Store a cloud credential. An empty value is ignored — use clearProviderApiKey. */
-export async function setProviderApiKey(providerId: AIProviderId, apiKey: string): Promise<void> {
+/**
+ * Store a cloud credential. An empty value is ignored — use clearProviderApiKey.
+ *
+ * Returns which store took it, because "stored" is not a detail: `keychain` means
+ * the operating system is holding it encrypted, `file` means it went to the plain
+ * `0600` database instead — and until this was returned, a build whose keychain
+ * could not be reached looked identical to one whose could.
+ */
+export async function setProviderApiKey(
+  providerId: AIProviderId,
+  apiKey: string,
+): Promise<{ stored: "keychain" | "file" | "removed"; reason?: string } | null> {
   const trimmed = (apiKey || "").trim();
-  if (!trimmed) return;
-  await appStore.setSecret(`${providerId}_api_key`, trimmed);
+  if (!trimmed) return null;
+  const result = await appStore.setSecret(`${providerId}_api_key`, trimmed);
   if (providerCache?.[providerId]) providerCache[providerId].isConnected = true;
   notifyModelsUpdated();
+  return result;
 }
 
 /** Remove a stored cloud credential. */
@@ -1014,7 +1055,7 @@ export function isModelVisionCapable(providerId: string, modelName: string): boo
   }
 
   // 3. Frontier cloud providers: multimodality is standard for modern/future generative models
-  if (p === "google" || p === "anthropic" || p === "openai" || p === "openrouter") {
+  if (p === "openai" || p === "openrouter") {
     return true;
   }
 
@@ -1023,9 +1064,20 @@ export function isModelVisionCapable(providerId: string, modelName: string): boo
     return false;
   }
 
-  // 5. Other cloud providers (Groq, Mistral, DeepSeek, xAI, etc.):
-  // If unrecognized, default to permissive (runtime self-healing will catch API 400s)
-  return true;
+  // 5. Anything else is treated as text-only.
+  //
+  // This used to be `return true` — "default to permissive, the runtime self-heals
+  // on a 400". It does not self-heal: the attach path in `usePipeline` records
+  // that the provider's 400 is retried five times and then reported as a *failed
+  // turn*. So a wrong "yes" costs a broken run and a wrong "no" costs a warning
+  // and an unattached image, which is not a close call. Measured: this answered
+  // `true` for `deepseek-flash`, whose API is text-only, and declared image input
+  // for every model in the runtime catalog as a result.
+  //
+  // Everything genuinely multimodal is still caught above — the keywords cover
+  // `-vl`, `vision`, `omni`, `4o` and the local vision weights, and the two
+  // aggregator providers are handled by name.
+  return false;
 }
 
 /**
@@ -1077,7 +1129,7 @@ export function findBestAvailableVisionModel(
     if (item.speedBadge === "Fast") score += 30;
     if (m.includes("flash") || m.includes("haiku") || m.includes("mini")) score += 25;
     if (item.category === "cloud") score += 20;
-    if (item.providerId === "google" || item.providerId === "openai" || item.providerId === "anthropic") score += 15;
+    if (item.providerId === "openai") score += 15;
     return { item, score };
   });
 

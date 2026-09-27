@@ -84,3 +84,42 @@ describe("the status bar's host readings", () => {
     expect(store.listenerCount()).toBe(0);
   });
 });
+
+/**
+ * The agent being blocked on the user is not a chat-local event.
+ *
+ * It used to be visible only inside the chat composer, which is where the report
+ * came from: a run sat blocked for about six minutes and there was nothing on
+ * screen to say why. These pin the two properties that fix it — that the state
+ * reaches the always-visible status bar at all, and that its appearance is
+ * announced rather than only drawn.
+ */
+describe("the status bar, while the agent is waiting on the user", () => {
+  it("says which kind of answer it needs", () => {
+    render(<StatusBar gitBranch="dev" agentBlockedOn="waitingOnApproval" />);
+    expect(screen.getByText("Agent waiting for your approval")).toBeTruthy();
+  });
+
+  it("names the question case differently from the approval case", () => {
+    render(<StatusBar gitBranch="dev" agentBlockedOn="waitingOnUserInput" />);
+    expect(screen.getByText("Agent waiting for your answer")).toBeTruthy();
+    // And it does not claim the other one.
+    expect(screen.queryByText("Agent waiting for your approval")).toBeNull();
+  });
+
+  it("announces the change, rather than only drawing it", () => {
+    render(<StatusBar gitBranch="dev" agentBlockedOn="waitingOnApproval" />);
+    const region = screen.getByRole("status");
+    // Polite, not assertive: a blocking wait is worth saying, not worth
+    // interrupting whatever the user is reading mid-sentence.
+    expect(region.getAttribute("aria-live")).toBe("polite");
+    expect(region.textContent).toContain("approval");
+  });
+
+  it("stays quiet when the agent is not waiting", () => {
+    render(<StatusBar gitBranch="dev" />);
+    // The live region is present so its content can change and be announced; it
+    // just has nothing to say.
+    expect(screen.getByRole("status").textContent).toBe("");
+  });
+});

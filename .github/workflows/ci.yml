@@ -40,6 +40,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # High and critical only, on purpose. Sensible findings are reported and
+      # left alone — the app ships a bundled frontend, so a devDependency advisory
+      # is a build-machine concern, and `npm audit fix --force` on the two lows
+      # this tree carries would downgrade Monaco across a breaking change to fix a
+      # sanitiser it does not expose. A gate that can only be satisfied by
+      # breaking something gets ignored, which is how it ends up unwired.
+      - name: No high or critical advisories
+        run: npm audit --audit-level=high
+
       # `npm run verify` is typecheck (both tsconfigs) plus the Python suite.
       # The engine is stdlib-only, so the tests need nothing else installed.
       - name: Verify
@@ -52,6 +61,38 @@ jobs:
 
       - name: Production build
         run: npm run build
+
+      # The Rust shell was otherwise only compiled by the `desktop` job, which is
+      # skipped on pushes to `dev` — so a shell change reached CI for the first time
+      # at a *tag*, and that is where a keychain dependency silently took a Tauri
+      # plugin past its npm package and failed the bundle. `--locked` also asserts
+      # the lockfile agrees with Cargo.toml, which is how that drift would be caught
+      # here instead of at release time.
+      #
+      # The packages are Tauri's own Linux prerequisites plus the Secret Service
+      # headers the keychain crate links against — a Linux compile of a Tauri app
+      # needs the whole webview stack, which is the real cost of checking the shell
+      # on every push rather than in the `desktop` job.
+      - name: Rust shell compiles
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libssl-dev libdbus-1-dev \
+            libglib2.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+          # `tauri::generate_context!()` refuses to expand while any
+          # `bundle.resources` path is missing, and two of them are gitignored
+          # build output: `engine/` (the ~22 MB Python freeze) and
+          # `engine-codex/` (a ~212 MB download). The macro only stats the path,
+          # so an empty directory satisfies it — and building them for real here
+          # would put a PyInstaller freeze and a 212 MB fetch on the critical
+          # path of every push, which is the `sidecar` job's work, not this one's.
+          mkdir -p .tauri/engine .tauri/engine-codex
+          # `--all-targets` also compiles the `#[cfg(test)]` module in main.rs,
+          # which is the only place the shell's 43 tests live. Without it a
+          # test-only break waited for a PR or a tag, since `cargo test` is in
+          # the `desktop` job, which `dev` pushes skip.
+          cargo check --manifest-path .tauri/Cargo.toml --locked --all-targets
 
   sidecar:
     name: Frozen engine sidecar
@@ -158,6 +199,10 @@ jobs:
           # supposed to be gone.
           test -f "$APP/Contents/Resources/core-engine/acsa_engine.py"
           test -x "$APP/Contents/Resources/engine/acsa-engine/acsa-engine"
+          # And the agent runtime, which is fetched at build time and shipped so a
+          # user needs no Codex install. Losing it leaves an app that opens a chat
+          # and cannot run an agent, which no other assertion here would catch.
+          test -x "$APP/Contents/Resources/engine-codex/codex"
           # MIT needs the notice to accompany the binary, and OFL needs the font
           # licence to travel with the font. Both live inside the bundle.
           test -f "$APP/Contents/Resources/LICENSE"

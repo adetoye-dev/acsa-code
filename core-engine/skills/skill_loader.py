@@ -20,7 +20,12 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
 
-logger = logging.getLogger("acsa.skills")
+# One shared setup: the same JSON line to stdout and to a rotating file in the
+# data directory, with the component taken from the logger name rather than
+# written into a format string per module. See core-engine/log_setup.py.
+from log_setup import configure
+
+logger = configure("acsa.skills")
 
 
 @dataclass
@@ -199,6 +204,7 @@ def import_skill(
     content: str,
     scope: str = "project",
     project_root: Optional[str] = None,
+    description: str = "",
 ) -> Skill:
     """Save a user or project imported skill markdown file."""
     clean_name = re.sub(r"[^a-zA-Z0-9_-]", "-", name).strip("-").lower()
@@ -218,10 +224,15 @@ def import_skill(
     target_file = target_dir / f"{clean_name}.md"
 
     if not content.startswith("---"):
+        # The caller's description if it has one. A marketplace entry knows what it
+        # is for, and the runtime shows the description to the model to decide
+        # whether to read the skill at all — a placeholder there makes every
+        # installed skill look equally vague.
+        summary = (description or "").strip() or f"Imported skill {clean_name}"
         header = (
             f"---\n"
             f"name: {clean_name}\n"
-            f"description: User imported skill {clean_name}\n"
+            f"description: {summary}\n"
             f"triggers: [\"/{clean_name}\", \"{clean_name}\"]\n"
             f"---\n\n"
         )

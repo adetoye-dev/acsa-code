@@ -86,6 +86,15 @@ export interface UsageSummary {
  */
 type EngineRoute = {
   command: string;
+  /**
+   * Set when the route must not go through the engine at all.
+   *
+   * Credentials are the case: the OS keychain is the shell's to reach, and the
+   * point of moving them there is that the engine never holds them. The route's
+   * `payload` is passed to the Tauri command verbatim, so the two spellings have to
+   * agree — the command's parameter names are the payload's keys.
+   */
+  tauri?: string;
   payload?: (ctx: {
     body: any;
     query: URLSearchParams;
@@ -109,13 +118,18 @@ const ENGINE_ROUTES: Record<string, EngineRoute> = {
       availableModels: body.availableModels,
     }),
   },
-  "GET /api/app/secrets": { command: "secrets.list" },
+  // Credentials do not go through the engine any more. They are the OS keychain's,
+  // reached from the shell, so these three are the only routes with a `tauri`
+  // target — and the only ones whose value never reaches the engine's own storage.
+  "GET /api/app/secrets": { command: "secrets.list", tauri: "secrets_list" },
   "POST /api/app/secrets": {
     command: "secrets.set",
+    tauri: "secrets_set",
     payload: ({ body }) => ({ name: body.name, value: body.value ?? "" }),
   },
   "DELETE /api/app/secrets": {
     command: "secrets.delete",
+    tauri: "secrets_delete",
     payload: ({ query }) => ({ name: query.get("name") }),
   },
   "GET /api/app/projects": {
@@ -173,6 +187,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const payload = route.payload
       ? route.payload({ body, query, headers: normalizeHeaders(init?.headers) })
       : {};
+    // A route with a Tauri target never reaches the engine. That is the whole
+    // point for credentials: the engine has no keychain and must not be the store.
+    if (route.tauri) {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<T>(route.tauri, payload);
+    }
     return engineCall<T>("db", [route.command, JSON.stringify(payload)]);
   }
 
@@ -204,10 +224,20 @@ export const appStore = {
 
   // ── Credentials (write-only) ──────────────────────────────────────────────
   listSecretNames: () => request<string[]>("/api/app/secrets"),
+  /**
+   * `stored` says which store took it, and that is not a detail: `keychain` means
+   * the OS is holding it encrypted, `file` means the keychain was not usable here
+   * and it went to the `0600` database as it always did. Callers may ignore it;
+   * nothing pretends the second case is the first.
+   */
   setSecret: (name: string, value: string) =>
-    request<{ ok: true }>("/api/app/secrets", { method: "POST", body: JSON.stringify({ name, value }) }),
+    request<{ stored: "keychain" | "file" | "removed"; reason?: string }>("/api/app/secrets", {
+      method: "POST",
+      body: JSON.stringify({ name, value }),
+    }),
+  /** Resolves to nothing: the command has no payload worth reporting. */
   clearSecret: (name: string) =>
-    request<{ ok: true }>(`/api/app/secrets?name=${encodeURIComponent(name)}`, { method: "DELETE" }),
+    request<void>(`/api/app/secrets?name=${encodeURIComponent(name)}`, { method: "DELETE" }),
 
   // ── Projects ──────────────────────────────────────────────────────────────
   listProjects: (limit = 10) => request<StoredProject[]>(`/api/app/projects?limit=${limit}`),

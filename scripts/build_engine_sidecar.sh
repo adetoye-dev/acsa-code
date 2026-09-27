@@ -23,6 +23,11 @@ if [[ -z "${TRIPLE}" ]]; then
   exit 1
 fi
 
+# `DISTPATH` is overridable so a build can be produced beside the shipped one
+# and tested on its own — the sidecar is what the app spawns for every call, so
+# "did this freeze actually work?" is worth being able to answer without
+# guessing which binary is on disk.
+DISTPATH="${ACSA_ENGINE_DISTPATH:-.tauri/engine}"
 VENV="${ACSA_FREEZE_VENV:-/tmp/acsa-freeze-venv}"
 if [[ ! -x "${VENV}/bin/pyinstaller" ]]; then
   echo "Creating build virtualenv at ${VENV}…"
@@ -45,7 +50,7 @@ mkdir -p .tauri/binaries
 "${VENV}/bin/pyinstaller" \
   --onedir --noconfirm --clean \
   --name acsa-engine \
-  --distpath .tauri/engine \
+  --distpath "${DISTPATH}" \
   --workpath "${TMPDIR:-/tmp}/acsa-freeze-build" \
   --specpath "${TMPDIR:-/tmp}/acsa-freeze-spec" \
   --paths core-engine \
@@ -60,6 +65,7 @@ mkdir -p .tauri/binaries
   --hidden-import env_file \
   --hidden-import ollama_cli \
   --hidden-import git_cli \
+  --hidden-import gh_cli \
   --hidden-import indexer_cli \
   --hidden-import skills_cli \
   --hidden-import mcp_cli \
@@ -73,9 +79,10 @@ mkdir -p .tauri/binaries
   --hidden-import crash_log \
   --hidden-import backup \
   --hidden-import support \
+  --hidden-import snapshot_cli \
   core-engine/acsa_engine.py
 
-ENGINE_BIN=".tauri/engine/acsa-engine/acsa-engine"
+ENGINE_BIN="${DISTPATH}/acsa-engine/acsa-engine"
 
 echo
 echo "Built ${ENGINE_BIN}"

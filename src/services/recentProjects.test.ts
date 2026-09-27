@@ -63,4 +63,13 @@ describe("selectRecentProjects", () => {
   it("returns the active project alone when nothing else is remembered", () => {
     expect(selectRecentProjects(active, [])).toEqual([active]);
   });
+
+  it("survives a stored list that is not a list", () => {
+    // The rows cross an IPC boundary, where the type is a claim rather than a
+    // guarantee: an unavailable database or an error object must not be iterated
+    // — this threw inside the titlebar and took the shell down with it.
+    for (const notAList of [undefined, null, {}, "nope", 7]) {
+      expect(selectRecentProjects(active, notAList as never)).toEqual([active]);
+    }
+  });
 });

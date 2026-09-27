@@ -12,6 +12,7 @@
  */
 
 import { desktopRequired, engineCall, hasIpc } from "./engineBridge";
+import { runInTerminal } from "./terminalCommands";
 
 export interface ProjectStatus {
   projectRoot: string;
@@ -43,22 +44,21 @@ export async function fetchProjectStatus(projectRoot: string): Promise<ProjectSt
 }
 
 /**
- * Run a command in the project's terminal.
+ * Run a command in the project's terminal, through the terminal itself.
  *
- * Deliberately routed through the interactive shell rather than a hidden
- * subprocess: the user watches the install/build happen, sees any error, and
- * gets a shell afterwards to keep working in.
+ * Routed through the interactive shell rather than a hidden subprocess on purpose:
+ * the user watches the install or build happen, sees any error, and keeps a shell
+ * afterwards to work in.
  */
-export async function runInProjectTerminal(projectRoot: string, command: string): Promise<void> {
-  if (hasIpc()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke<number>("terminal_spawn", { cwd: projectRoot, cols: 100, rows: 30 }).catch(
-      () => 0,
-    );
-    // The shell needs a moment to exist before it will accept input.
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    await invoke("terminal_input", { data: `${command}\n` }).catch(() => {});
-    return;
-  }
-  throw desktopRequired("The integrated terminal");
+export async function runInProjectTerminal(_projectRoot: string, command: string): Promise<void> {
+  if (!hasIpc()) throw desktopRequired("The integrated terminal");
+  // Handed to the terminal rather than typed into a session of our own: the panel
+  // spawns its own shell when it mounts and `terminal_spawn` kills whatever came
+  // before, so a session created here was killed moments later and the command with
+  // it — the button spun, the terminal stayed empty, and both IPC calls swallowed
+  // the reason. See `terminalCommands`.
+  //
+  // `projectRoot` is unused on purpose: the terminal already knows the project, and
+  // spawning a second session to tell it so is the bug this replaces.
+  runInTerminal(command);
 }

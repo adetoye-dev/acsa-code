@@ -12,7 +12,7 @@ import { useState, useRef, useEffect, useCallback, memo } from "react";
 import { Icon } from "../ui/Icon";
 import { Trash2, Copy, GitCommit, Maximize2, Minimize2, RefreshCw, Square, User, Check, ChevronDown, ChevronRight, Code, Code2, MessageSquare, ListTodo, X, Bot, CheckCircle2, Plus, Folder, GitBranch, ArrowUp, Image as ImageIcon, Database, AlertCircle, AtSign, Sparkles, Shield, Terminal, Search, Wrench, Users, HelpCircle } from "lucide-react";
 import type { PipelineStatus, PipelineOutputLine } from "../../types/telemetry";
-import { isFollowingBottom } from "../../services/scrollAnchor";
+import { FOLLOW_THRESHOLD_PX, isFollowingBottom } from "../../services/scrollAnchor";
 import {
   getConfiguredModelsList,
   ensureProvidersHydrated,
@@ -50,6 +50,8 @@ import { ConfirmDialog } from "../ui/ConfirmDialog";
 import type { AgentQuestion, PendingFileChange, ProjectIndexState } from "../../hooks/usePipeline";
 import { approvalSummary, countDiffLines } from "../../hooks/usePipeline";
 import type { ApprovalDecision } from "../../services/agentApproval";
+import { formatDuration } from "../../services/agentTurnLimit";
+import { summarizeFailure } from "../../services/providerErrors";
 
 interface AiAssistantChatProps {
   status: PipelineStatus;
@@ -63,6 +65,16 @@ interface AiAssistantChatProps {
     images?: string[]
   ) => void;
   onCancelPipeline: () => void;
+  /**
+   * Send a message into the turn that is already running. Resolves to `null` on
+   * success, or a sentence to show — and to put the unsent text back for.
+   */
+  onSteerPipeline?: (text: string) => Promise<string | null>;
+  /**
+   * Put the last turn's file changes back. Resolves to `null` on success, or a
+   * sentence to show — the same contract as steering.
+   */
+  onUndoLastTurn?: () => Promise<string | null>;
   projectRoot?: string;
   /** Current git branch of the active project (shown on the hero welcome screen). */
   branch?: string;
@@ -75,6 +87,15 @@ interface AiAssistantChatProps {
   noFileChanges?: boolean;
   /** The runtime's own name for a state where it is blocked on the human. */
   waitingForUser?: string;
+  /**
+   * Working time on the current turn, excluding time blocked on the human. Owned
+   * by the pipeline rather than counted here: the turn *limit* has to exclude the
+   * same time, and two counters that disagree about what they measure are worse
+   * than one.
+   */
+  turnElapsedMs?: number;
+  /** The ceiling applied to one turn, in minutes. Zero means no limit. */
+  turnLimitMinutes?: number;
   /** A request the agent is blocked on, waiting for the user's answer. */
   pendingApproval?: {
     id: unknown;
@@ -113,6 +134,19 @@ export type WorkflowMode = "agent" | "chat" | "plan";
 const NO_STEPS: AgentStep[] = [];
 const NO_CHANGES: PendingFileChange[] = [];
 
+/**
+ * How many animation frames "open at the newest message" may keep correcting
+ * itself — 90 frames is about a second and a half at 60Hz.
+ *
+ * The scroll cannot be done once: the transcript is still being laid out when a
+ * hydrated history arrives (a `ChangeLogCard`, a code block, an expanded step
+ * drawer each change the height after the first paint), and a scroll issued
+ * against a height that is about to change leaves the view somewhere other than
+ * the end. Retrying is what makes it land; the cap is what stops a transcript
+ * that can never reach the end from spinning a frame loop.
+ */
+const REVEAL_ATTEMPTS = 90;
+
 export function cleanThoughtText(raw?: string): string {
   if (!raw) return "";
   return raw
@@ -135,7 +169,8 @@ interface ChatTranscriptProps {
   streamingAnswer: string;
   streamingThought: string;
   agentSteps: AgentStep[];
-  agentElapsedSeconds: number;
+  agentElapsedMs: number;
+  turnLimitMinutes: number;
   currentAgentPhase: string;
   blockedOn: string;
   turnChanges: PendingFileChange[];
@@ -167,7 +202,8 @@ const ChatTranscript = memo(function ChatTranscript({
   streamingAnswer,
   streamingThought,
   agentSteps,
-  agentElapsedSeconds,
+  agentElapsedMs,
+  turnLimitMinutes,
   currentAgentPhase,
   blockedOn,
   turnChanges,
@@ -404,7 +440,11 @@ const ChatTranscript = memo(function ChatTranscript({
                     blockedOn ? "bg-amber-400 animate-pulse" : "bg-purple-400 animate-pulse"
                   }`}
                 />
-                {blockedOn ? `Waiting for ${blockedOn}` : `Working (${agentElapsedSeconds}s)`}
+                {blockedOn
+                  ? `Waiting for ${blockedOn}`
+                  : turnLimitMinutes > 0
+                  ? `Working ${formatDuration(agentElapsedMs)} of ${turnLimitMinutes}m`
+                  : `Working ${formatDuration(agentElapsedMs)}`}
               </span>
             </div>
 
@@ -415,7 +455,7 @@ const ChatTranscript = memo(function ChatTranscript({
                 thinking={streamingThought}
                 isLive={true}
                 hasSummary={Boolean(streamingAnswer && streamingAnswer.trim())}
-                elapsedSeconds={agentElapsedSeconds}
+                elapsedSeconds={Math.floor(agentElapsedMs / 1000)}
                 blockedOn={blockedOn}
               />
 
@@ -500,6 +540,8 @@ export function AiAssistantChat({
   activityLog,
   onRunPipeline,
   onCancelPipeline,
+  onSteerPipeline,
+  onUndoLastTurn,
   projectRoot = "",
   branch = "",
   onClose,
@@ -511,6 +553,8 @@ export function AiAssistantChat({
   waitingForUser = "",
   pendingApproval = null,
   respondToApproval,
+  turnElapsedMs = 0,
+  turnLimitMinutes = 0,
   pendingQuestion = null,
   respondToQuestion,
   turnChanges = NO_CHANGES,
@@ -578,9 +622,12 @@ export function AiAssistantChat({
   const draft = useChatDraft();
   const [confirmClearChat, setConfirmClearChat] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
+  /** Why the last steer did not send, if it did not. Cleared on the next send. */
+  const [steerError, setSteerError] = useState<string | null>(null);
+  /** What an undo did or could not do, shown where the button was. */
+  const [undoBusy, setUndoBusy] = useState(false);
+  const [undoNotice, setUndoNotice] = useState<string | null>(null);
   const [workflowMode, setWorkflowMode] = useState<WorkflowMode>("agent");
-  const [agentElapsedSeconds, setAgentElapsedSeconds] = useState(0);
-  const agentStartedAtRef = useRef<number | null>(null);
   const isStreamingRef = useRef(false);
 
   // Multimodal image attachment state
@@ -599,6 +646,28 @@ export function AiAssistantChat({
       };
       reader.readAsDataURL(file);
     }
+  };
+
+  // Drag and drop, alongside paste: both end in `handleImageFiles`, so a dropped
+  // image and a pasted one take the same route to the same attachment list. The
+  // `dragover` handler *must* preventDefault or the browser never fires `drop` —
+  // the classic way this silently does nothing.
+  const [isImageDragOver, setIsImageDragOver] = useState(false);
+
+  const handleImageDragOver = (e: React.DragEvent) => {
+    if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+    setIsImageDragOver(true);
+  };
+
+  const handleImageDragLeave = () => setIsImageDragOver(false);
+
+  const handleImageDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsImageDragOver(false);
+    const files = e.dataTransfer?.files;
+    if (files && files.length > 0) handleImageFiles(files);
   };
 
   const handlePaste = (e: React.ClipboardEvent) => {
@@ -646,6 +715,16 @@ export function AiAssistantChat({
 
   const projectName = projectRoot ? projectRoot.split("/").filter(Boolean).pop() || "acsa-code" : "acsa-code";
   const latestActivity = activityLog[activityLog.length - 1]?.content || "";
+  /**
+   * A failed run whose reason the runtime did not phrase usefully.
+   *
+   * `failureDetail` holds the runtime's own words when it has any. A dead provider
+   * is the case where it effectively has none — the transcript used to say only
+   * "the task needs attention". What the runtime *did* print is enough to name the
+   * cause, so this reads it back out.
+   */
+  const failureSummary =
+    status === "failed" && !failureDetail ? summarizeFailure(activityLog) ?? "" : "";
   const currentAgentPhase = latestActivity.includes("syntax")
     ? "Checking generated changes"
     : latestActivity.includes("performance") || latestActivity.includes("sandbox")
@@ -660,18 +739,36 @@ export function AiAssistantChat({
     ? "Task failed"
     : "Ready";
 
+  // The clock for the running turn is the pipeline's (`turnElapsedMs`) — it has
+  // to stop while the agent is waiting on an answer, because the turn *limit*
+  // stops then too, and a second counter here used to keep running.
+
+  /**
+   * Put the cursor on the card the turn is blocked on.
+   *
+   * The card was already pinned above the composer, so it could be seen — but
+   * nothing announced it and nothing moved focus, which is why a run parked for
+   * six minutes was diagnosed by reading the accessibility tree. A blocking prompt
+   * has to be where the keyboard is, not only where the pixels are. Fired once per
+   * card (`announcedCardRef`), so moving focus elsewhere does not yank it back.
+   */
+  const announcedCardRef = useRef("");
   useEffect(() => {
-    if (status !== "running") {
-      agentStartedAtRef.current = null;
-      setAgentElapsedSeconds(0);
+    const key = pendingApproval
+      ? `approval:${String(pendingApproval.id)}`
+      : pendingQuestion
+      ? `question:${String(pendingQuestion.id)}`
+      : "";
+    if (!key) {
+      announcedCardRef.current = "";
       return;
     }
-    agentStartedAtRef.current ??= Date.now();
-    const timer = window.setInterval(() => {
-      setAgentElapsedSeconds(Math.floor((Date.now() - (agentStartedAtRef.current || Date.now())) / 1000));
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [status]);
+    if (announcedCardRef.current === key) return;
+    const card = composerRef.current?.querySelector<HTMLElement>("[data-pending-card]");
+    if (!card) return;
+    announcedCardRef.current = key;
+    card.focus();
+  }, [pendingApproval, pendingQuestion]);
 
   const prevStatusRef = useRef(status);
   useEffect(() => {
@@ -730,8 +827,8 @@ export function AiAssistantChat({
         ? (streamingAnswer || "Task completed.") +
           (noFileChanges ? noChangesNote : "") +
           waitingNote
-        : failureDetail
-        ? `⚠️ **Task Failed:** ${failureDetail}`
+        : failureDetail || failureSummary
+        ? `⚠️ **Task Failed:** ${failureDetail || failureSummary}`
         : "The task needs attention. Review Problems or Output for details.";
 
       const finalizedSteps = agentSteps.map((s) =>
@@ -766,7 +863,7 @@ export function AiAssistantChat({
       });
     }
     prevStatusRef.current = status;
-  }, [status, failureDetail, noFileChanges, waitingForUser, turnChanges, projectRoot, selectedModelItem, streamingAnswer, streamingThought, agentSteps]);
+  }, [status, failureDetail, failureSummary, noFileChanges, waitingForUser, turnChanges, projectRoot, selectedModelItem, streamingAnswer, streamingThought, agentSteps]);
 
   /**
    * Ask Ollama what is actually installed, and believe it.
@@ -929,8 +1026,14 @@ export function AiAssistantChat({
 
   // Auto-focus the input textarea when panel opens or model changes
   useEffect(() => {
+    // Never steal focus from the card the turn is blocked on. This effect runs
+    // after the card's own focus effect, so without this, opening the chat while
+    // a turn was already parked on an approval put the cursor in the input and
+    // left the thing that needed an answer unannounced. When the card clears, the
+    // input takes focus back, which is where the user is going next anyway.
+    if (pendingApproval || pendingQuestion) return;
     textareaRef.current?.focus();
-  }, [selectedModelItem, workflowMode]);
+  }, [selectedModelItem, workflowMode, pendingApproval, pendingQuestion]);
 
   // Keyboard shortcut listeners (Cmd+L for Chat mode, Shift+Cmd+I for Agent mode)
   useEffect(() => {
@@ -999,6 +1102,65 @@ export function AiAssistantChat({
     return () => window.removeEventListener("acsa:ai-workflow", handleWorkflowRequest);
   }, [selectedContext]);
 
+  // Opening a chat lands on the newest message.
+  //
+  // The follow-tail effect below deliberately does nothing when the reader is not
+  // at the bottom — and a freshly opened transcript is exactly that, scrolled to
+  // the top of the whole history, so the reply someone came back to read was a
+  // manual scroll away. This runs once, when there is finally something to scroll
+  // to (history arrives after mount), and then the follow logic takes over.
+  //
+  // "Once" is the whole difficulty, and it is why this checks where it landed
+  // rather than trusting that it ran. The transcript is still being laid out when
+  // history arrives — cards and code blocks land over several frames — so
+  // `scrollIntoView` can fire against a box whose height is about to change and
+  // leave the view at the top while looking like success. Marking the scroll done
+  // at that point wedges it for good: the effect returns early from then on, and
+  // the follow-tail effect will not fill in, because a container at the top is by
+  // definition not following the bottom. So it retries for a moment, stops the
+  // instant the view is really at the end, and only then sets the flag. Verified
+  // by hand on a relaunch with a five-message transcript: the manual scroll
+  // reached the newest message while the automatic one had left it at the first,
+  // and after this change the automatic one lands where the manual one did.
+  const didInitialScroll = useRef(false);
+  useEffect(() => {
+    if (didInitialScroll.current || chatMessages.length === 0) return;
+    let attempts = 0;
+    let settledHeight = -1;
+    let pinnedTop = -1;
+    let frame = requestAnimationFrame(function reveal() {
+      if (didInitialScroll.current) return;
+      const container = transcriptScrollRef.current;
+      const sentinel = chatBottomRef.current;
+      attempts += 1;
+      if (container && sentinel) {
+        // The reader scrolled away under their own steam — this is a jump for a
+        // transcript that has just opened, not a lock on the scrollbar.
+        if (pinnedTop >= 0 && container.scrollTop < pinnedTop - FOLLOW_THRESHOLD_PX) {
+          didInitialScroll.current = true;
+          return;
+        }
+        sentinel.scrollIntoView({ block: "end", behavior: "auto" });
+        pinnedTop = container.scrollTop;
+        // Done once the view is at the end *and* the transcript has stopped
+        // growing. "At the end" alone is not enough to stop on: while history is
+        // still being laid out the content is momentarily shorter than the panel,
+        // so the view is trivially at the end and the next frame moves it.
+        if (isFollowingBottom(container) && container.scrollHeight === settledHeight) {
+          didInitialScroll.current = true;
+          return;
+        }
+        settledHeight = container.scrollHeight;
+      }
+      // Not at the end yet — layout is still moving. Keep going for about a
+      // second and a half, then accept it, so a transcript that can never reach
+      // the end does not spin a frame loop forever.
+      if (attempts < REVEAL_ATTEMPTS) frame = requestAnimationFrame(reveal);
+      else didInitialScroll.current = true;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [chatMessages.length]);
+
   // Follow the tail on new messages, logs and streaming updates — but only while
   // the reader is already at the bottom. Scrolling up to read something used to
   // be undone by the next token. Streaming lands many times a second and a smooth
@@ -1018,7 +1180,35 @@ export function AiAssistantChat({
     const promptToSend = trimmed || (currentImages ? "Please analyze the attached image(s)." : "");
 
     if (workflowMode === "agent") {
-      if (status === "running") return;
+      if (status === "running") {
+        // Steering, not a second turn: the runtime takes a message into the turn
+        // that is already running. This used to `return` here, so pressing Enter
+        // mid-run did nothing at all and said nothing about it.
+        if (!onSteerPipeline) return;
+        setSteerError(null);
+        const failure = await onSteerPipeline(promptToSend);
+        if (failure) {
+          // The text stays in the composer: a message that did not send must not
+          // look like one that did, and retyping it is the tax this avoids.
+          setSteerError(failure);
+          return;
+        }
+        const steered: ChatMessage = {
+          id: `user-${Date.now()}`,
+          role: "user",
+          content: promptToSend,
+          timestamp: Date.now(),
+        };
+        setChatMessages((prev) => {
+          const next = [...prev, steered];
+          saveChatHistory(next, projectRoot);
+          return next;
+        });
+        chatDraft.set("");
+        // Attachments are deliberately kept: a steer carries text only, so they
+        // were not sent and are still the user's to send with the next turn.
+        return;
+      }
       const providers = loadAllProviders();
       const activeProvider = selectedModelItem ? providers[selectedModelItem.providerId] : undefined;
 
@@ -1662,6 +1852,9 @@ Click to re-index project.`}
                       value={draft}
                       onChange={(e) => chatDraft.set(e.target.value)}
                       onPaste={handlePaste}
+                      onDragOver={handleImageDragOver}
+                      onDragLeave={handleImageDragLeave}
+                      onDrop={handleImageDrop}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && !e.shiftKey) {
                           e.preventDefault();
@@ -1669,14 +1862,18 @@ Click to re-index project.`}
                         }
                       }}
                       placeholder={
-                        workflowMode === "agent"
+                        isImageDragOver
+                          ? "Drop the image to attach it…"
+                          : workflowMode === "agent"
                           ? "Describe a task for the agent to build, edit, or test… (Enter to run)"
                           : workflowMode === "plan"
                           ? "Brainstorm an architectural plan or discuss design decisions… (Enter)"
                           : "Ask anything, / for commands, @ for context (Enter to send)"
                       }
                       rows={3}
-                      className="w-full bg-transparent border-0 text-sm text-zinc-100 placeholder-zinc-500 outline-none resize-none font-sans leading-relaxed focus:ring-0 p-1"
+                      className={`w-full bg-transparent border-0 text-sm text-zinc-100 placeholder-zinc-500 outline-none resize-none font-sans leading-relaxed focus:ring-0 p-1 ${
+                        isImageDragOver ? "rounded-lg ring-2 ring-purple-500/50 bg-purple-500/5" : ""
+                      }`}
                     />
 
                     {/* Bottom control bar inside card */}
@@ -1869,7 +2066,8 @@ Click to re-index project.`}
           streamingAnswer={streamingAnswer}
           streamingThought={streamingThought}
           agentSteps={agentSteps}
-          agentElapsedSeconds={agentElapsedSeconds}
+          agentElapsedMs={turnElapsedMs}
+          turnLimitMinutes={turnLimitMinutes}
           currentAgentPhase={currentAgentPhase}
           blockedOn={blockedOn}
           turnChanges={turnChanges}
@@ -1889,6 +2087,62 @@ Click to re-index project.`}
           className={`p-3 border-t border-[var(--vscode-border)] bg-[#18181b] shrink-0 font-sans ${isWide ? "py-4" : ""}`}
         >
           <div className={isWide ? "max-w-3xl lg:max-w-4xl mx-auto w-full" : "w-full"}>
+            {/* Why a steer did not send. Above the input, where the text it
+                refers to still is — the message is kept, so this explains rather
+                than reports a loss. */}
+            {steerError && (
+              <div
+                role="alert"
+                data-testid="steer-error"
+                className="mb-2 flex items-start gap-2 rounded-xl border border-amber-500/50 bg-amber-950/40 px-3 py-2 text-2xs leading-relaxed text-amber-100"
+              >
+                <Icon icon={AlertCircle} className="w-3.5 h-3.5 mt-0.5 shrink-0 text-amber-300" />
+                <span className="break-words">{steerError}</span>
+              </div>
+            )}
+            {/* The change log said what a turn changed and offered no way back.
+                Only for the turn that just finished: snapshots are kept per turn
+                and pruned, and "undo" after two more turns would be a surprise
+                rather than a convenience. */}
+            {status !== "running" && turnChanges.length > 0 && onUndoLastTurn && (
+              <div className="mb-2 flex items-center justify-between gap-3 rounded-xl border border-zinc-800 bg-zinc-950/60 px-3 py-2">
+                <span className="text-2xs text-zinc-300">
+                  The last turn changed {turnChanges.length}{" "}
+                  {turnChanges.length === 1 ? "file" : "files"}.
+                </span>
+                <button
+                  type="button"
+                  disabled={undoBusy}
+                  data-testid="undo-last-turn"
+                  onClick={async () => {
+                    if (!onUndoLastTurn) return;
+                    setUndoBusy(true);
+                    setUndoNotice(null);
+                    const failure = await onUndoLastTurn();
+                    setUndoNotice(
+                      failure ?? "Undone — those files are back to how they were before that turn.",
+                    );
+                    setUndoBusy(false);
+                  }}
+                  className={`shrink-0 rounded-lg border px-2.5 py-1 text-2xs font-semibold transition-colors ${
+                    undoBusy
+                      ? "border-zinc-800 text-zinc-500 cursor-not-allowed"
+                      : "border-zinc-700 text-zinc-200 hover:border-zinc-600 hover:text-white cursor-pointer"
+                  }`}
+                >
+                  {undoBusy ? "Undoing…" : "Undo"}
+                </button>
+              </div>
+            )}
+            {undoNotice && (
+              <div
+                role="status"
+                data-testid="undo-notice"
+                className="mb-2 rounded-xl border border-zinc-800 bg-zinc-950/60 px-3 py-2 text-2xs leading-relaxed text-zinc-300"
+              >
+                {undoNotice}
+              </div>
+            )}
             {/* The agent is blocked until this is answered. */}
             {/* A question, not a permission request. The runtime's own
                 `request_user_input` carries options and free text, and the answer
@@ -1896,10 +2150,17 @@ Click to re-index project.`}
                 read "APPROVAL NEEDED … $ item/tool/requestUserInput", which told
                 the user nothing and could not be answered correctly. */}
             {pendingQuestion && pendingQuestion.questions.length > 0 && (
-              <div className="mb-3 p-3 rounded-2xl bg-[#111827]/95 border border-purple-500/60 shadow-2xl backdrop-blur-xl max-h-[45vh] overflow-y-auto">
+              <div
+                data-pending-card
+                role="alertdialog"
+                aria-modal="false"
+                aria-labelledby="agent-question-heading"
+                tabIndex={-1}
+                className="mb-3 p-3 rounded-2xl bg-[#111827]/95 border border-purple-500/60 shadow-2xl backdrop-blur-xl max-h-[45vh] overflow-y-auto focus:outline-none"
+              >
                 <div className="flex items-center gap-2 text-purple-300 font-semibold text-2xs tracking-wider uppercase mb-2">
                   <Icon icon={HelpCircle} className="w-3.5 h-3.5 text-purple-300 shrink-0" />
-                  <span>The agent is asking</span>
+                  <span id="agent-question-heading">The agent is asking</span>
                 </div>
                 {pendingQuestion.questions.map((question) => (
                   <div key={question.id} className="mb-3 last:mb-1">
@@ -1958,10 +2219,17 @@ Click to re-index project.`}
             )}
 
             {pendingApproval && (
-              <div className="mb-3 p-3 rounded-2xl bg-[#1c1917]/95 border border-amber-500/60 shadow-2xl backdrop-blur-xl max-h-[45vh] overflow-y-auto">
+              <div
+                data-pending-card
+                role="alertdialog"
+                aria-modal="false"
+                aria-labelledby="agent-approval-heading"
+                tabIndex={-1}
+                className="mb-3 p-3 rounded-2xl bg-[#1c1917]/95 border border-amber-500/60 shadow-2xl backdrop-blur-xl max-h-[45vh] overflow-y-auto focus:outline-none"
+              >
                 <div className="flex items-center gap-2 text-amber-400 font-semibold text-2xs tracking-wider uppercase mb-1.5">
                   <Icon icon={Shield} className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                  <span>Approval needed</span>
+                  <span id="agent-approval-heading">Approval needed</span>
                 </div>
                 <p className="text-xs text-zinc-300 mb-2 leading-relaxed">
                   {pendingApproval.reason ||
@@ -2094,6 +2362,9 @@ Click to re-index project.`}
                 value={draft}
                 onChange={(e) => chatDraft.set(e.target.value)}
                 onPaste={handlePaste}
+                onDragOver={handleImageDragOver}
+                onDragLeave={handleImageDragLeave}
+                onDrop={handleImageDrop}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
@@ -2108,7 +2379,9 @@ Click to re-index project.`}
                     : `Ask ${selectedModelItem?.model || "AI"} anything… (Shift+Enter for new line)`
                 }
                 rows={2}
-                className="w-full bg-transparent border-0 text-xs text-zinc-100 placeholder-zinc-500 outline-none resize-none font-sans leading-relaxed focus:ring-0 p-0.5"
+                className={`w-full bg-transparent border-0 text-xs text-zinc-100 placeholder-zinc-500 outline-none resize-none font-sans leading-relaxed focus:ring-0 p-0.5 ${
+                  isImageDragOver ? "rounded-lg ring-2 ring-purple-500/50 bg-purple-500/5" : ""
+                }`}
               />
 
               {/* Bottom control strip inside card */}
@@ -2186,14 +2459,39 @@ Click to re-index project.`}
                 {/* Right: Send / Stop icon button */}
                 <div className="flex items-center gap-1 shrink-0">
                   {(isStreaming || status === "running") ? (
-                    <button
-                      type="button"
-                      onClick={handleStopStream}
-                      className="flex items-center justify-center w-7 h-7 rounded-lg bg-red-600/20 hover:bg-red-600/30 border border-red-500/40 text-red-300 transition-colors shadow-sm"
-                      title="Stop Generation"
-                    >
-                      <Icon icon={Square} className="w-3.5 h-3.5" />
-                    </button>
+                    <>
+                      {/* Steering. The composer used to offer only Stop while a
+                          turn ran, so a message typed mid-run had nowhere to go
+                          and Enter did nothing at all. Text only: the runtime
+                          accepts images in a steer, this command does not send
+                          them, and saying so beats dropping them. */}
+                      <button
+                        type="button"
+                        onClick={() => handleSend()}
+                        disabled={!draft.trim()}
+                        className={`flex items-center justify-center w-7 h-7 rounded-lg transition-all shadow-sm shrink-0 ${
+                          draft.trim()
+                            ? "bg-purple-600 hover:bg-purple-500 text-white shadow-purple-600/20 cursor-pointer"
+                            : "bg-zinc-800/40 border border-zinc-800/80 text-zinc-500 cursor-not-allowed"
+                        }`}
+                        title={
+                          draft.trim()
+                            ? "Send into the running turn (Enter) — text only"
+                            : "Type a message to steer the running turn"
+                        }
+                        aria-label="Steer the running turn"
+                      >
+                        <Icon icon={ArrowUp} className="w-3.5 h-3.5 stroke-[2.5]" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleStopStream}
+                        className="flex items-center justify-center w-7 h-7 rounded-lg bg-red-600/20 hover:bg-red-600/30 border border-red-500/40 text-red-300 transition-colors shadow-sm"
+                        title="Stop Generation"
+                      >
+                        <Icon icon={Square} className="w-3.5 h-3.5" />
+                      </button>
+                    </>
                   ) : (
                     <button
                       type="button"

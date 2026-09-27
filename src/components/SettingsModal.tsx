@@ -32,6 +32,7 @@ import {
   type AgentApprovalMode,
   type AgentTransport,
 } from "../services/agentApproval";
+import { DEFAULT_TURN_LIMIT_MINUTES, TURN_LIMIT_CHOICES } from "../services/agentTurnLimit";
 
 export interface AISettings {
   /**
@@ -54,6 +55,12 @@ export interface AISettings {
   approvalMode?: AgentApprovalMode;
   /** Which agent runtime to drive. See AGENT_TRANSPORTS. */
   agentTransport?: AgentTransport;
+  /**
+   * Wall-clock ceiling on one agent turn, in minutes. Zero means no limit.
+   * See `agentTurnLimit.ts` — this is what stops a turn that quietly triples its
+   * own length, and it is not applied while the agent is waiting on the user.
+   */
+  turnLimitMinutes?: number;
 }
 
 export interface SettingsModalProps {
@@ -201,6 +208,7 @@ export function SettingsModal({
   // Agent state: which runtime, and how much it may do without asking.
   const [approvalMode, setApprovalMode] = useState<AgentApprovalMode>(DEFAULT_AGENT_APPROVAL_MODE);
   const [agentTransport, setAgentTransport] = useState<AgentTransport>(DEFAULT_AGENT_TRANSPORT);
+  const [turnLimitMinutes, setTurnLimitMinutes] = useState<number>(DEFAULT_TURN_LIMIT_MINUTES);
 
   // Tree filter logic (unconditional hook)
   const filteredTree = useMemo(() => {
@@ -258,6 +266,11 @@ export function SettingsModal({
       isAgentTransport(safeSettings.agentTransport)
         ? safeSettings.agentTransport
         : DEFAULT_AGENT_TRANSPORT,
+    );
+    setTurnLimitMinutes(
+      typeof safeSettings.turnLimitMinutes === "number" && safeSettings.turnLimitMinutes >= 0
+        ? safeSettings.turnLimitMinutes
+        : DEFAULT_TURN_LIMIT_MINUTES,
     );
     setTestStatus("idle");
     setTestMessage("");
@@ -356,6 +369,7 @@ export function SettingsModal({
         terminalFontSize,
         approvalMode,
         agentTransport,
+        turnLimitMinutes,
       });
     }
   };
@@ -376,6 +390,7 @@ export function SettingsModal({
         terminalFontSize,
         approvalMode,
         agentTransport,
+        turnLimitMinutes,
       });
     }
     if (onClose) {
@@ -1074,8 +1089,33 @@ export function SettingsModal({
                   <p className="text-2xs text-zinc-500 leading-relaxed">
                     These map onto the agent runtime&apos;s own sandbox and approval
                     settings. &ldquo;Read only&rdquo; and &ldquo;Approve for me&rdquo;
-                    both keep the agent inside your project folder.
+                    both keep the agent inside your project folder and the system
+                    temporary directory that builds need.
                   </p>
+
+                  <div className="pt-3 border-t border-hairline space-y-1">
+                    <label htmlFor="agent-turn-limit" className="text-xs font-semibold text-zinc-200">
+                      Turn time limit
+                    </label>
+                    <p className="text-2xs text-zinc-400 leading-relaxed pb-1">
+                      How long one turn may work before the app stops it. Time spent
+                      waiting for your answer does not count, and a stopped turn says so
+                      instead of just disappearing. Measured: a small change where the
+                      agent spent most of six minutes building its own test harness.
+                    </p>
+                    <select
+                      id="agent-turn-limit"
+                      value={turnLimitMinutes}
+                      onChange={(e) => setTurnLimitMinutes(Number(e.target.value))}
+                      className="bg-workbench/80 border border-hairline rounded-md px-2.5 py-1 text-xs text-zinc-200 cursor-pointer"
+                    >
+                      {TURN_LIMIT_CHOICES.map((minutes) => (
+                        <option key={minutes} value={minutes}>
+                          {minutes === 0 ? "No limit" : `${minutes} minutes`}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
               )}
 

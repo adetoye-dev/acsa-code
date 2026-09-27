@@ -38,7 +38,13 @@ def import_skill(payload: dict) -> dict:
         return {"ok": False, "error": "name and content are required"}
 
     scope = str(payload.get("scope") or "project")
-    skill = skill_loader.import_skill(name, content, scope, _root(payload))
+    skill = skill_loader.import_skill(
+        name,
+        content,
+        scope,
+        _root(payload),
+        description=str(payload.get("description") or ""),
+    )
     return {"ok": True, "name": skill.name, "path": skill.path, "scope": scope}
 
 
