@@ -1,0 +1,39 @@
+name: Site
+
+# The landing page is its own package, so it gets its own workflow and never runs the
+# app's. Its mirror image is `ci.yml`, which ignores `site/**` — between the two, a
+# change to one side cannot spend the other's minutes.
+on:
+  push:
+    branches: [dev, main]
+    paths: ["site/**", ".github/workflows/site.yml"]
+  pull_request:
+    paths: ["site/**", ".github/workflows/site.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: site-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build the landing page
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Its own lockfile, so the app's `npm ci` and this one cannot interfere.
+      - run: npm ci
+      - run: npm run build
+
+      # Drives the built page in headless Chrome. `check-page.mjs` exits 0 when there
+      # is no Chrome rather than failing, so this can never be a red build for a
+      # missing browser.
+      - name: Check the page in a browser
+        run: npm run check

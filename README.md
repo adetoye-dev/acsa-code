@@ -334,6 +334,10 @@ Issues and pull requests are welcome. A few things make changes land faster:
   `feat(providers): …`), with the reasoning in the body.
 - **Add a line to [CHANGELOG.md](CHANGELOG.md) under `[Unreleased]`** for anything a
   user would notice. The release cannot be cut without one — the build checks it.
+- **The landing page is a separate package** in [`site/`](site/) — its own
+  `package.json`, its own lockfile, its own workflow. Nothing at the root imports from
+  it and it must never build into `dist/`, which is the app's UI. See
+  [site/README.md](site/README.md).
 - **Do not commit build outputs.** The engine sidecar, the Codex runtime, `dist/` and
   `.tauri/target/` are generated.
 

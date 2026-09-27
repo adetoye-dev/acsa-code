@@ -17,6 +17,12 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+### Added
+
+- **A landing page** (`site/`) — what the app is, what it costs, and what it does not
+  do yet. It is its own package with its own lockfile and workflow, so the app's build
+  and release pipeline cannot be affected by it.
+
 ### Fixed
 
 - **Links the terminal prints are clickable.** Running `npm run dev` printed

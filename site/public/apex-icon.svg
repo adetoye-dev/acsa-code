@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>ACSA Code</title>
+  <desc>App icon. macOS wants a full-bleed square with no transparency, so the mark sits on a squircle plate; the runtime mark stays transparent. The plate is dark so a bright glyph reads at 16px, where the Finder list and the Dock both render it.</desc>
+  <!-- Same squircle plate geometry as the icon it replaces: macOS renders the
+       rounded square, and the canvas corners stay empty. -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#0B0B0D"/>
+  <g transform="translate(112.6 129.8) scale(0.78)">
+    <path fill="#6366f1" d="M512 884 L944 668 L512 452 L80 668 Z"/>
+    <path fill="#eef2ff" fill-rule="evenodd" d="M512 96 L784 700 L628 700 L512 452 L396 700 L240 700 Z"/>
+  </g>
+</svg>

@@ -1,0 +1,556 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ACSA Code — agentic coding, on your machine</title>
+    <meta
+      name="description"
+      content="A local-first engineering workbench: Monaco editor, a map of your codebase, git with a real commit graph, and an agent you can watch, steer, approve and undo. Bring your own model. macOS, MIT licensed, no account."
+    />
+    <link rel="icon" href="./apex-icon.svg" type="image/svg+xml" />
+    <meta name="theme-color" content="#fbfbfd" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="ACSA Code — agentic coding, on your machine" />
+    <meta
+      property="og:description"
+      content="An editor, a code map and a coding agent in one desktop app. Your projects, keys and history stay on your machine."
+    />
+    <meta property="og:image" content="./og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "ACSA Code",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "macOS 11+",
+        "license": "https://opensource.org/licenses/MIT",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+        "description": "A local-first agentic engineering workbench: editor, code map, git and an agent you can steer and undo."
+      }
+    </script>
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+
+    <header class="nav" id="nav">
+      <div class="nav__inner">
+        <a class="brand" href="#top" aria-label="ACSA Code, home">
+          <img class="brand__mark" src="./apex-mark.svg" alt="" width="26" height="26" />
+          <span class="brand__name">ACSA&nbsp;Code</span>
+        </a>
+        <nav class="nav__links" aria-label="Sections">
+          <a href="#workbench">Workbench</a>
+          <a href="#agent">Agent</a>
+          <a href="#models">Models</a>
+          <a href="#limits">Limits</a>
+          <a href="#faq">FAQ</a>
+        </nav>
+        <div class="nav__actions">
+          <a class="ghost ghost--sm" href="https://github.com/adetoye-dev/asca-code" rel="noreferrer">GitHub</a>
+          <a class="cta cta--sm" href="https://github.com/adetoye-dev/asca-code/releases/latest" rel="noreferrer">Download</a>
+        </div>
+      </div>
+      <div class="nav__progress" id="navProgress" aria-hidden="true"></div>
+    </header>
+
+    <main id="main">
+      <span id="top"></span>
+
+      <section class="hero">
+        <div class="hero__glow" aria-hidden="true"></div>
+        <div class="wrap hero__grid">
+          <div class="hero__copy">
+            <p class="eyebrow" data-reveal>macOS 11+ · MIT · no account, no telemetry</p>
+            <h1 data-reveal>Agentic coding,<br /><span class="hl">on your machine.</span></h1>
+            <p class="lede" data-reveal>
+              ACSA Code is a local-first engineering workbench: a Monaco editor, a map of your
+              codebase, git with a real commit graph, and an agent you can watch, steer,
+              approve and undo. Bring your own model — local, free tier, or frontier.
+            </p>
+            <div class="hero__cta" data-reveal>
+              <a class="cta" href="https://github.com/adetoye-dev/asca-code/releases/latest" rel="noreferrer">Download for macOS</a>
+              <a class="ghost" href="https://github.com/adetoye-dev/asca-code" rel="noreferrer">Read the source</a>
+            </div>
+            <p class="fineprint" data-reveal>
+              0.2.19 · about 111&nbsp;MB, signed and notarised · the engine and the agent
+              runtime are inside the app
+            </p>
+          </div>
+
+          <!-- The product, drawn in the page rather than pasted in as a picture. -->
+          <div class="hero__art" aria-label="The workbench: file tree, code map, terminal and agent" role="img">
+            <div class="win" data-tilt data-reveal>
+              <div class="win__bar">
+                <img src="./apex-mark.svg" alt="" width="15" height="15" />
+                <span class="win__title">aurora-notes</span>
+                <span class="win__tabs">
+                  <b class="chip chip--on">store.ts</b>
+                  <b class="chip">notes.ts</b>
+                  <b class="chip">index.ts</b>
+                </span>
+              </div>
+              <div class="win__body">
+                <ul class="tree" aria-hidden="true">
+                  <li class="row">README.md</li>
+                  <li class="row row--dir">src</li>
+                  <li class="row row--file row--on">store.ts</li>
+                  <li class="row row--file">notes.ts</li>
+                  <li class="row row--file">index.ts</li>
+                  <li class="row row--dir">tests</li>
+                </ul>
+                <div class="map">
+                  <svg viewBox="0 0 480 280" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+                    <g class="map__edges">
+                      <path d="M86 66 L238 140" />
+                      <path d="M86 66 L238 40" />
+                      <path d="M238 40 L392 92" />
+                      <path d="M238 140 L392 92" />
+                      <path d="M238 140 L110 216" />
+                      <path d="M238 140 L392 214" />
+                      <path d="M392 92 L392 214" />
+                    </g>
+                    <g class="map__nodes">
+                      <g class="node"><circle cx="86" cy="66" r="7" /><text x="86" y="48">store.ts</text></g>
+                      <g class="node"><circle cx="238" cy="40" r="7" /><text x="238" y="22">types.ts</text></g>
+                      <g class="node node--lead"><circle cx="238" cy="140" r="9" /><text x="238" y="122">App.tsx</text></g>
+                      <g class="node"><circle cx="392" cy="92" r="7" /><text x="392" y="74">notes.ts</text></g>
+                      <g class="node"><circle cx="110" cy="216" r="7" /><text x="110" y="198">api.ts</text></g>
+                      <g class="node"><circle cx="392" cy="214" r="7" /><text x="392" y="196">index.ts</text></g>
+                    </g>
+                  </svg>
+                </div>
+              </div>
+            </div>
+
+            <div class="term" data-reveal>
+              <div class="term__bar"><i></i><i></i><i></i><span>terminal</span></div>
+              <pre class="term__body" id="heroTerm" aria-label="A terminal running the dev server"></pre>
+            </div>
+
+            <div class="chatcard" data-reveal>
+              <div class="chatcard__head">
+                <span class="dot"></span> Agent
+                <span class="pill pill--auto">Approve for me</span>
+              </div>
+              <ul class="steps">
+                <li class="step is-done"><i></i>read <code>src/store.ts</code></li>
+                <li class="step is-done"><i></i>edit <code>src/store.ts</code> <span class="diff">+8 −2</span></li>
+                <li class="step is-live"><i></i>run <code>npm test</code></li>
+              </ul>
+              <div class="chatcard__foot"><span class="undo">Undo this turn</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="wrap stats" data-reveal>
+          <div class="stat"><b data-count="11">11</b><span>providers built in, plus a local one</span></div>
+          <div class="stat"><b>0</b><span>accounts, sign-ins or sessions</span></div>
+          <div class="stat"><b>0</b><span>analytics or crash-reporting SDKs</span></div>
+          <div class="stat"><b>1</b><span>download — Python and the agent are bundled</span></div>
+        </div>
+      </section>
+
+      <section class="band" id="workbench">
+        <div class="wrap wrap--center">
+          <p class="eyebrow eyebrow--center" data-reveal>What you get</p>
+          <h2 class="h2 h2--center" data-reveal>Everything the work needs, in one window</h2>
+          <p class="lede lede--center" data-reveal>
+            Not a chat box bolted to a text area. The editor, the map, git and the agent share
+            one project on disk — so navigation, review and the agent never disagree about what
+            the code says.
+          </p>
+        </div>
+
+        <div class="wrap split">
+          <nav class="toc" aria-label="Features" id="toc">
+            <a href="#f-map" class="toc__item is-on">Code map</a>
+            <a href="#f-agent" class="toc__item">The agent</a>
+            <a href="#f-editor" class="toc__item">Editor and Cmd-K</a>
+            <a href="#f-repo" class="toc__item">Repository</a>
+            <a href="#f-terminal" class="toc__item">Terminal</a>
+            <a href="#f-market" class="toc__item">Marketplace</a>
+            <a href="#f-models" class="toc__item">Models and cost</a>
+          </nav>
+
+          <div class="features">
+            <article class="feat" id="f-map" data-reveal>
+              <h3>See the shape of a codebase before you touch it</h3>
+              <p>
+                The code map indexes the project in the background and draws what depends on
+                what, with a plain-language summary of each file's job. It is built locally —
+                no service, no upload.
+              </p>
+              <ul class="ticks">
+                <li>Symbol search stays current: create, delete and agent writes refresh both the tree and the index.</li>
+                <li>Ask what reads a file and get the answer from the graph, not a guess.</li>
+              </ul>
+              <div class="shot" aria-hidden="true">
+                <div class="shot__bar"><span>Code map</span><span class="shot__meta">172 files · 0.39 s</span></div>
+                <canvas id="mapCanvas" width="900" height="420"></canvas>
+              </div>
+            </article>
+
+            <article class="feat" id="f-agent" data-reveal>
+              <h3>An agent that shows its work — and gives it back</h3>
+              <p>
+                Put the chat in Agent mode and hand it a task. Every tool call is a step you
+                can read as it happens. A turn that changed files reports “Edited N files
+                +X −Y”, one row per file, and <em>Undo this turn</em> restores exactly what it
+                touched.
+              </p>
+              <ul class="ticks">
+                <li><b>Four approval modes</b> — Read only, Approve for me, Ask me, Full access.</li>
+                <li><b>Steer mid-run</b>: a message goes into the turn that is running, not the next one.</li>
+                <li><b>Ask me</b> genuinely stops and asks, in the chat, when only you can decide.</li>
+              </ul>
+              <div class="shot" aria-hidden="true">
+                <div class="shot__bar"><span>Agent</span><span class="shot__meta">app-server transport</span></div>
+                <div class="fakechat">
+                  <p class="fakechat__me">Group pinned notes at the top of the list, and add a test for it.</p>
+                  <ul class="steps">
+                    <li class="step is-done"><i></i>read <code>src/store.ts</code></li>
+                    <li class="step is-done"><i></i>read <code>tests/store.test.ts</code></li>
+                    <li class="step is-done"><i></i>edit <code>src/store.ts</code> <span class="diff">+8 −2</span></li>
+                    <li class="step is-done"><i></i>write <code>tests/pinned.test.ts</code> <span class="diff">+24 −0</span></li>
+                    <li class="step is-done"><i></i>run <code>npm test</code> <span class="ok">4 passed</span></li>
+                  </ul>
+                  <p class="fakechat__done">
+                    Edited 2 files <span class="diff">+32 −2</span> — pinned notes sort first,
+                    and the rule is covered by a test.
+                  </p>
+                </div>
+              </div>
+            </article>
+
+            <article class="feat" id="f-editor" data-reveal>
+              <h3>A real editor, and Cmd-K for the change you did not want to type</h3>
+              <p>
+                Monaco — the editor underneath VS Code — with tabs, real paths and real saves.
+                Select code, press ⌘K, describe the change, and accept or reject a diff in
+                place. A whole-file review lands as comments anchored to the lines they are
+                about.
+              </p>
+              <ul class="ticks">
+                <li>Undo, redo, select, move: the keys you already press.</li>
+                <li>Reviews are one thread per line, so clustered findings stay readable.</li>
+              </ul>
+              <div class="shot" aria-hidden="true">
+                <div class="shot__bar"><span>⌘K · src/store.ts</span><span class="shot__meta">1 hunk</span></div>
+                <div class="code">
+                  <div class="code__row"><span class="ln">12</span><span class="src">  return {</span></div>
+                  <div class="code__row"><span class="ln">13</span><span class="src">    get: () =&gt; state,</span></div>
+                  <div class="code__row code__row--del"><span class="ln">14</span><span class="src">    setFilter(filter: string) {</span></div>
+                  <div class="code__row code__row--add"><span class="ln">14</span><span class="src">    setFilter(filter: string) {</span></div>
+                  <div class="code__row code__row--add"><span class="ln">15</span><span class="src">      const query = filter.trim().toLowerCase();</span></div>
+                  <div class="code__row"><span class="ln">16</span><span class="src">      state = { ...state, filter };</span></div>
+                  <div class="code__row"><span class="ln">17</span><span class="src">    },</span></div>
+                </div>
+                <div class="shot__foot">
+                  <span class="prompt">trim the filter before storing it</span>
+                  <span class="accept">Accept</span><span class="reject">Reject</span>
+                </div>
+              </div>
+            </article>
+
+            <article class="feat" id="f-repo" data-reveal>
+              <h3>Commit, review and read your CI without opening a browser</h3>
+              <p>
+                Stage a whole file or one hunk at a time, read the commit graph, open any
+                commit's files and diff, and compare any commit against your working tree. On
+                a repository it recognises, the page also shows the latest CI run and a failed
+                run's log in place.
+              </p>
+              <ul class="ticks">
+                <li>Renames, quoted paths, merge conflicts and both sides of a diff read correctly.</li>
+                <li>The page hears about checkouts and agent writes it did not make.</li>
+              </ul>
+              <div class="shot" aria-hidden="true">
+                <div class="shot__bar"><span>Repository</span><span class="shot__meta">main</span></div>
+                <div class="repo">
+                  <div class="repo__col">
+                    <p class="repo__label">Changes · 2</p>
+                    <div class="fileref"><span class="swatch swatch--mod"></span>src/store.ts <span class="diff">+8 −2</span></div>
+                    <div class="fileref"><span class="swatch swatch--new"></span>tests/pinned.test.ts <span class="diff">+24 −0</span></div>
+                    <p class="repo__msg">feat: pinned notes sort first</p>
+                    <span class="accept">Commit 2 files</span>
+                  </div>
+                  <div class="repo__col">
+                    <p class="repo__label">History</p>
+                    <ul class="commits">
+                      <li><b>feat</b> expose the version <span>dea6b4e</span></li>
+                      <li><b>style</b> group pinned notes <span>cb9461a</span></li>
+                      <li class="is-lead"><b>feat</b> notes store and filter <span>b9ba72f</span></li>
+                    </ul>
+                    <div class="ci"><span class="ci__pip"></span> CI · success <span class="ci__meta">4m 03s · dev</span></div>
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <article class="feat" id="f-terminal" data-reveal>
+              <h3>The terminal, with links you can actually click</h3>
+              <p>
+                A real shell in the bottom dock. When something prints an address —
+                <code>npm run dev</code>, a preview URL, a docs link — it is clickable, and it
+                opens in your browser instead of asking you to select text out of a canvas.
+              </p>
+              <ul class="ticks">
+                <li>Move through your last commands, and resize the dock without losing the session.</li>
+                <li>Real OSC 8 hyperlinks route exactly the same way.</li>
+              </ul>
+              <div class="shot" aria-hidden="true">
+                <div class="shot__bar"><span>Terminal</span><span class="shot__meta">zsh · aurora-notes</span></div>
+                <pre class="term2" id="term2"></pre>
+              </div>
+            </article>
+
+            <article class="feat" id="f-market" data-reveal>
+              <h3>Install tools and skills the agent will actually use</h3>
+              <p>
+                The marketplace installs real MCP servers and skills into your project.
+                Installed skills are mirrored into the agent runtime's own home, so they reach
+                the prompt — and your host's <code>~/.agents/skills</code> keep working
+                alongside them.
+              </p>
+              <ul class="ticks">
+                <li>Every entry shows the command it will run before you install it.</li>
+                <li>Trust is on the card: built-in, official, or community.</li>
+              </ul>
+              <div class="shot" aria-hidden="true">
+                <div class="shot__bar"><span>Marketplace</span><span class="shot__meta">MCP · skills</span></div>
+                <div class="cards">
+                  <div class="mcard"><img src="./logos/github.svg" alt="" width="22" height="22" /><b>Git</b><span>official · MCP</span></div>
+                  <div class="mcard"><img src="./logos/openai.svg" alt="" width="22" height="22" /><b>Sequential thinking</b><span>official · MCP</span></div>
+                  <div class="mcard"><span class="mcard__mark">◍</span><b>Memory</b><span>official · MCP</span></div>
+                  <div class="mcard"><span class="mcard__mark">◍</span><b>Code review</b><span>built-in · skill</span></div>
+                </div>
+              </div>
+            </article>
+
+            <article class="feat" id="f-models" data-reveal>
+              <h3>Any model. And the numbers to prove what it cost.</h3>
+              <p>
+                Eleven providers ship in the picker, and any OpenAI-compatible endpoint can be
+                added with a base URL and a key. Run a local model and nothing leaves the
+                machine at all. The performance page keeps tokens and cost per provider —
+                including what a local model saved you.
+              </p>
+              <ul class="ticks">
+                <li>Keys go to the OS keychain and are write-only: a page can set or clear one, never read it back.</li>
+                <li>Small local models often cannot drive tools — the app says so instead of pretending a run worked.</li>
+              </ul>
+              <div class="shot" aria-hidden="true">
+                <div class="shot__bar"><span>Performance</span><span class="shot__meta">14 days</span></div>
+                <div class="cost">
+                  <div class="bars">
+                    <div class="bar"><span>deepseek-flash</span><i style="--w: 78%"></i><b>1.24M</b></div>
+                    <div class="bar"><span>qwen2.5-coder</span><i style="--w: 46%"></i><b>0.72M</b></div>
+                    <div class="bar"><span>gpt-oss-20b</span><i style="--w: 21%"></i><b>0.31M</b></div>
+                  </div>
+                  <div class="cost__sum">
+                    <div><b>$4.18</b><span>spent</span></div>
+                    <div><b>$11.90</b><span>local-model savings</span></div>
+                  </div>
+                </div>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="band band--tint" id="agent">
+        <div class="wrap wrap--center">
+          <p class="eyebrow eyebrow--center" data-reveal>How it goes</p>
+          <h2 class="h2 h2--center" data-reveal>From an empty window to a reviewed change</h2>
+          <ol class="steps3">
+            <li data-reveal>
+              <span class="steps3__n">1</span>
+              <h3>Open the folder</h3>
+              <p>Projects are folders on disk — no import, no workspace file, no account. New projects can be scaffolded from a template.</p>
+            </li>
+            <li data-reveal>
+              <span class="steps3__n">2</span>
+              <h3>Say what you want</h3>
+              <p>Chat to think it through, or switch to Agent and give it the task. Pick how much it may do: read, approve, ask, or full.</p>
+            </li>
+            <li data-reveal>
+              <span class="steps3__n">3</span>
+              <h3>Read the diff, then keep it</h3>
+              <p>Steps scroll by as they happen. Review the change, stage it by hunk or whole file, commit — or undo the whole turn.</p>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="band" id="providers">
+        <div class="wrap wrap--center">
+          <p class="eyebrow eyebrow--center" data-reveal>Bring your own model</p>
+          <h2 class="h2 h2--center" data-reveal>Use the model you already pay for</h2>
+          <p class="lede lede--center" data-reveal>
+            The app speaks the OpenAI API shapes. OpenAI and DeepSeek serve the agent runtime
+            directly; every other chat-completions provider is reached through a bundled tool
+            adapter, so it works the same way from your side.
+          </p>
+          <ul class="providers" data-reveal>
+            <li><img src="./logos/openai.svg" alt="" width="26" height="26" /><span>OpenAI</span></li>
+            <li><img src="./logos/deepseek.svg" alt="" width="26" height="26" /><span>DeepSeek</span></li>
+            <li><img src="./logos/nvidia.svg" alt="" width="26" height="26" /><span>NVIDIA NIM</span></li>
+            <li><img src="./logos/groq.svg" alt="" width="26" height="26" /><span>Groq</span></li>
+            <li><img src="./logos/gemini.svg" alt="" width="26" height="26" /><span>Google Gemini</span></li>
+            <li><img src="./logos/xai.svg" alt="" width="26" height="26" /><span>xAI</span></li>
+            <li><img src="./logos/moonshot.svg" alt="" width="26" height="26" /><span>Moonshot</span></li>
+            <li><img src="./logos/cohere.svg" alt="" width="26" height="26" /><span>Cohere</span></li>
+            <li><img src="./logos/together.svg" alt="" width="26" height="26" /><span>Together</span></li>
+            <li><img src="./logos/openrouter.svg" alt="" width="26" height="26" /><span>OpenRouter</span></li>
+            <li><img src="./logos/ollama.svg" alt="" width="26" height="26" /><span>Ollama, locally</span></li>
+            <li class="providers__any"><span>+ any OpenAI-compatible endpoint</span></li>
+          </ul>
+
+          <div class="free" data-reveal>
+            <h3>Ways to start without a bill</h3>
+            <div class="free__grid">
+              <a href="https://console.groq.com/keys" rel="noreferrer"><b>Groq</b><span>free tier — the fastest of them</span></a>
+              <a href="https://aistudio.google.com/apikey" rel="noreferrer"><b>Google Gemini</b><span>free tier — the most capable of them</span></a>
+              <a href="https://build.nvidia.com" rel="noreferrer"><b>NVIDIA NIM</b><span>free tier — shared, and the first to time out</span></a>
+              <a href="https://ollama.com" rel="noreferrer"><b>Ollama</b><span>nothing to sign up for — it runs here</span></a>
+            </div>
+            <p class="fineprint">
+              Free tiers are rate-limited and shared. A run that keeps failing stops and tells
+              you why, rather than waiting out its time limit.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section class="band band--dark" id="privacy">
+        <div class="wrap wrap--center">
+          <p class="eyebrow eyebrow--center" data-reveal>Yours, by default</p>
+          <h2 class="h2 h2--center" data-reveal>Nothing here is ours to collect</h2>
+          <div class="grid4">
+            <div data-reveal>
+              <h3>Keys in the keychain</h3>
+              <p>Credentials live in the OS keychain and are write-only across the app's own API — a page can set or clear one and ask whether it exists, never read the value back. If a keychain is not usable, the app says so and keeps it in a <code>0600</code> file instead.</p>
+            </div>
+            <div data-reveal>
+              <h3>Projects on your disk</h3>
+              <p>History, settings, usage and per-turn snapshots live in a local SQLite database in the app's data directory. Open a folder; that is the whole import step.</p>
+            </div>
+            <div data-reveal>
+              <h3>No telemetry at all</h3>
+              <p>There is no analytics or crash-reporting SDK in the app or the engine, and the crash log stays local. Nothing is sent anywhere except the model calls you configure.</p>
+            </div>
+            <div data-reveal>
+              <h3>Work offline</h3>
+              <p>With a local model the whole loop — index, edit, map, agent — runs without a network. That is the point of bundling the engine and the runtime.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="band" id="limits">
+        <div class="wrap wrap--center">
+          <p class="eyebrow eyebrow--center" data-reveal>Before you download</p>
+          <h2 class="h2 h2--center" data-reveal>What it does not do, yet</h2>
+          <p class="lede lede--center" data-reveal>
+            A page that only lists wins is worth less than the five minutes it takes to find
+            the caveats. These are the real ones.
+          </p>
+          <div class="limits">
+            <div class="limit" data-reveal>
+              <b>macOS 11 or newer only</b>
+              <p>Releases are built, signed and notarised for macOS today. The code is written for all three platforms, but Windows and Linux are not shipped.</p>
+            </div>
+            <div class="limit" data-reveal>
+              <b>Local models often cannot run the agent</b>
+              <p>A model that chats but cannot call tools will read and reply without changing a file. Small local models frequently cannot drive the tool protocol — use a hosted provider for agent runs.</p>
+            </div>
+            <div class="limit" data-reveal>
+              <b>Anthropic's API is not supported in agent mode</b>
+              <p>It is a different protocol, so the adapter cannot front it. OpenAI and DeepSeek serve the runtime directly; the rest go through the adapter.</p>
+            </div>
+            <div class="limit" data-reveal>
+              <b>Free tiers throttle, and a wrapped URL is left as text</b>
+              <p>Rate limits belong to the provider, not the app. And a link the terminal wraps onto a second line stays text, because the visible half is not the address.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="band band--tint" id="faq">
+        <div class="wrap wrap--narrow">
+          <p class="eyebrow eyebrow--center" data-reveal>Questions</p>
+          <h2 class="h2 h2--center" data-reveal>The short answers</h2>
+          <div class="faq">
+            <details data-reveal><summary>What does it cost?</summary><p>The app is MIT licensed and free. You pay only for the model calls you make, to whichever provider you configure — and nothing at all with a local model. Free tiers at Groq, Google and NVIDIA get you started without a card.</p></details>
+            <details data-reveal><summary>Do I need to install Python, Node or Codex?</summary><p>No. The Python engine and the agent runtime are inside the app bundle; there is nothing else to install. Node and Python are only needed if you build from source.</p></details>
+            <details data-reveal><summary>Where do my API keys go?</summary><p>The operating system keychain — macOS Keychain, Windows Credential Manager, Linux Secret Service. They are handed to child processes in their environment, never over IPC, and the page can never read one back.</p></details>
+            <details data-reveal><summary>Does my code get sent anywhere?</summary><p>Only to the model provider you configure, as part of the prompts you send. Nothing else leaves the machine. With a local model, nothing leaves at all. There is no analytics SDK to opt out of, because there is none.</p></details>
+            <details data-reveal><summary>Can I use it at work?</summary><p>It is a normal local application: no account, no server of ours, and MIT licensing. Your organisation's rules about which providers may see code still apply — point it at an approved endpoint, or at a local model.</p></details>
+            <details data-reveal><summary>Is this a wrapper around Codex?</summary><p>The agent runtime is the open-source Codex CLI (Apache-2.0), bundled with its own home directory so it never touches a Codex install you configured yourself. The workbench around it — editor, code map, git, marketplace, provider management — is this project.</p></details>
+            <details data-reveal><summary>How do updates work?</summary><p>The app checks on launch and offers an <em>Update</em> button in the title bar when one is available; it can also update itself from Settings → About. Each release's notes are in the changelog.</p></details>
+          </div>
+        </div>
+      </section>
+
+      <section class="finale" id="models">
+        <div class="wrap wrap--center">
+          <img src="./apex-icon.svg" alt="" width="64" height="64" class="finale__mark" data-reveal />
+          <h2 class="h2 h2--center h2--big" data-reveal>Get it running in about a minute</h2>
+          <p class="lede lede--center" data-reveal>
+            Download, drag to Applications, open a folder. Pick a model — a free tier will do —
+            and ask for something small.
+          </p>
+          <div class="hero__cta hero__cta--center" data-reveal>
+            <a class="cta" href="https://github.com/adetoye-dev/asca-code/releases/latest" rel="noreferrer">Download for macOS</a>
+            <a class="ghost" href="https://github.com/adetoye-dev/asca-code" rel="noreferrer">Star on GitHub</a>
+          </div>
+          <p class="fineprint" data-reveal>
+            Signed with a Developer ID, notarised and stapled — it opens without a Gatekeeper detour.
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <div class="wrap foot__grid">
+        <div class="foot__brand">
+          <img src="./apex-mark.svg" alt="" width="24" height="24" />
+          <div>
+            <b>ACSA Code</b>
+            <span>Local-first agentic engineering workbench</span>
+          </div>
+        </div>
+        <nav aria-label="Product">
+          <h3>Product</h3>
+          <a href="https://github.com/adetoye-dev/asca-code/releases/latest" rel="noreferrer">Download</a>
+          <a href="https://github.com/adetoye-dev/asca-code/blob/dev/CHANGELOG.md" rel="noreferrer">Changelog</a>
+          <a href="https://github.com/adetoye-dev/asca-code/blob/dev/README.md" rel="noreferrer">README</a>
+          <a href="https://github.com/adetoye-dev/asca-code/blob/dev/docs/AGENT_RUNTIME.md" rel="noreferrer">How the agent is wired</a>
+        </nav>
+        <nav aria-label="Project">
+          <h3>Project</h3>
+          <a href="https://github.com/adetoye-dev/asca-code" rel="noreferrer">Source</a>
+          <a href="https://github.com/adetoye-dev/asca-code/issues" rel="noreferrer">Issues</a>
+          <a href="https://github.com/adetoye-dev/asca-code/blob/dev/THIRD-PARTY-NOTICES.md" rel="noreferrer">Third-party notices</a>
+          <a href="https://github.com/adetoye-dev/asca-code/blob/dev/LICENSE" rel="noreferrer">MIT licence</a>
+        </nav>
+        <nav aria-label="Support">
+          <h3>Support</h3>
+          <a href="https://github.com/adetoye-dev/asca-code/security/advisories/new" rel="noreferrer">Report a vulnerability</a>
+          <a href="https://github.com/adetoye-dev/asca-code/blob/dev/docs/RELEASING.md" rel="noreferrer">Release process</a>
+          <a href="https://github.com/adetoye-dev/asca-code/blob/dev/docs/PRODUCTION_CHECKLIST.md" rel="noreferrer">Production checklist</a>
+        </nav>
+      </div>
+      <div class="wrap foot__base">
+        <span>© <span id="year">2026</span> Adetoye Adewoye · MIT</span>
+        <span>Codex CLI is Apache-2.0; this project is not affiliated with OpenAI.</span>
+      </div>
+    </footer>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
