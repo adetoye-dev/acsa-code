@@ -410,6 +410,11 @@ class ModelCatalogIds(unittest.TestCase):
             ["gemini-2.0-flash"],
         )
 
+    def test_gemini_is_configured_with_its_openai_compatible_surface(self):
+        # The bare host answers `/v1beta/models` and 404s `/chat/completions` — which
+        # is how a connection test passed while every chat and agent turn failed.
+        self.assertTrue(ai_cli.DEFAULT_BASE_URLS["google"].endswith("/v1beta/openai"))
+
 
 class AdapterLifetime(unittest.TestCase):
     """The adapter must not outlive the app that handed it a credential.

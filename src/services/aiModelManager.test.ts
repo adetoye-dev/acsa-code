@@ -188,3 +188,25 @@ describe("curating a provider's fetched catalog", () => {
     expect(models.curateProviderModels("ollama", installed)).toEqual(installed);
   });
 });
+
+/**
+ * Where a provider is pointed, which is not cosmetic.
+ *
+ * Gemini's bare host and its OpenAI-compatible surface are different APIs: the host
+ * answers `/v1beta/models` and 404s `/chat/completions`, so pointing at it made
+ * "Test Connection" pass while every chat and agent turn failed.
+ */
+describe("the endpoint a provider ships with", () => {
+  it("points Gemini at its OpenAI-compatible surface, not the host", () => {
+    expect(models.INITIAL_PROVIDERS.google.baseUrl).toMatch(/\/v1beta\/openai$/);
+  });
+
+  it("ships the free-capable providers a launch leans on", () => {
+    // Groq's free tier is the fastest of them and Gemini's the most capable; both
+    // are chat-completions providers, so both reach the agent through the adapter.
+    for (const id of ["groq", "google"] as const) {
+      expect(models.INITIAL_PROVIDERS[id], id).toBeTruthy();
+      expect(models.INITIAL_PROVIDERS[id].baseUrl, id).toMatch(/^https:\/\//);
+    }
+  });
+});

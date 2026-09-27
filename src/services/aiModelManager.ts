@@ -127,6 +127,26 @@ export const INITIAL_PROVIDERS: Record<AIProviderId, AIProviderConfig> = {
     ],
     speedBadge: "Fast",
   },
+  google: {
+    id: "google",
+    name: "Google Gemini",
+    category: "cloud",
+    isConnected: false,
+    isDefault: false,
+    apiKey: "",
+    // Gemini's *OpenAI-compatible* surface, not the bare host. The host answers
+    // `/v1beta/models` and 404s `/chat/completions` — which is how "Test Connection"
+    // could pass while every chat and agent turn failed. Measured against this
+    // surface: `/chat/completions` answers (400 to a bogus credential), and there is
+    // no `/responses`, so Gemini reaches the agent through the tool adapter like the
+    // other chat-completions providers.
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+    selectedModel: "gemini-2.5-flash",
+    // A starting list only — the free tier is the reason this provider is here, so
+    // "Fetch Latest Models" replaces it with what the account can actually reach.
+    availableModels: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
+    speedBadge: "Fast",
+  },
   moonshot: {
     id: "moonshot",
     name: "Moonshot AI",

@@ -52,7 +52,11 @@ DEFAULT_BASE_URLS = {
     "perplexity": "https://api.perplexity.ai",
     "huggingface": "https://api-inference.huggingface.co/v1",
     "anthropic": "https://api.anthropic.com",
-    "google": "https://generativelanguage.googleapis.com",
+    # Gemini's OpenAI-compatible surface. The bare host is a different API: a call
+    # to `{host}/chat/completions` 404s, and `{host}/v1beta/models` answers — which
+    # is exactly the combination that made "Test Connection" pass while every chat
+    # and agent turn failed.
+    "google": "https://generativelanguage.googleapis.com/v1beta/openai",
     "ollama": "http://127.0.0.1:11434",
 }
 
@@ -182,9 +186,9 @@ def test_connection(payload: dict) -> dict:
             f"{base_url}/v1/models",
             {"x-api-key": key, "anthropic-version": "2023-06-01"},
         )
-    elif provider == "google":
-        status, body = _get(f"{base_url}/v1beta/models?key={key}", {})
     else:
+        # Gemini's OpenAI-compatible surface lists models with the same bearer it
+        # takes for chat, now that the base URL is that surface rather than the host.
         status, body = _get(f"{base_url}/models", {"Authorization": f"Bearer {key}"})
 
     latency = int((time.monotonic() - started) * 1000)
