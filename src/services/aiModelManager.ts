@@ -280,7 +280,18 @@ export function curateProviderModels(providerId: string, rawModels: string[]): s
   const scored = valid.map((m) => ({ model: m, score: scoreModelForCoding(providerId, m) }));
   scored.sort((a, b) => b.score - a.score);
 
-  return scored.slice(0, 12).map((s) => s.model);
+  // The registry's own entries first, then the best of the rest.
+  //
+  // A fetch must not be able to *remove* a model the registry curates. The score
+  // below has nothing to go on but the name — size and version words — so it
+  // ranks an older 70B above a current cheap tier, and NVIDIA NIM's list lost
+  // `deepseek-ai/deepseek-v4.1-flash` to exactly that. Entries the provider still
+  // reports stay; whatever budget is left goes to the ranking.
+  const curated = (INITIAL_PROVIDERS[providerId as AIProviderId]?.availableModels ?? []).filter(
+    (id) => valid.includes(id)
+  );
+  const merged = Array.from(new Set([...curated, ...scored.map((s) => s.model)]));
+  return merged.slice(0, Math.max(12, curated.length));
 }
 
 /** In-memory mirror of the registry so `loadAllProviders()` can stay synchronous. */

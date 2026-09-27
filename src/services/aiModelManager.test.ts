@@ -107,3 +107,61 @@ describe("the model list the picker shows", () => {
     expect(models.getActiveSelectedModel()).toBeNull();
   });
 });
+
+/**
+ * What "Test Connection" does to the model list.
+ *
+ * It replaces the registry's curated entries with the best of whatever the
+ * provider reports, capped at twelve. That is the intent — a provider's catalog
+ * is 80-odd models and nobody wants all of them — but it silently dropped the
+ * models the registry curates *deliberately*, which is how NVIDIA NIM's list lost
+ * `deepseek-ai/deepseek-v4.1-flash`: the scorer ranks by size and version words,
+ * and an older 70B model outscores a current cheap "flash" tier.
+ */
+describe("curating a provider's fetched catalog", () => {
+  /** NIM's own catalog, exactly as the provider reports it (82 ids). */
+  const NVIDIA_CATALOG = [
+    "01-ai/yi-large",
+    "adept/fuyu-8b",
+    "ai21labs/jamba-1.5-large-instruct",
+    "aisingapore/sea-lion-7b-instruct",
+    "bigcode/starcoder2-15b",
+    "deepseek-ai/deepseek-coder-6.7b-instruct",
+    "deepseek-ai/deepseek-v4.1-flash",
+    "google/codegemma-7b",
+    "google/codegemma-1.1-7b",
+    "ibm-granite/granite-8b-code-instruct",
+    "ibm-granite/granite-34b-code-instruct",
+    "meta/codellama-70b",
+    "mistralai/codestral-22b-instruct-v0.1",
+    "mistralai/mistral-nemo-minitron-8b-8k-instruct",
+    "moonshotai/kimi-k3",
+    "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+    "openai/gpt-oss-20b",
+    "z-ai/glm-5.3",
+  ];
+
+  it("keeps the entries the registry curates on purpose", () => {
+    const curated = models.INITIAL_PROVIDERS.nvidia.availableModels;
+    expect(curated.length).toBeGreaterThan(0);
+    const fetched = models.curateProviderModels("nvidia", NVIDIA_CATALOG);
+    for (const id of curated) {
+      expect(fetched, `${id} was dropped by a fetch`).toContain(id);
+    }
+  });
+
+  it("still does not hand over the whole catalog", () => {
+    const fetched = models.curateProviderModels("nvidia", NVIDIA_CATALOG);
+    expect(fetched.length).toBeLessThan(NVIDIA_CATALOG.length);
+    expect(fetched.length).toBeLessThanOrEqual(16);
+  });
+
+  it("keeps an owner prefix, which is part of the id", () => {
+    // `deepseek-v4.1-flash` is not a model NIM has; `deepseek-ai/deepseek-v4.1-flash` is.
+    expect(models.isCodingChatModel("deepseek-ai/deepseek-v4.1-flash")).toBe(true);
+    expect(models.curateProviderModels("nvidia", NVIDIA_CATALOG)).toContain(
+      "deepseek-ai/deepseek-v4.1-flash",
+    );
+  });
+});
