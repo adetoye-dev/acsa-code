@@ -13,7 +13,7 @@ tauri-plugin-http = "2"
 tauri-plugin-fs = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sysinfo = "0.32"
+sysinfo = "0.39"
 # Minor-locked on purpose. Tauri refuses to bundle when a plugin crate and its
 # npm package disagree on major.minor, and `"2.11.0"` is a caret range: adding an
 # unrelated dependency re-resolved the lockfile, took this from 2.11 to 2.12, and
