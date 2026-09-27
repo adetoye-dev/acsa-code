@@ -96,6 +96,43 @@ export function localProviderFor(providerId: string | undefined): string | null 
 }
 
 /**
+ * Providers measured to serve the Responses API, so the runtime can reach them
+ * directly.
+ *
+ * Both were confirmed by running the agent against them: the runtime posts to
+ * `<base>/responses` and gets a stream back. Everything else goes through the
+ * tool adapter, and that default is the fix for a specific trap: the registry
+ * offered fifteen providers, the runtime speaks Responses and nothing else
+ * (`wire_api = "chat"` is a hard config error on this Codex build), and only
+ * these two implement it. So a dozen entries were advertised as agent-capable
+ * and answered 404 on the first tool call — verified on NVIDIA NIM, Mistral and
+ * Anthropic. Routing an OpenAI-compatible provider through the adapter always
+ * works, because the adapter speaks the chat completions API they all have;
+ * pointing the runtime straight at one works only once its Responses support has
+ * been checked. One extra hop, no 404s.
+ */
+export const RESPONSES_CAPABLE_PROVIDER_IDS = new Set(["openai", "deepseek"]);
+
+/**
+ * Providers whose API is not OpenAI-shaped, so the adapter cannot front them
+ * either.
+ *
+ * Anthropic's is `/v1/messages` — its own body, its own auth header — and the
+ * chat path special-cases it in the engine. A Responses⇄chat-completions adapter
+ * has nothing to translate to, so agent mode is honestly unavailable rather than
+ * silently doing nothing.
+ */
+export const NOT_ADAPTER_CAPABLE_PROVIDER_IDS = new Set(["anthropic"]);
+
+/** Whether the agent must reach this provider through the tool adapter. */
+export function needsToolAdapter(providerId: string | undefined): boolean {
+  const id = (providerId || "").toLowerCase();
+  if (!id) return false;
+  if (RESPONSES_CAPABLE_PROVIDER_IDS.has(id)) return false;
+  return !NOT_ADAPTER_CAPABLE_PROVIDER_IDS.has(id);
+}
+
+/**
  * Why an agent run on a local model does nothing — for the OUTPUT panel.
  *
  * Measured, not guessed: the runtime sends its tools to `/v1/responses`

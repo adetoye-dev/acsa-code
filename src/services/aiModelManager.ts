@@ -93,6 +93,36 @@ export const INITIAL_PROVIDERS: Record<AIProviderId, AIProviderConfig> = {
     availableModels: ["grok-2-latest", "grok-2-vision-1212", "grok-beta"],
     speedBadge: "Fast",
   },
+  nvidia: {
+    id: "nvidia",
+    name: "NVIDIA NIM",
+    category: "cloud",
+    isConnected: false,
+    isDefault: false,
+    apiKey: "",
+    // `integrate.api.nvidia.com` is the public NIM endpoint that the free tier
+    // uses. It is OpenAI-compatible *chat completions* and nothing else: measured
+    // with a probe, `POST /v1/responses` answers `404 page not found` while
+    // `/chat/completions` answers 403 without a key (present, needs auth), and
+    // `GET /v1/models` is open and lists 82 models. So NIM cannot front the agent
+    // runtime directly — the runtime only speaks Responses — and it is reached
+    // through the tool adapter like every other chat-completions provider. See
+    // `needsToolAdapter` in `agentApproval.ts`.
+    baseUrl: "https://integrate.api.nvidia.com/v1",
+    selectedModel: "deepseek-ai/deepseek-v4.1-flash",
+    // A short, coding-first list rather than all 82. Every id here was read back
+    // from the live `/v1/models` catalog, because a model this app offers has to
+    // be one the provider actually serves — an advertised-but-absent model is the
+    // failure mode this whole provider path keeps getting bitten by.
+    availableModels: [
+      "deepseek-ai/deepseek-v4.1-flash",
+      "z-ai/glm-5.3",
+      "moonshotai/kimi-k3",
+      "mistralai/codestral-22b-instruct-v0.1",
+      "openai/gpt-oss-20b",
+    ],
+    speedBadge: "Fast",
+  },
   moonshot: {
     id: "moonshot",
     name: "Moonshot AI",

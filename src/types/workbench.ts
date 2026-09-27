@@ -29,6 +29,7 @@ export type AIProviderId =
   | "openai"
   | "groq"
   | "deepseek"
+  | "nvidia"
   | "xai"
   | "moonshot"
   | "cohere"

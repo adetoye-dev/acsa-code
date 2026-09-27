@@ -27,6 +27,7 @@ import {
   DEFAULT_AGENT_TRANSPORT,
   localProviderFor,
   localToolCallingNote,
+  needsToolAdapter,
   resolveApprovalMode,
   type AgentApprovalMode,
   type AgentTransport,
@@ -86,10 +87,17 @@ export function hostedProviderId(providerId: string): string {
  * Best effort by design: a build without the adapter still runs, just without
  * tool calls, and the caller logs which of the two happened.
  */
-async function startLocalToolAdapter(providerId: string): Promise<string | null> {
+async function startLocalToolAdapter(
+  providerId: string,
+  upstream: { mode: "ollama" | "openai"; baseUrl: string },
+): Promise<string | null> {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    const url = await invoke<string>("local_adapter_start", { providerId });
+    const url = await invoke<string>("local_adapter_start", {
+      providerId,
+      upstream: upstream.mode,
+      baseUrl: upstream.baseUrl,
+    });
     return typeof url === "string" && url.startsWith("http") ? url : null;
   } catch {
     return null;
@@ -187,9 +195,18 @@ async function runAgent(params: {
   // never acts. The adapter speaks Responses to the runtime and Ollama's native
   // `/api/chat` to the model, which is where tool calls actually work.
   const localProvider = localProviderFor(providerId);
-  const adapterBaseUrl = localProvider ? await startLocalToolAdapter(providerId) : null;
+  // Anything not verified to serve Responses is reached through the adapter, so
+  // the model the user picked actually runs instead of 404ing on its first tool
+  // call. A hosted provider arrives as a chat-completions upstream; a local one
+  // as Ollama's own API. See `needsToolAdapter` for how the two sets are decided.
+  const adapterBaseUrl = needsToolAdapter(providerId)
+    ? await startLocalToolAdapter(providerId, {
+        mode: localProvider ? "ollama" : "openai",
+        baseUrl: provider.baseUrl,
+      })
+    : null;
   if (adapterBaseUrl) {
-    params.log(`[agent] local models run through the tool adapter at ${adapterBaseUrl}`);
+    params.log(`[agent] ${providerId} runs through the tool adapter at ${adapterBaseUrl}`);
   } else {
     // No adapter: fall back to the runtime's own local-provider switch, which
     // reaches the model but cannot run tools. Say so rather than let an empty run
@@ -202,7 +219,9 @@ async function runAgent(params: {
   // is reserved and cannot be overridden.
   const runtimeProviderId = adapterBaseUrl ? LOCAL_ADAPTER_PROVIDER_ID : hostedProviderId(providerId);
   const runtimeBaseUrl = adapterBaseUrl ?? provider.baseUrl;
-  const runtimeProviderName = adapterBaseUrl ? "Local models (ACSA tool adapter)" : provider.name || providerId;
+  const runtimeProviderName = adapterBaseUrl
+    ? `${provider.name || providerId} (ACSA tool adapter)`
+    : provider.name || providerId;
   const configToml = [
     `model = "${model}"`,
     ...(localProvider && !adapterBaseUrl ? [] : [`model_provider = "${runtimeProviderId}"`]),

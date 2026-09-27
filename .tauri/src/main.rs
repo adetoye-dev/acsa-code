@@ -3518,6 +3518,29 @@ struct LocalAdapter {
     child: std::process::Child,
     port: u16,
     provider_id: String,
+    /// Which upstream shape it was started for, so a provider whose address
+    /// changed gets a new adapter instead of the old one answering.
+    upstream: String,
+    upstream_base: String,
+}
+
+/// `host:port` from a base URL.
+///
+/// The Ollama branch of the adapter takes them as separate flags — that is the
+/// shape its CLI already had — while a hosted provider is handed the whole URL.
+fn host_and_port(base_url: &str) -> Option<(String, u16)> {
+    let rest = base_url.split("://").nth(1).unwrap_or(base_url);
+    let hostport = rest.split('/').next().unwrap_or(rest);
+    if hostport.is_empty() {
+        return None;
+    }
+    match hostport.rsplit_once(':') {
+        Some((host, port)) => port.parse::<u16>().ok().map(|p| (host.to_string(), p)),
+        None => Some((
+            hostport.to_string(),
+            if base_url.starts_with("https") { 443 } else { 80 },
+        )),
+    }
 }
 
 /// A port nothing is listening on, offered by the OS and released for the child.
@@ -3565,7 +3588,18 @@ async fn local_adapter_start(
     app_handle: tauri::AppHandle,
     state: State<'_, LocalAdapterState>,
     provider_id: String,
+    // `upstream` is `"ollama"` (its own API) or `"openai"` (any
+    // `/chat/completions`); `base_url` is the provider's address, so either branch
+    // reaches the model the user actually picked — a non-default Ollama port as
+    // much as a hosted host.
+    upstream: Option<String>,
+    base_url: Option<String>,
 ) -> Result<String, String> {
+    let upstream = upstream
+        .map(|value| value.trim().to_lowercase())
+        .filter(|value| value == "openai")
+        .unwrap_or_else(|| "ollama".to_string());
+    let upstream_base = base_url.unwrap_or_default().trim().trim_end_matches('/').to_string();
     {
         let guard = state.server.lock().map_err(|e| e.to_string())?;
         if let Some(existing) = guard.as_ref() {
@@ -3574,7 +3608,11 @@ async fn local_adapter_start(
             // next run a port with nothing behind it, and every tool call in it
             // failed as though the model were at fault. Asking it is cheap and it is
             // the only way to know.
-            if existing.provider_id == provider_id && adapter_alive(existing.port) {
+            if existing.provider_id == provider_id
+                && existing.upstream == upstream
+                && existing.upstream_base == upstream_base
+                && adapter_alive(existing.port)
+            {
                 return Ok(format!("http://127.0.0.1:{}/v1", existing.port));
             }
         }
@@ -3593,8 +3631,34 @@ async fn local_adapter_start(
     args.push("--port".to_string());
     args.push(port.to_string());
 
+    // The credential travels in the environment, never in argv: this process's
+    // command line is readable by any process running as the user.
+    let mut env: Vec<(String, String)> = vec![
+        ("ACSA_ADAPTER_UPSTREAM".to_string(), upstream.clone()),
+        ("ACSA_ADAPTER_URL".to_string(), upstream_base.clone()),
+    ];
+    if upstream == "openai" {
+        args.push("--upstream".to_string());
+        args.push("openai".to_string());
+        if !upstream_base.is_empty() {
+            args.push("--base-url".to_string());
+            args.push(upstream_base.clone());
+        }
+        // Same resolution the `exec` and app-server paths use, so the adapter
+        // reaches the provider with the credential the user configured.
+        if let Some(key) = engine_resolve_key(&app_handle, &provider_id) {
+            env.push(("ACSA_ADAPTER_KEY".to_string(), key));
+        }
+    } else if let Some((host, ollama_port)) = host_and_port(&upstream_base) {
+        args.push("--ollama-host".to_string());
+        args.push(host);
+        args.push("--ollama-port".to_string());
+        args.push(ollama_port.to_string());
+    }
+
     let mut child = Command::new(&program)
         .args(&args)
+        .envs(env.iter().map(|(key, value)| (key.clone(), value.clone())))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         // Discarded rather than piped: nothing drains a piped stderr, and a full
@@ -3638,6 +3702,8 @@ async fn local_adapter_start(
         child,
         port,
         provider_id,
+        upstream,
+        upstream_base,
     });
     Ok(url)
 }
