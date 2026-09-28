@@ -20,13 +20,16 @@ for them, not which file moved.
 ### Added
 
 - **A landing page** (`site/`) — the app in its own words, with six real screenshots
-  of it running a real project. It is its own package with its own lockfile and
-  workflow, so the app's build and release pipeline cannot be affected by it. The
-  copy is deliberately short: a category headline, one line of why, one button, and
-  then the app itself, because the screenshots are the argument.
+  of it running a real project, filed under a sticky index of what each screen is
+  for. It is its own package with its own lockfile and workflow, so the app's build
+  and release pipeline cannot be affected by it.
 
 ### Fixed
 
+- **The site's Download button downloads the app.** It used to open the GitHub
+  release page and leave you to find the file. It now points at
+  `releases/latest/download/ACSA-Code.app.zip`, which GitHub serves from whatever
+  the newest release is, so it needs no edit per release.
 - **A local agent run now says why it did nothing.** When a local model answers
   without calling a single tool, the reply said only that no files had changed —
   which reads like a finished task. It now says the model never reached for a tool,

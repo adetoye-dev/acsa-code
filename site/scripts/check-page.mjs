@@ -150,6 +150,10 @@ const AUDIT = `(() => {
       const img = document.querySelector(".shot--hero img");
       return img ? { src: img.getAttribute("src"), loaded: img.complete && img.naturalWidth > 0 } : null;
     })(),
+    // The sticky index is the page's wayfinding; if a section is renamed and the
+    // index is not, this is what catches it.
+    toc: document.querySelectorAll(".toc__item").length,
+    stats: document.querySelectorAll(".stats .stat").length,
     shots: [...document.querySelectorAll('img[src*="shots/"]')].map((img) => ({
       src: img.getAttribute("src"),
       loaded: img.complete && img.naturalWidth > 0,
@@ -184,6 +188,8 @@ for (const [width, height] of [[1440, 900], [1024, 800], [390, 844]]) {
     check("scroll reveals fired", audit.revealed === audit.reveals, `${audit.revealed}/${audit.reveals}`);
     check("the h1 states the category", audit.h1Text === "The open-source workbench for coding agents", audit.h1Text);
     check("the hero shows the app itself", Boolean(audit.hero?.loaded), audit.hero?.src ?? "no .shot--hero img");
+    check("the feature index lists seven sections", audit.toc === 7, `${audit.toc} items`);
+    check("the hero counters are on the page", audit.stats === 4, `${audit.stats} counters`);
     const broken = (audit.shots ?? []).filter((shot) => !shot.loaded);
     check(`${audit.shots?.length ?? 0} real screenshots load`, (audit.shots?.length ?? 0) >= 4 && broken.length === 0,
       broken.map((shot) => shot.src).join(", "));
