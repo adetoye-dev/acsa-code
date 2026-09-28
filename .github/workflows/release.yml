@@ -286,7 +286,7 @@ jobs:
           cat "$NOTES"
 
       - name: Publish the release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         if: startsWith(github.ref, 'refs/tags/')
         with:
           draft: true
