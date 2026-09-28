@@ -28,6 +28,39 @@ updates:
         dependency-type: production
         update-types: ["minor", "patch"]
 
+    # Ignored here are six *majors* that are not "needs reading" but blocked on work of
+    # their own — each one arrives red for a reason that cannot be fixed in a pull
+    # request, and a queue of permanently red pull requests is a thing to scroll past
+    # rather than a reminder. The ignore *is* the note: delete the line when the upgrade
+    # is done. Minors and patches for these packages keep flowing while it is in place,
+    # so staying on the current major does not mean going stale on it.
+    ignore:
+      # Types have to describe the runtime the app actually ships on, which is Node 22 —
+      # CI and the site both pin it. 26 also fails outright: TS2550, on APIs that do not
+      # exist in 22.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      # React 19. react-dom 19 and its types will not resolve against react 18, so this
+      # is the React upgrade rather than a bump.
+      - dependency-name: "react-dom"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/react-dom"
+        update-types: ["version-update:semver-major"]
+      # Tailwind 4 is a rewrite — CSS-first config, a new engine — with this repo's token
+      # file and generated-classes check to carry across it.
+      - dependency-name: "tailwindcss"
+        update-types: ["version-update:semver-major"]
+      # TypeScript 7 does not resolve against the current lint and type tooling
+      # (`npm error ERESOLVE`), and it skips a major on the way there.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      # eslint 10 is not accepted by typescript-eslint and the plugins this repo uses;
+      # `@eslint/js` 10 is the same wall from the other side.
+      - dependency-name: "eslint"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@eslint/js"
+        update-types: ["version-update:semver-major"]
+
   - package-ecosystem: cargo
     directory: "/.tauri"
     schedule:
