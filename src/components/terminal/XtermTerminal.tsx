@@ -13,6 +13,8 @@ import { Terminal } from "@xterm/xterm";
 import { registerTerminalSender, unregisterTerminalSender } from "../../services/terminalCommands";
 import { FitAddon } from "@xterm/addon-fit";
 import { DESKTOP_REQUIRED_MESSAGE, hasIpc } from "../../services/engineBridge";
+import { registerTerminalLinks } from "../../services/terminalLinks";
+import { openExternal } from "../../services/openExternal";
 
 /** Call the terminal IPC channel when it exists, else the dev bridge endpoint. */
 async function invokeTerminal<T = void>(command: string, args: Record<string, unknown>): Promise<T> {
@@ -205,11 +207,20 @@ export const XtermTerminal = forwardRef<XtermTerminalHandle, XtermTerminalProps>
         cursorInactiveStyle: "outline",
         convertEol: true,
         allowTransparency: false,
+        // An OSC 8 hyperlink goes where a bare URL goes. Without a handler, xterm
+        // asks "Do you want to navigate to …?" in a `confirm()` — a dialog inside
+        // the workbench that cannot open a browser anyway.
+        linkHandler: { activate: (_event, text) => void openExternal(text) },
       });
 
       const fitAddon = new FitAddon();
       term.loadAddon(fitAddon);
       term.open(containerRef.current);
+
+      // A URL a tool printed as plain text — every `npm run dev` writes the dev
+      // server's address — becomes clickable, through the same opener the
+      // workspace's own links use.
+      const linkDisposable = registerTerminalLinks(term, (url) => void openExternal(url));
 
       termRef.current = term;
       fitAddonRef.current = fitAddon;
@@ -309,6 +320,7 @@ export const XtermTerminal = forwardRef<XtermTerminalHandle, XtermTerminalProps>
         resizeObserver.disconnect();
         onDataDisposable.dispose();
         onResizeDisposable.dispose();
+        linkDisposable.dispose();
         closeStream();
         term.dispose();
         if (flushTimeoutRef.current) clearTimeout(flushTimeoutRef.current);

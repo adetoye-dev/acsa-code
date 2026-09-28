@@ -6,9 +6,16 @@ on:
   #
   # `main` is here as well as `dev` so a merge is verified before it lands, and
   # `workflow_dispatch` is here so the slow jobs can be asked for on purpose.
+  #
+  # `paths-ignore` keeps the app's minutes for the app. A push that only touches the
+  # landing page or the prose is not going to break the bundle, and `site.yml` covers
+  # the page on its own. A push that touches both still runs this: `paths-ignore` only
+  # skips when *every* changed file matches.
   push:
     branches: [dev, main]
+    paths-ignore: ["site/**", "**.md"]
   pull_request:
+    paths-ignore: ["site/**", "**.md"]
   workflow_dispatch:
 
 concurrency:

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="ACSA Code">
+  <title>ACSA Code</title>
+  <desc>Apex, transparent form for the app itself. Two flat tones rather than a translucent plate: opacity is what turned the plate into a smudge below 32px, and a value contrast survives any size.</desc>
+  <path fill="#6366f1" d="M512 884 L944 668 L512 452 L80 668 Z"/>
+  <path fill="#eef2ff" fill-rule="evenodd" d="M512 96 L784 700 L628 700 L512 452 L396 700 L240 700 Z"/>
+</svg>
