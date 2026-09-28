@@ -43,7 +43,7 @@ Dashboard → the Worker → **Settings**:
 | Setting | Value |
 | --- | --- |
 | Root directory | `site` |
-| Worker name | must match the `name` in `wrangler.jsonc` (`asca-code`) |
+| Worker name | must match the `name` in `wrangler.jsonc` (`acsa-code`) |
 | Build command | `npm run build` |
 | Deploy command | `npx wrangler deploy` |
 | Non-production deploy command | `npx wrangler versions upload` (only if you want per-branch versions) |

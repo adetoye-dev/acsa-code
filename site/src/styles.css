@@ -207,7 +207,7 @@ h1 { font-size: clamp(2.6rem, 6vw, 4.15rem); }
 .term__body .t-dim { color: #71717a; }
 .term__body .t-ok { color: #4ade80; }
 .term__body .t-accent { color: #a5b4fc; }
-.term__body a, .term2 a {
+.term__body a, .term2 a, .term__body .t-link, .term2 .t-link {
   color: #a5b4fc; text-decoration: underline; text-underline-offset: 2px;
 }
 .caret { display: inline-block; width: 7px; height: 13px; background: #a5b4fc; vertical-align: -2px; animation: blink 1.05s steps(1) infinite; }
@@ -248,7 +248,7 @@ h1 { font-size: clamp(2.6rem, 6vw, 4.15rem); }
 .band--dark .eyebrow { color: #a5b4fc; }
 
 /* ── Features: a sticky index beside the detail ──────────────────────────── */
-.split { display: grid; grid-template-columns: 176px minmax(0, 1fr); gap: 56px; margin-top: 62px; align-items: start; }
+.split { display: grid; grid-template-columns: 196px minmax(0, 1fr); gap: 52px; margin-top: 62px; align-items: start; }
 .toc { position: sticky; top: calc(var(--nav-h) + 26px); display: grid; gap: 1px; }
 .toc__item {
   text-decoration: none; font-size: 0.87rem; color: var(--muted);
@@ -490,4 +490,100 @@ h1 { font-size: clamp(2.6rem, 6vw, 4.15rem); }
   html { scroll-behavior: auto; }
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
   [data-reveal] { opacity: 1; translate: none; }
+}
+
+/* ── Eyebrow as a chip (the reference's micro-label) ─────────────────────── */
+.eyebrow {
+  display: inline-flex; align-items: center; gap: 7px;
+  margin: 0 0 18px; padding: 5px 12px;
+  font-size: 0.69rem; font-weight: 650; letter-spacing: 0.09em; text-transform: uppercase;
+  color: var(--accent-ink); background: var(--accent-soft);
+  border: 1px solid rgba(99, 102, 241, 0.22); border-radius: 999px;
+}
+.band--dark .eyebrow {
+  color: #c7d2fe; background: rgba(99, 102, 241, 0.16); border-color: rgba(165, 180, 252, 0.3);
+}
+
+/* ── Hero: the sub-line with the buttons beside it, not under it ─────────── */
+.hero__sub { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 34px; align-items: start; }
+.hero__sub .lede { margin-top: 22px; max-width: 44ch; }
+.hero__sub .hero__cta { margin-top: 22px; flex-direction: column; align-items: stretch; }
+.hero__sub .cta, .hero__sub .ghost { justify-content: center; }
+
+/* The hairline canvas the whole page is drawn on, faded out so it reads as paper
+   rather than as a table. */
+.hero__lines {
+  position: absolute; inset: 0; pointer-events: none;
+  background-image:
+    linear-gradient(to right, var(--line-2) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--line-2) 1px, transparent 1px);
+  background-size: 92px 92px;
+  -webkit-mask-image: radial-gradient(76% 64% at 52% 24%, #000 0%, transparent 74%);
+  mask-image: radial-gradient(76% 64% at 52% 24%, #000 0%, transparent 74%);
+}
+
+/* ── The rail: the app's keys, and the index ─────────────────────────────── */
+.rail { position: sticky; top: calc(var(--nav-h) + 26px); display: grid; gap: 22px; }
+.toc { position: static; display: grid; gap: 1px; }
+.railnote { display: grid; gap: 8px; }
+.railnote__chip {
+  justify-self: start; padding: 4px 10px; border-radius: 999px;
+  font-size: 0.65rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ink); background: var(--surface); border: 1px solid var(--line);
+}
+.railnote p { margin: 0; font-size: 0.79rem; line-height: 1.5; color: var(--muted); }
+.toc__item { display: flex; align-items: center; gap: 8px; }
+kbd {
+  flex: none; padding: 4px 5px; border-radius: 6px; line-height: 1;
+  font-family: var(--mono); font-size: 0.67rem; font-weight: 600; color: var(--ink-2);
+  background: var(--surface); border: 1px solid var(--line); border-bottom-width: 2px;
+  white-space: nowrap;
+}
+.toc__item.is-on kbd { color: var(--accent-ink); border-color: rgba(99, 102, 241, 0.35); }
+
+/* ── FAQ: heading beside the list, the way the reference lays it out ─────── */
+.faqwrap { display: grid; grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr); gap: 56px; align-items: start; }
+.faqwrap__head { position: sticky; top: calc(var(--nav-h) + 30px); }
+.faqwrap__head .h2 { margin-top: 0; }
+.faint { margin: 16px 0 0; font-size: 0.86rem; line-height: 1.6; color: var(--muted); }
+.faq { margin-top: 0; }
+
+/* ── One price: nothing ──────────────────────────────────────────────────── */
+.price {
+  margin-top: 48px; display: grid; grid-template-columns: minmax(0, 0.78fr) minmax(0, 1.22fr);
+  gap: 22px; align-items: start; text-align: left;
+}
+.price__card {
+  display: grid; gap: 8px; justify-items: start; padding: 28px 26px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-2);
+}
+.price__label { font-size: 0.71rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent-ink); }
+.price__amount { font-size: clamp(2.8rem, 5vw, 3.6rem); font-weight: 700; letter-spacing: -0.04em; line-height: 1; }
+.price__note { font-size: 0.81rem; color: var(--muted); }
+.price__card .cta { margin-top: 10px; }
+.price__list { list-style: none; margin: 0; padding: 2px 0; display: grid; grid-template-columns: 1fr 1fr; gap: 12px 26px; }
+.price__list li { position: relative; padding-left: 26px; font-size: 0.9rem; color: var(--ink-2); }
+.price__list li::before {
+  content: ""; position: absolute; left: 5px; top: 0.5em; width: 9px; height: 5px;
+  border-left: 2px solid var(--accent); border-bottom: 2px solid var(--accent);
+  transform: rotate(-45deg);
+}
+
+@media (max-width: 1080px) {
+  .hero__sub { grid-template-columns: 1fr; gap: 6px; }
+  .hero__sub .hero__cta { flex-direction: row; }
+  .rail { position: static; gap: 16px; }
+  .toc { position: sticky; top: var(--nav-h); z-index: 5; display: flex; gap: 18px; overflow-x: auto;
+    background: rgba(251, 251, 253, 0.92); backdrop-filter: blur(10px); padding: 12px 0;
+    border-bottom: 1px solid var(--line-2); }
+  .toc__item { border-left: 0; border-bottom: 2px solid var(--line); padding: 4px 0; margin-left: 0;
+    border-radius: 0; white-space: nowrap; }
+  .toc__item.is-on { border-left-color: transparent; border-bottom-color: var(--accent); }
+}
+@media (max-width: 900px) {
+  .faqwrap { grid-template-columns: 1fr; gap: 26px; }
+  .faqwrap__head { position: static; }
+  .price { grid-template-columns: 1fr; }
+  .price__list { grid-template-columns: 1fr; }
 }

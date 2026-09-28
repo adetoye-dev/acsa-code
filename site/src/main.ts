@@ -44,7 +44,14 @@ function reveal(): void {
 interface Segment {
   text: string;
   cls?: string;
+  /** A real link. Only for addresses that mean something to the visitor. */
   href?: string;
+  /**
+   * Styled like a link but not one. The hero terminal is a drawing of the app's
+   * terminal — the address in it is the developer's own machine, so making it a real
+   * `href` would send a visitor to `localhost` or nowhere at all.
+   */
+  link?: boolean;
 }
 
 function typeInto(node: HTMLElement, script: Segment[], speed = 16): void {
@@ -58,7 +65,8 @@ function typeInto(node: HTMLElement, script: Segment[], speed = 16): void {
           textContent: text,
         })
       : Object.assign(document.createElement("span"), { textContent: text });
-    if (segment.cls) el.className = segment.cls;
+    const classes = [segment.href || segment.link ? "t-link" : "", segment.cls ?? ""].filter(Boolean);
+    if (classes.length) el.className = classes.join(" ");
     node.append(el);
     return el;
   };
@@ -109,7 +117,7 @@ const HERO_TERMINAL: Segment[] = [
   { text: "312", cls: "t-ok" },
   { text: " ms\n\n", cls: "t-dim" },
   { text: "  ➜  Local:   ", cls: "t-dim" },
-  { text: "http://localhost:5173/", href: "http://localhost:5173/" },
+  { text: "http://localhost:5173/", link: true },
   { text: "\n  ➜  Network: use --host to expose\n", cls: "t-dim" },
 ];
 

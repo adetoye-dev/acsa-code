@@ -52,8 +52,8 @@
           <a href="#faq">FAQ</a>
         </nav>
         <div class="nav__actions">
-          <a class="ghost ghost--sm" href="https://github.com/adetoye-dev/asca-code" rel="noreferrer">GitHub</a>
-          <a class="cta cta--sm" href="https://github.com/adetoye-dev/asca-code/releases/latest" rel="noreferrer">Download</a>
+          <a class="ghost ghost--sm" href="https://github.com/adetoye-dev/acsa-code" rel="noreferrer">GitHub</a>
+          <a class="cta cta--sm" href="https://github.com/adetoye-dev/acsa-code/releases/latest" rel="noreferrer">Download</a>
         </div>
       </div>
       <div class="nav__progress" id="navProgress" aria-hidden="true"></div>
@@ -64,18 +64,21 @@
 
       <section class="hero">
         <div class="hero__glow" aria-hidden="true"></div>
+        <div class="hero__lines" aria-hidden="true"></div>
         <div class="wrap hero__grid">
           <div class="hero__copy">
-            <p class="eyebrow" data-reveal>macOS 11+ · MIT · no account, no telemetry</p>
+            <p class="eyebrow" data-reveal>macOS 11+ · MIT</p>
             <h1 data-reveal>Agentic coding,<br /><span class="hl">on your machine.</span></h1>
-            <p class="lede" data-reveal>
-              ACSA Code is a local-first engineering workbench: a Monaco editor, a map of your
-              codebase, git with a real commit graph, and an agent you can watch, steer,
-              approve and undo. Bring your own model — local, free tier, or frontier.
-            </p>
-            <div class="hero__cta" data-reveal>
-              <a class="cta" href="https://github.com/adetoye-dev/asca-code/releases/latest" rel="noreferrer">Download for macOS</a>
-              <a class="ghost" href="https://github.com/adetoye-dev/asca-code" rel="noreferrer">Read the source</a>
+            <div class="hero__sub">
+              <p class="lede" data-reveal>
+                ACSA Code is a local-first engineering workbench: a Monaco editor, a map of your
+                codebase, git with a real commit graph, and an agent you can watch, steer,
+                approve and undo. Bring your own model — local, free tier, or frontier.
+              </p>
+              <div class="hero__cta" data-reveal>
+                <a class="cta" href="https://github.com/adetoye-dev/acsa-code/releases/latest" rel="noreferrer">Download for macOS</a>
+                <a class="ghost" href="https://github.com/adetoye-dev/acsa-code" rel="noreferrer">Read the source</a>
+              </div>
             </div>
             <p class="fineprint" data-reveal>
               0.2.19 · about 111&nbsp;MB, signed and notarised · the engine and the agent
@@ -168,15 +171,22 @@
         </div>
 
         <div class="wrap split">
-          <nav class="toc" aria-label="Features" id="toc">
-            <a href="#f-map" class="toc__item is-on">Code map</a>
-            <a href="#f-agent" class="toc__item">The agent</a>
-            <a href="#f-editor" class="toc__item">Editor and Cmd-K</a>
-            <a href="#f-repo" class="toc__item">Repository</a>
-            <a href="#f-terminal" class="toc__item">Terminal</a>
-            <a href="#f-market" class="toc__item">Marketplace</a>
-            <a href="#f-models" class="toc__item">Models and cost</a>
-          </nav>
+          <div class="rail">
+            <div class="railnote">
+              <span class="railnote__chip">Real keys</span>
+              <p>These are the app's own shortcuts — the same &#8984;K, &#8984;L and
+              &#8984;J you press in the workbench.</p>
+            </div>
+            <nav class="toc" aria-label="Features" id="toc">
+              <a href="#f-map" class="toc__item is-on">Code map</a>
+              <a href="#f-agent" class="toc__item"><kbd>&#8984;L</kbd> The agent</a>
+              <a href="#f-editor" class="toc__item"><kbd>&#8984;K</kbd> Editor</a>
+              <a href="#f-repo" class="toc__item"><kbd>&#8984;&#8679;G</kbd> Repository</a>
+              <a href="#f-terminal" class="toc__item"><kbd>&#8984;J</kbd> Terminal</a>
+              <a href="#f-market" class="toc__item"><kbd>&#8984;&#8679;X</kbd> Marketplace</a>
+              <a href="#f-models" class="toc__item">Models and cost</a>
+            </nav>
+          </div>
 
           <div class="features">
             <article class="feat" id="f-map" data-reveal>
@@ -483,9 +493,15 @@
       </section>
 
       <section class="band band--tint" id="faq">
-        <div class="wrap wrap--narrow">
-          <p class="eyebrow eyebrow--center" data-reveal>Questions</p>
-          <h2 class="h2 h2--center" data-reveal>The short answers</h2>
+        <div class="wrap faqwrap">
+          <div class="faqwrap__head" data-reveal>
+            <p class="eyebrow">Questions</p>
+            <h2 class="h2">The short answers</h2>
+            <p class="faint">
+              Everything here is checked against what the code actually does — including the
+              parts that are not finished.
+            </p>
+          </div>
           <div class="faq">
             <details data-reveal><summary>What does it cost?</summary><p>The app is MIT licensed and free. You pay only for the model calls you make, to whichever provider you configure — and nothing at all with a local model. Free tiers at Groq, Google and NVIDIA get you started without a card.</p></details>
             <details data-reveal><summary>Do I need to install Python, Node or Codex?</summary><p>No. The Python engine and the agent runtime are inside the app bundle; there is nothing else to install. Node and Python are only needed if you build from source.</p></details>
@@ -494,6 +510,36 @@
             <details data-reveal><summary>Can I use it at work?</summary><p>It is a normal local application: no account, no server of ours, and MIT licensing. Your organisation's rules about which providers may see code still apply — point it at an approved endpoint, or at a local model.</p></details>
             <details data-reveal><summary>Is this a wrapper around Codex?</summary><p>The agent runtime is the open-source Codex CLI (Apache-2.0), bundled with its own home directory so it never touches a Codex install you configured yourself. The workbench around it — editor, code map, git, marketplace, provider management — is this project.</p></details>
             <details data-reveal><summary>How do updates work?</summary><p>The app checks on launch and offers an <em>Update</em> button in the title bar when one is available; it can also update itself from Settings → About. Each release's notes are in the changelog.</p></details>
+          </div>
+        </div>
+      </section>
+
+      <section class="band band--tint" id="price">
+        <div class="wrap wrap--center">
+          <p class="eyebrow eyebrow--center" data-reveal>What it costs</p>
+          <h2 class="h2 h2--center" data-reveal>One price: nothing</h2>
+          <p class="lede lede--center" data-reveal>
+            The app is MIT licensed. The only thing you can spend money on is model calls, and
+            those go to whichever provider you picked — not to us. Free tiers and a local model
+            cost nothing at all.
+          </p>
+          <div class="price" data-reveal>
+            <div class="price__card">
+              <span class="price__label">Everything included</span>
+              <span class="price__amount">$0</span>
+              <span class="price__note">no account · no trial · no seat</span>
+              <a class="cta" href="https://github.com/adetoye-dev/acsa-code/releases/latest" rel="noreferrer">Download for macOS</a>
+              <span class="faint">MIT licensed, source available</span>
+            </div>
+            <ul class="price__list">
+              <li>The editor, the code map, git and the agent</li>
+              <li>Unlimited projects and unlimited turns</li>
+              <li>Eleven providers, or any OpenAI-compatible endpoint</li>
+              <li>A local model, and nothing is metered at all</li>
+              <li>Keys in the OS keychain, never on a server of ours</li>
+              <li>No telemetry to opt out of, because there is none</li>
+              <li>Signed and notarised builds, and a changelog you can read</li>
+            </ul>
           </div>
         </div>
       </section>
@@ -507,8 +553,8 @@
             and ask for something small.
           </p>
           <div class="hero__cta hero__cta--center" data-reveal>
-            <a class="cta" href="https://github.com/adetoye-dev/asca-code/releases/latest" rel="noreferrer">Download for macOS</a>
-            <a class="ghost" href="https://github.com/adetoye-dev/asca-code" rel="noreferrer">Star on GitHub</a>
+            <a class="cta" href="https://github.com/adetoye-dev/acsa-code/releases/latest" rel="noreferrer">Download for macOS</a>
+            <a class="ghost" href="https://github.com/adetoye-dev/acsa-code" rel="noreferrer">Star on GitHub</a>
           </div>
           <p class="fineprint" data-reveal>
             Signed with a Developer ID, notarised and stapled — it opens without a Gatekeeper detour.
@@ -528,23 +574,23 @@
         </div>
         <nav aria-label="Product">
           <h3>Product</h3>
-          <a href="https://github.com/adetoye-dev/asca-code/releases/latest" rel="noreferrer">Download</a>
-          <a href="https://github.com/adetoye-dev/asca-code/blob/dev/CHANGELOG.md" rel="noreferrer">Changelog</a>
-          <a href="https://github.com/adetoye-dev/asca-code/blob/dev/README.md" rel="noreferrer">README</a>
-          <a href="https://github.com/adetoye-dev/asca-code/blob/dev/docs/AGENT_RUNTIME.md" rel="noreferrer">How the agent is wired</a>
+          <a href="https://github.com/adetoye-dev/acsa-code/releases/latest" rel="noreferrer">Download</a>
+          <a href="https://github.com/adetoye-dev/acsa-code/blob/dev/CHANGELOG.md" rel="noreferrer">Changelog</a>
+          <a href="https://github.com/adetoye-dev/acsa-code/blob/dev/README.md" rel="noreferrer">README</a>
+          <a href="https://github.com/adetoye-dev/acsa-code/blob/dev/docs/AGENT_RUNTIME.md" rel="noreferrer">How the agent is wired</a>
         </nav>
         <nav aria-label="Project">
           <h3>Project</h3>
-          <a href="https://github.com/adetoye-dev/asca-code" rel="noreferrer">Source</a>
-          <a href="https://github.com/adetoye-dev/asca-code/issues" rel="noreferrer">Issues</a>
-          <a href="https://github.com/adetoye-dev/asca-code/blob/dev/THIRD-PARTY-NOTICES.md" rel="noreferrer">Third-party notices</a>
-          <a href="https://github.com/adetoye-dev/asca-code/blob/dev/LICENSE" rel="noreferrer">MIT licence</a>
+          <a href="https://github.com/adetoye-dev/acsa-code" rel="noreferrer">Source</a>
+          <a href="https://github.com/adetoye-dev/acsa-code/issues" rel="noreferrer">Issues</a>
+          <a href="https://github.com/adetoye-dev/acsa-code/blob/dev/THIRD-PARTY-NOTICES.md" rel="noreferrer">Third-party notices</a>
+          <a href="https://github.com/adetoye-dev/acsa-code/blob/dev/LICENSE" rel="noreferrer">MIT licence</a>
         </nav>
         <nav aria-label="Support">
           <h3>Support</h3>
-          <a href="https://github.com/adetoye-dev/asca-code/security/advisories/new" rel="noreferrer">Report a vulnerability</a>
-          <a href="https://github.com/adetoye-dev/asca-code/blob/dev/docs/RELEASING.md" rel="noreferrer">Release process</a>
-          <a href="https://github.com/adetoye-dev/asca-code/blob/dev/docs/PRODUCTION_CHECKLIST.md" rel="noreferrer">Production checklist</a>
+          <a href="https://github.com/adetoye-dev/acsa-code/security/advisories/new" rel="noreferrer">Report a vulnerability</a>
+          <a href="https://github.com/adetoye-dev/acsa-code/blob/dev/docs/RELEASING.md" rel="noreferrer">Release process</a>
+          <a href="https://github.com/adetoye-dev/acsa-code/blob/dev/docs/PRODUCTION_CHECKLIST.md" rel="noreferrer">Production checklist</a>
         </nav>
       </div>
       <div class="wrap foot__base">
