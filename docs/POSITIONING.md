@@ -1,7 +1,7 @@
 # Positioning — what this is for, and how we say it
 
 A working document, not copy. It exists because the landing page drifted twice: once into
-someone else's visual language, once into rewording headings. Both times the words were
+someone else's visual language, once into reworded headings. Both times the words were
 written before the argument. This is the argument.
 
 Everything below has to survive one test: **can the app do this today?** If not, it does not
@@ -9,31 +9,108 @@ go on the page, however good it sounds.
 
 ---
 
-## 1. The one sentence
+## 1. The problem: agentic coding is being sold as a walled garden
 
-> **A coding agent that works inside your real project — so every change arrives as a diff
-> you can read, verify with your own build, and undo as a unit.** Your model, your keys, no
-> account.
+The first version of this document led with *"It changed eleven files. Now work out what it
+did."* That is a symptom, not a problem. Nobody changes tools to be slightly less confused.
+A problem statement needs an enemy, a cost, and a person who feels it.
 
-The unit of value is not "AI writes code". Everyone has that. The unit is *a change you can
-still control after it has been made*.
+The enemy is that the two good options each charge a toll:
 
-## 2. The reader's problem, in their words
+- **The CLI agents** — Codex CLI, Claude Code — are terminal-first. Excellent agents, no
+  workbench: no map of the codebase, no review surface, a transcript you scroll, diffs you
+  read through `git`, and no way to put a whole turn back.
+- **The AI IDEs** — Cursor, Copilot, Windsurf — are account-first. A subscription, a login,
+  telemetry, your code through their service, and while a change is reviewable it is not
+  *reversible as a unit*.
+- **Neither tells you the bill.** A subscription hides what a session cost, on purpose.
 
-Not "AI is powerful". The sentence a developer says out loud after using an agent:
+So the person who wants the capability pays for it in one of two currencies: the terminal,
+or their account and their code. That is the sentence to lead with, and it is the reason
+someone would switch rather than be mildly interested.
 
-> "It changed eleven files. Now I have to work out what it did."
+**The one sentence:**
 
-Three versions of the same complaint, depending on what they use today:
+> **An open-source desktop workbench for coding agents: the Codex CLI runtime inside a real
+> app — code map, reviewable diffs, undo a turn, any model behind it, no account.**
 
-- **Chat and paste.** *"I'm copying files into a chat window and copying answers back, and
-  nothing there knows about my build, my tests or my git."*
-- **A CLI agent.** *"It really did the work — and left me a `git diff` to read in a
-  terminal, with no way to put the whole turn back."*
-- **An AI IDE.** *"It's good at the line I'm on. I still can't tell what it did across the
-  repo, and I don't know what it costs me or where my code goes."*
+The unit of value is not "AI writes code". Everyone has that. It is *the agent, without the
+toll* — the workbench the terminal tools never had, and the model freedom the account-first
+tools do not offer.
 
-Pick one of these to lead the page with; do not lead with a category.
+---
+
+## 2. Framing: the three candidates, assessed
+
+### A. "The open-source alternative to X" — yes, but the X decides whether we are honest
+
+Instantly legible, and it borrows demand we would otherwise have to create. Which X:
+
+| Candidate X | Verdict |
+| --- | --- |
+| **Claude Code** | **Do not use.** Anthropic's API is not supported in agent mode — it is a different protocol and the adapter cannot front it (`src/services/agentApproval.ts`, `NOT_ADAPTER_CAPABLE_PROVIDER_IDS`). A reader arriving from that framing plugs in an Anthropic key and hits a documented wall on the first click. That is a false promise, and it would cost us exactly the reader we most want. |
+| **Cursor / Windsurf** | Strong demand, wrong contest. The comparison is autocomplete, polish and instant-apply — where we are not trying to win. Invites a test we fail. |
+| **Codex CLI's missing GUI** | Honest and true, but that is not an "alternative", it is a front end. See C. |
+| **A $20/month agent subscription** | **Honest, legible, and where we actually win.** It names the bill rather than a product, so there is no feature-for-feature comparison to lose. This is the version of "alternative to" I would back. |
+
+The general risk with "alternative to": it frames us as a follower. Naming the *cost* instead
+of a competitor avoids that — nobody is flattered into switching, but a bill is a bill.
+
+### B. "A harness for Codex CLI that works with any model, agent or provider" — accurate, and insider language
+
+This is the most truthful description of the architecture, and it should be a *strength* we
+state rather than something we let a reader discover: keep OpenAI's agent engineering, gain
+the workbench and the choice of engine. The runtime is bundled, pinned, and Apache-2.0, and
+we should say so before someone else does.
+
+Two cautions:
+
+- **"Harness" is insider vocabulary.** Perfect in `docs/`, opaque on a landing page. On the
+  page: "built on Codex CLI" — the reader knows the name, and it is the honest headline fact.
+- **"Any model" is an overclaim.** It is *any OpenAI-compatible provider, or a local model*.
+  Anthropic is out in agent mode, and a provider has to serve either the Responses API or
+  chat completions. The precise sentence belongs on the page, because the imprecise one
+  would be caught.
+
+The sharp version of this frame is the cost argument, which is the strongest thing we have
+that nobody else can say: **the model is a commodity, the workbench is the product.** Put a
+cheap hosted model — the free tiers, a flash-tier, a mini-tier — behind a frontier-grade
+runtime and the same work costs what you decide it costs. (A *local* model is a different
+claim and a weaker one: good for chat and inline edits, usually unable to drive the agent at
+all. See §4.) That is also the bill-by-bill alternative to a subscription.
+
+### C. "It connects you to what you already have" — true, and strongest as a pillar
+
+Nothing to migrate and nothing to sign up for: your folder, your keys, your git, your shell,
+the editor inside VS Code (Monaco), the skills already in `~/.agents/skills`, the repository
+you already run CI on. No account, no import step, no new cloud.
+
+On its own it does not say why to switch — familiarity is a reason not to leave, not a reason
+to arrive. It belongs as a supporting pillar under the walled-garden story, not as the headline.
+
+### Recommendation
+
+Lead with **A's priced version**, support it with **B's mechanism** and **C's trust**, against
+the single enemy in §1. That gives one argument instead of three adjectives:
+
+> **The models are getting cheaper. The wrappers are getting more expensive.**
+> ACSA Code is an open-source workbench for Codex CLI: the agent out of the terminal, with a
+> code map, diffs you can review, an undo for the turn — and any model, local or hosted,
+> behind it. No account. MIT.
+
+### Hero candidates to choose between
+
+Written as problem-first, because the loudest text should be the reader's situation:
+
+1. *"Agentic coding costs $20 a month. Or it costs whatever you point at it."*
+2. *"Rent the model. Own the workbench."*
+3. *"The agent, without the terminal, the account, or the subscription."*
+
+My preference is 2 for the hero — it is nine words, it carries the cost story, and it does
+not require the reader to know any product name — with 3 as the sub-line, where there is
+room to be explanatory.
+
+---
 
 ## 3. What is actually different here
 
