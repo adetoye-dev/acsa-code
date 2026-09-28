@@ -13,9 +13,11 @@ on:
   # skips when *every* changed file matches.
   push:
     branches: [dev, main]
-    paths-ignore: ["site/**", "**.md"]
+    # `dependabot.yml` is in the list because it cannot affect the bundle, and a
+    # config tidy-up should not cost a full verify.
+    paths-ignore: ["site/**", "**.md", ".github/dependabot.yml"]
   pull_request:
-    paths-ignore: ["site/**", "**.md"]
+    paths-ignore: ["site/**", "**.md", ".github/dependabot.yml"]
   workflow_dispatch:
 
 concurrency:
