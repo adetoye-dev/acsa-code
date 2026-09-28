@@ -46,10 +46,29 @@ Dashboard → the Worker → **Settings**:
 | Worker name | must match the `name` in `wrangler.jsonc` (`asca-code`) |
 | Build command | `npm run build` |
 | Deploy command | `npx wrangler deploy` |
+| Non-production deploy command | `npx wrangler versions upload` (only if you want per-branch versions) |
 | Environment variable | `NODE_VERSION=22` |
 
 **Root directory must be `site`.** Pointed at the repository root, the build would install
 the *app's* dependencies and build the *app*.
+
+### The deploy command has to be `wrangler deploy`, not `wrangler preview`
+
+Worth naming because it cost a deploy and is easy to pick up from a setup flow that
+guesses. `npx wrangler preview` is **not a deploy**: it is the open-beta *Preview
+deployments* command, and pointed at a plain static site it fails with
+
+```
+✘ [ERROR] Your Wrangler configuration is missing a 'previews' block to run this command.
+```
+
+because it wants a `previews` block it can scope preview deployments to. The build
+itself is fine in that log — it is the publish step that dies, which makes it look like
+a build failure when it is not.
+
+`npx wrangler deploy` is the one that publishes `dist/`, taking `assets.directory` from
+`wrangler.jsonc`. It also fixes the `Workers Builds` check that would otherwise be red on
+**every** commit and pull request, since each of those runs the same command.
 
 ### Why `wrangler.jsonc` exists — do not delete it
 
