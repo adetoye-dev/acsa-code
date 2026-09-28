@@ -67,12 +67,13 @@
         <div class="wrap hero__grid">
           <div class="hero__copy">
             <p class="eyebrow" data-reveal>macOS 11+ · MIT · no account, no telemetry</p>
-            <h1 data-reveal>Agentic coding,<br /><span class="hl">on your machine.</span></h1>
+            <h1 data-reveal>Agentic coding,<br /><span class="hl">with an undo&nbsp;button.</span></h1>
             <p class="lede" data-reveal>
-              ACSA Code is a local-first engineering workbench: a Monaco editor, a map of your
-              codebase, git with a real commit graph, and an agent you can watch, steer,
-              approve and undo. Bring your own model — local, free tier, or frontier.
-            </p>
+                A workbench, not a chat box: the editor, the code map, git and the agent share
+                one project on disk. Every change arrives as a diff you can read, and any turn
+                can be undone. Bring your own model — with a local one, nothing leaves the
+                machine at all.
+              </p>
             <div class="hero__cta" data-reveal>
               <a class="cta" href="https://github.com/adetoye-dev/acsa-code/releases/latest" rel="noreferrer">Download for macOS</a>
               <a class="ghost" href="https://github.com/adetoye-dev/acsa-code" rel="noreferrer">Read the source</a>
@@ -159,11 +160,10 @@
       <section class="band" id="workbench">
         <div class="wrap wrap--center">
           <p class="eyebrow eyebrow--center" data-reveal>What you get</p>
-          <h2 class="h2 h2--center" data-reveal>Everything the work needs, in one window</h2>
+          <h2 class="h2 h2--center" data-reveal>An agent that has your files, your build and your git</h2>
           <p class="lede lede--center" data-reveal>
-            Not a chat box bolted to a text area. The editor, the map, git and the agent share
-            one project on disk — so navigation, review and the agent never disagree about what
-            the code says.
+            So it stops guessing at your setup. The map tells it what depends on what, the
+            terminal runs your tests, and git shows you what it changed.
           </p>
         </div>
 
@@ -173,22 +173,22 @@
             <a href="#f-agent" class="toc__item">The agent</a>
             <a href="#f-editor" class="toc__item">Editor and Cmd-K</a>
             <a href="#f-repo" class="toc__item">Repository</a>
-            <a href="#f-terminal" class="toc__item">Terminal</a>
+            <a href="#f-verify" class="toc__item">Verification</a>
             <a href="#f-market" class="toc__item">Marketplace</a>
             <a href="#f-models" class="toc__item">Models and cost</a>
           </nav>
 
           <div class="features">
             <article class="feat" id="f-map" data-reveal>
-              <h3>See the shape of a codebase before you touch it</h3>
+              <h3>Understand code you didn't write</h3>
               <p>
-                The code map indexes the project in the background and draws what depends on
-                what, with a plain-language summary of each file's job. It is built locally —
-                no service, no upload.
+                The code map indexes the project as you open it and draws what depends on what,
+                with a plain sentence about what each file is for. Ask what reads a file, and
+                the answer comes from the graph rather than from a guess.
               </p>
               <ul class="ticks">
-                <li>Symbol search stays current: create, delete and agent writes refresh both the tree and the index.</li>
-                <li>Ask what reads a file and get the answer from the graph, not a guess.</li>
+                <li>Search never lies to you: creating, deleting and the agent's own writes all refresh the index.</li>
+                <li>All of it is computed on your machine — no service, and nothing uploaded.</li>
               </ul>
               <div class="shot" aria-hidden="true">
                 <div class="shot__bar"><span>Code map</span><span class="shot__meta">172 files · 0.39 s</span></div>
@@ -197,12 +197,11 @@
             </article>
 
             <article class="feat" id="f-agent" data-reveal>
-              <h3>An agent that shows its work — and gives it back</h3>
+              <h3>See everything it did. Undo any of it.</h3>
               <p>
-                Put the chat in Agent mode and hand it a task. Every tool call is a step you
-                can read as it happens. A turn that changed files reports “Edited N files
-                +X −Y”, one row per file, and <em>Undo this turn</em> restores exactly what it
-                touched.
+                Hand it a task and watch the steps go by. When a turn ends it reports what
+                changed, file by file — and <em>Undo this turn</em> puts those files back
+                exactly as they were.
               </p>
               <ul class="ticks">
                 <li><b>Four approval modes</b> — Read only, Approve for me, Ask me, Full access.</li>
@@ -229,12 +228,11 @@
             </article>
 
             <article class="feat" id="f-editor" data-reveal>
-              <h3>A real editor, and Cmd-K for the change you did not want to type</h3>
+              <h3>Change the code where the code is</h3>
               <p>
-                Monaco — the editor underneath VS Code — with tabs, real paths and real saves.
-                Select code, press ⌘K, describe the change, and accept or reject a diff in
-                place. A whole-file review lands as comments anchored to the lines they are
-                about.
+                The editor is Monaco, with tabs and real saves — the floor, not the pitch. The
+                part worth your time is ⌘K: select a block, describe the change, and accept or
+                reject the diff without leaving the file.
               </p>
               <ul class="ticks">
                 <li>Undo, redo, select, move: the keys you already press.</li>
@@ -259,16 +257,15 @@
             </article>
 
             <article class="feat" id="f-repo" data-reveal>
-              <h3>Commit, review and read your CI without opening a browser</h3>
+              <h3>Read the change, then commit it</h3>
               <p>
-                Stage a whole file or one hunk at a time, read the commit graph, open any
-                commit's files and diff, and compare any commit against your working tree. On
-                a repository it recognises, the page also shows the latest CI run and a failed
-                run's log in place.
+                The diff, the commit graph and the commit box are one screen. Stage a file or a
+                single hunk, compare any commit against your working tree, and on a repository
+                it recognises a failed CI run opens beside the change that caused it.
               </p>
               <ul class="ticks">
-                <li>Renames, quoted paths, merge conflicts and both sides of a diff read correctly.</li>
-                <li>The page hears about checkouts and agent writes it did not make.</li>
+                <li>Stage one hunk, so a stray debug line does not have to ride along with the fix.</li>
+                <li>It stays in step with checkouts and the agent's own writes, so it never misreports what is uncommitted.</li>
               </ul>
               <div class="shot" aria-hidden="true">
                 <div class="shot__bar"><span>Repository</span><span class="shot__meta">main</span></div>
@@ -293,16 +290,17 @@
               </div>
             </article>
 
-            <article class="feat" id="f-terminal" data-reveal>
-              <h3>The terminal, with links you can actually click</h3>
+            <article class="feat" id="f-verify" data-reveal>
+              <h3>It checks its own work with your project's tests</h3>
               <p>
-                A real shell in the bottom dock. When something prints an address —
-                <code>npm run dev</code>, a preview URL, a docs link — it is clickable, and it
-                opens in your browser instead of asking you to select text out of a canvas.
+                The agent is told to verify with what the project already has — your build, your
+                test command, your dev server — instead of inventing a harness for the
+                occasion. It is an expectation rather than a guarantee, and it is the
+                difference between “done” and done.
               </p>
               <ul class="ticks">
-                <li>Move through your last commands, and resize the dock without losing the session.</li>
-                <li>Real OSC 8 hyperlinks route exactly the same way.</li>
+                <li>A run that changed no files says so, rather than being presented as a finished task.</li>
+                <li>The bottom dock is a real shell, so you can watch the verification go by — or take over.</li>
               </ul>
               <div class="shot" aria-hidden="true">
                 <div class="shot__bar"><span>Terminal</span><span class="shot__meta">zsh · aurora-notes</span></div>
@@ -311,12 +309,11 @@
             </article>
 
             <article class="feat" id="f-market" data-reveal>
-              <h3>Install tools and skills the agent will actually use</h3>
+              <h3>Give it your tools and your conventions</h3>
               <p>
-                The marketplace installs real MCP servers and skills into your project.
-                Installed skills are mirrored into the agent runtime's own home, so they reach
-                the prompt — and your host's <code>~/.agents/skills</code> keep working
-                alongside them.
+                Skills and MCP servers install into the project and are handed to the agent —
+                including the skills already on your machine. It can follow the way your team
+                works instead of a generic one.
               </p>
               <ul class="ticks">
                 <li>Every entry shows the command it will run before you install it.</li>
@@ -334,15 +331,15 @@
             </article>
 
             <article class="feat" id="f-models" data-reveal>
-              <h3>Any model. And the numbers to prove what it cost.</h3>
+              <h3>Pay for the model, not for the app</h3>
               <p>
                 Eleven providers ship in the picker, and any OpenAI-compatible endpoint can be
-                added with a base URL and a key. Run a local model and nothing leaves the
-                machine at all. The performance page keeps tokens and cost per provider —
+                added with a base URL and a key. Point it at a free tier — or at a local model,
+                and nothing is metered at all. The ledger keeps tokens and cost per provider,
                 including what a local model saved you.
               </p>
               <ul class="ticks">
-                <li>Keys go to the OS keychain and are write-only: a page can set or clear one, never read it back.</li>
+                <li>Your keys go to the OS keychain: the app can set or clear one and ask whether it exists, never read it back.</li>
                 <li>Small local models often cannot drive tools — the app says so instead of pretending a run worked.</li>
               </ul>
               <div class="shot" aria-hidden="true">
