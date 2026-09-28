@@ -19,12 +19,25 @@ for them, not which file moved.
 
 ### Added
 
-- **A landing page** (`site/`) — what the app is, what it costs, and what it does not
-  do yet. It is its own package with its own lockfile and workflow, so the app's build
-  and release pipeline cannot be affected by it.
+- **A landing page** (`site/`) — the app in its own words, with six real screenshots
+  of it running a real project. It is its own package with its own lockfile and
+  workflow, so the app's build and release pipeline cannot be affected by it. The
+  copy is deliberately short: a category headline, one line of why, one button, and
+  then the app itself, because the screenshots are the argument.
 
 ### Fixed
 
+- **A local agent run now says why it did nothing.** When a local model answers
+  without calling a single tool, the reply said only that no files had changed —
+  which reads like a finished task. It now says the model never reached for a tool,
+  and that a hosted provider is what agent runs want. Measured, not assumed: behind
+  the tool adapter, `qwen3.5:9b`, `qwen2.5-coder:7b` and `deepseek-coder:6.7b` each
+  emit no function call for the runtime's real prompt. The same `qwen3.5:9b` does
+  call tools when the prompt is short, so this is the model's ceiling, not the
+  transport's. `docs/AGENT_RUNTIME.md` has the whole trace.
+- **The provider list no longer calls local engines "Offline"** while the row beside
+  it reads "Connected & Verified". The group is named for where the model runs —
+  now "On-Device" — and the dot keeps carrying the state.
 - **Links the terminal prints are clickable.** Running `npm run dev` printed
   `http://localhost:5173/` as plain text that could not be clicked; any `http(s)`
   URL in a command's output opens in the browser now, hover underline and all.
