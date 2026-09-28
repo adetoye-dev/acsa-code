@@ -146,7 +146,13 @@ export function needsToolAdapter(providerId: string | undefined): boolean {
 export function localToolCallingNote(providerId: string | undefined): string | null {
   const local = localProviderFor(providerId);
   if (!local) return null;
-  return `[agent] ${local} is reachable but cannot run tools: its Responses API drops tool definitions, so this run can read and reply but will not edit files or run commands. Use a hosted provider for agent mode.`;
+  // Reached only when the tool adapter could not be started. Against Ollama's own
+  // Responses endpoint the reason is that it accepts `tools` and ignores them; that
+  // is the plumbing gap the adapter exists to close. When the adapter *is* running
+  // the remaining limit is the model, not the transport — measured, not assumed:
+  // `qwen3.5:9b`, `qwen2.5-coder:7b` and `deepseek-coder:6.7b` each emit no function
+  // call for the runtime's real prompt. See docs/AGENT_RUNTIME.md.
+  return `[agent] ${local} is reachable but this run has no tool adapter: the model can read and reply but will not edit files or run commands. Use a hosted provider for agent mode.`;
 }
 
 /**

@@ -378,7 +378,10 @@ export function AiManagementDashboard({
             <div className="space-y-1.5">
               <div className="flex items-center gap-1.5 px-2.5 py-1 text-2xs font-bold text-zinc-400 uppercase tracking-wider">
                 <Icon icon={Zap} className="w-3 h-3 text-emerald-400" />
-                <span>Local Engines (Offline)</span>
+                {/* "Offline" read as a status, directly above a green "Connected &
+                    Verified" / "Running" row — the group is named for *where* it
+                    runs, and the dot already carries the state. */}
+                <span>Local Engines (On-Device)</span>
               </div>
               <div className="space-y-1">
                 {localProviders.map((p) => {

@@ -49,7 +49,7 @@ import {
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import type { AgentQuestion, PendingFileChange, ProjectIndexState } from "../../hooks/usePipeline";
 import { approvalSummary, countDiffLines } from "../../hooks/usePipeline";
-import type { ApprovalDecision } from "../../services/agentApproval";
+import { localProviderFor, type ApprovalDecision } from "../../services/agentApproval";
 import { formatDuration } from "../../services/agentTurnLimit";
 import { summarizeFailure } from "../../services/providerErrors";
 
@@ -811,8 +811,24 @@ export function AiAssistantChat({
       // measured (paths and sizes) rather than claiming "nothing happened" — a
       // run that answered a question legitimately changes nothing, and a design
       // that was never written is otherwise indistinguishable from one that was.
-      const noChangesNote =
-        "\n\n> No files were added, removed or resized in this run.";
+      //
+      // On a local model the same measurement means something else, and it is not
+      // the user's fault: measured against `qwen3.5:9b`, `qwen2.5-coder:7b` and
+      // `deepseek-coder:6.7b` behind the tool adapter, none of them emitted a
+      // single function call for the runtime's real prompt — they answer in prose,
+      // or write a tool call as a `<read path="…"/>` tag or a ```bash fence, which
+      // nothing executes. A short probe prompt does make `qwen3.5:9b` call tools,
+      // so it is the size of a Codex-shaped prompt that defeats them, not the
+      // plumbing. Say so, and name the way out, instead of leaving a dead turn
+      // that reads like a completed task. See docs/AGENT_RUNTIME.md.
+      // The pipeline already reports a run that never touched a tool as a step
+      // named "No tools used" — that is the measurement, rather than a guess from
+      // the reply text.
+      const usedNoTools = agentSteps.some((step) => step.name === "No tools used");
+      const localRun = Boolean(localProviderFor(selectedModelItem?.providerId)) && usedNoTools;
+      const noChangesNote = localRun
+        ? "\n\n> **Nothing ran.** The model answered without calling a single tool, so no file was read, edited or run. Local models this size usually cannot drive the agent — switch the model picker to a hosted provider (a free tier will do) and send this again."
+        : "\n\n> No files were added, removed or resized in this run.";
       // The runtime's own state, not a guess from the text: it says
       // `waitingOnUserInput` when a skill has asked a question and the turn is
       // holding for an answer. Without this the reply ends the turn looking like

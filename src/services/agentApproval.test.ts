@@ -104,7 +104,12 @@ describe("local providers", () => {
   it("explains a local run that cannot act, and stays quiet otherwise", () => {
     const note = localToolCallingNote("ollama");
     expect(note).toContain("ollama");
-    expect(note).toMatch(/Responses API/);
+    // The behaviour, not the plumbing: it says the run will not edit or run
+    // anything and points at a hosted provider. The mechanism was rewritten once
+    // the adapter made the old wording ("its Responses API drops tool definitions")
+    // describe a path a run no longer takes.
+    expect(note).toMatch(/will not edit files or run commands/);
+    expect(note).toMatch(/hosted provider/);
     expect(localToolCallingNote("deepseek")).toBeNull();
   });
 });

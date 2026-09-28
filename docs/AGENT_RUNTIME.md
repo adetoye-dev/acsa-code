@@ -62,6 +62,50 @@ the Output panel, instead of being presented as a finished task. The check is
 mechanical: `runAgentOnCodex` counts `command_execution`, `file_change`,
 `mcp_tool_call` and `web_search` items.
 
+#### The wall is the prompt, not the plumbing — measured
+
+The adapter exists so a local model *can* call tools at all, and it works: the
+tools reach Ollama. What fails is the model. Reproduced outside the app by
+running the bundled CLI against a copy of the adapter and capturing the exact
+body the adapter forwards upstream:
+
+```
+codex exec --strict-config --skip-git-repo-check \
+  "Add a one-line JSDoc comment above the sortNotes function in src/notes/sort.ts."
+```
+
+The upstream body is 36 KB: a 17 KB Codex system prompt, a 10 KB skills block, an
+`<environment_context>` user item, and seven tools — `exec_command`, `write_stdin`,
+`request_user_input`, `view_image`, `get_goal`, `create_goal`, `update_goal`.
+There is no file-read and no patch tool: everything goes through the shell.
+
+| Model | Real prompt | Short probe prompt (2–7 tools, no Codex system text) |
+| --- | --- | --- |
+| `qwen3.5:9b` | 0 tool calls — prose, then a `<read path="…"/>` tag, or a ```bash fence | **calls tools** (`read_file`) |
+| `qwen2.5-coder:7b` | 0 tool calls — writes the finished edit inside a fence | writes the call as JSON *text* |
+| `deepseek-coder:6.7b` | HTTP 400 — no tool support at all | HTTP 400 |
+
+So the same model that returns a real `tool_calls` array for a short prompt
+returns none for the runtime's own. Three follow-ups were tried against the
+captured body and all failed: a system message telling it to use the function
+interface and never to write tags, the same appended to the main system prompt,
+and the same request non-streamed. Streaming is not the cause.
+
+The practical conclusion is the one the landing page states: **a local model of
+this size is for chat and completions; agent runs want a hosted provider.** The
+panel now says exactly that when a local run ends with zero tool calls, instead
+of the generic "no files changed" line that reads like a finished task.
+
+Two things the same trace settled, because both were assumed rather than checked:
+
+* `tool_call_from_text` recovers a call only when the answer *starts* with `{`,
+  `[` or a fence. `qwen2.5-coder` does exactly that, so the recovery path is live
+  for the case it was written for — a prose prefix would defeat it, but no
+  installed model produces that shape, so the guard stands.
+* The two `system` and two `user` messages in the captured body are Codex's own
+  (`instructions` plus a `<skills_instructions>` developer item), not a
+  duplication introduced by `chat_messages`.
+
 ## Continuing a conversation
 
 A follow-up turn runs `codex exec resume <thread-id>` instead of a fresh `exec`,
