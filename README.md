@@ -327,6 +327,9 @@ Issues and pull requests are welcome. A few things make changes land faster:
   agent runs, or a new provider. It is cheaper to agree on the shape before the code.
 - **Run `npm run verify`** and make sure it is green. If your change touches the UI,
   `npm run gui:check` too.
+- **After a dependency bump, run `npm run notices`.** `THIRD-PARTY-NOTICES.md` is
+  generated from the dependency tree and CI fails if it is stale — which is also why
+  a Dependabot PR arrives red: the bot can change a version but cannot write the file.
 - **Keep the tests honest.** This codebase prefers a test that fails when the fix is
   removed over a test that passes either way, and it documents *why* a thing is the
   way it is — the comments explaining a past bug are load-bearing.

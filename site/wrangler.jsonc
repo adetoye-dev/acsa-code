@@ -1,0 +1,24 @@
+{
+  // Static assets only: there is no Worker script here, and there does not need to be.
+  //
+  // This file exists mainly so Cloudflare stops guessing. Without it, the build's
+  // "configure project" step runs create-cloudflare, which tries to *edit
+  // vite.config.ts* to inject @cloudflare/vite-plugin and fails with "could not find a
+  // valid plugins array" — the failure that took the first deploy down. A committed
+  // wrangler config means the project is already configured, so nothing is rewritten
+  // at build time. That matters here beyond convenience: this site is deliberately a
+  // package the host must not mutate.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Must match the Worker name in the Cloudflare dashboard — Workers Builds
+  // deploys to the name here, and it is `asca-code` (Cloudflare's own setup
+  // derived it from the repository). Change this line if the project is named
+  // differently.
+  "name": "asca-code",
+  "compatibility_date": "2026-09-28",
+  "assets": {
+    "directory": "./dist",
+    // A one-page site: an unknown path gets the 404 page, not index.html pretending
+    // everything exists (a soft 404 that search engines penalise).
+    "not_found_handling": "404-page"
+  }
+}
