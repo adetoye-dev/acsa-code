@@ -38,4 +38,12 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 3
+    groups:
+      # Every action in one pull request. Left ungrouped, this ecosystem's first run
+      # opened five separate PRs — `checkout`, `setup-node`, `setup-python`,
+      # `upload-artifact` and `action-gh-release` — for five two-line YAML edits, each
+      # one carrying a full CI run. Actions have no runtime coupling to each other,
+      # which is exactly what makes them safe to review as a set.
+      actions:
+        patterns: ["*"]
