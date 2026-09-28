@@ -43,6 +43,7 @@ Dashboard → the Worker → **Settings**:
 | Setting | Value |
 | --- | --- |
 | Root directory | `site` |
+| Worker name | must match the `name` in `wrangler.jsonc` (`asca-code`) |
 | Build command | `npm run build` |
 | Deploy command | `npx wrangler deploy` |
 | Environment variable | `NODE_VERSION=22` |
