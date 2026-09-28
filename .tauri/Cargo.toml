@@ -19,7 +19,7 @@ sysinfo = "0.32"
 # unrelated dependency re-resolved the lockfile, took this from 2.11 to 2.12, and
 # the failure only appeared at bundle time — after a tag, on the release build.
 # `tests/test_tauri_versions_align.py` checks every pair now.
-tauri-plugin-updater = "~2.11.0"
+tauri-plugin-updater = "~2.13.0"
 # OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret
 # Service). The cipher is the operating system's; nothing here implements
 # crypto, which is why this can live in a signed shell rather than in the

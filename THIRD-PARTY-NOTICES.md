@@ -14,10 +14,11 @@ distributed and is therefore not listed.
 
 - **@monaco-editor/loader** 1.7.0 — MIT — [github.com/suren-atoyan/monaco-loader](https://github.com/suren-atoyan/monaco-loader)
 - **@monaco-editor/react** 4.7.0 — MIT — [github.com/suren-atoyan/monaco-react](https://github.com/suren-atoyan/monaco-react)
-- **@tauri-apps/api** 2.11.1 — Apache-2.0 OR MIT — [github.com/tauri-apps/tauri](https://github.com/tauri-apps/tauri)
-- **@tauri-apps/plugin-shell** 2.3.6 — MIT OR Apache-2.0 — [github.com/tauri-apps/plugins-workspace](https://github.com/tauri-apps/plugins-workspace)
-- **@tauri-apps/plugin-updater** 2.11.0 — MIT OR Apache-2.0 — [github.com/tauri-apps/plugins-workspace](https://github.com/tauri-apps/plugins-workspace)
+- **@tauri-apps/api** 2.12.0 — Apache-2.0 OR MIT — [github.com/tauri-apps/tauri](https://github.com/tauri-apps/tauri)
+- **@tauri-apps/plugin-shell** 2.4.0 — MIT OR Apache-2.0 — [github.com/tauri-apps/plugins-workspace](https://github.com/tauri-apps/plugins-workspace)
+- **@tauri-apps/plugin-updater** 2.13.0 — MIT OR Apache-2.0 — [github.com/tauri-apps/plugins-workspace](https://github.com/tauri-apps/plugins-workspace)
 - **@tweenjs/tween.js** 25.0.0 — MIT — [github.com/tweenjs/tween.js](https://github.com/tweenjs/tween.js)
+- **@types/trusted-types** 2.0.7 — MIT — [github.com/DefinitelyTyped/DefinitelyTyped](https://github.com/DefinitelyTyped/DefinitelyTyped)
 - **@xterm/addon-fit** 0.11.0 — MIT — [github.com/xtermjs/xterm.js/tree/master/addons/addon-fit](https://github.com/xtermjs/xterm.js/tree/master/addons/addon-fit)
 - **@xterm/xterm** 6.0.0 — MIT — [github.com/xtermjs/xterm.js](https://github.com/xtermjs/xterm.js)
 - **accessor-fn** 1.5.3 — MIT — [github.com/vasturiano/accessor-fn](https://github.com/vasturiano/accessor-fn)
@@ -43,13 +44,13 @@ distributed and is therefore not listed.
 - **d3-timer** 3.0.1 — ISC — [github.com/d3/d3-timer](https://github.com/d3/d3-timer)
 - **d3-transition** 3.0.1 — ISC — [github.com/d3/d3-transition](https://github.com/d3/d3-transition)
 - **d3-zoom** 3.0.0 — ISC — [github.com/d3/d3-zoom](https://github.com/d3/d3-zoom)
-- **dockview** 8.2.0 — MIT — [github.com/dockview/dockview](https://github.com/dockview/dockview)
-- **dockview-core** 8.2.0 — MIT — [github.com/dockview/dockview](https://github.com/dockview/dockview)
-- **dockview-react** 8.2.0 — MIT — [github.com/dockview/dockview](https://github.com/dockview/dockview)
-- **dompurify** 3.4.8 — (MPL-2.0 OR Apache-2.0) — [github.com/cure53/DOMPurify](https://github.com/cure53/DOMPurify)
+- **dockview** 8.3.1 — MIT — [github.com/dockview/dockview](https://github.com/dockview/dockview)
+- **dockview-core** 8.3.1 — MIT — [github.com/dockview/dockview](https://github.com/dockview/dockview)
+- **dockview-react** 8.3.1 — MIT — [github.com/dockview/dockview](https://github.com/dockview/dockview)
+- **dompurify** 3.4.15 — (MPL-2.0 OR Apache-2.0) — [github.com/cure53/DOMPurify](https://github.com/cure53/DOMPurify)
 - **events** 3.3.0 — MIT — [github.com/Gozala/events](https://github.com/Gozala/events)
 - **float-tooltip** 1.7.5 — MIT — [github.com/vasturiano/float-tooltip](https://github.com/vasturiano/float-tooltip)
-- **force-graph** 1.51.4 — MIT — [github.com/vasturiano/force-graph](https://github.com/vasturiano/force-graph)
+- **force-graph** 1.51.5 — MIT — [github.com/vasturiano/force-graph](https://github.com/vasturiano/force-graph)
 - **graphology** 0.26.0 — MIT — [github.com/graphology/graphology](https://github.com/graphology/graphology)
 - **graphology-communities-louvain** 2.0.2 — MIT — [github.com/graphology/graphology](https://github.com/graphology/graphology)
 - **graphology-indices** 0.17.0 — MIT — [github.com/graphology/graphology](https://github.com/graphology/graphology)
@@ -62,10 +63,10 @@ distributed and is therefore not listed.
 - **kapsule** 1.16.3 — MIT — [github.com/vasturiano/kapsule](https://github.com/vasturiano/kapsule)
 - **lodash-es** 4.18.1 — MIT — [github.com/lodash/lodash](https://github.com/lodash/lodash)
 - **loose-envify** 1.4.0 — MIT — [github.com/zertosh/loose-envify](https://github.com/zertosh/loose-envify)
-- **lucide-react** 1.43.0 — ISC — [github.com/lucide-icons/lucide](https://github.com/lucide-icons/lucide)
+- **lucide-react** 1.48.0 — ISC — [github.com/lucide-icons/lucide](https://github.com/lucide-icons/lucide)
 - **marked** 14.0.0 — MIT — [github.com/markedjs/marked](https://github.com/markedjs/marked)
 - **mnemonist** 0.39.8 — MIT — [github.com/yomguithereal/mnemonist](https://github.com/yomguithereal/mnemonist)
-- **monaco-editor** 0.56.0 — MIT — [github.com/microsoft/monaco-editor](https://github.com/microsoft/monaco-editor)
+- **monaco-editor** 0.57.0 — MIT — [github.com/microsoft/monaco-editor](https://github.com/microsoft/monaco-editor)
 - **object-assign** 4.1.1 — MIT — [github.com/sindresorhus/object-assign](https://github.com/sindresorhus/object-assign)
 - **obliterator** 2.0.5 — MIT — [github.com/yomguithereal/obliterator](https://github.com/yomguithereal/obliterator)
 - **pandemonium** 2.4.1 — MIT — [github.com/yomguithereal/pandemonium](https://github.com/yomguithereal/pandemonium)
@@ -78,7 +79,7 @@ distributed and is therefore not listed.
 - **react-kapsule** 2.6.0 — MIT — [github.com/vasturiano/react-kapsule](https://github.com/vasturiano/react-kapsule)
 - **scheduler** 0.23.2 — MIT — [github.com/facebook/react](https://github.com/facebook/react)
 - **state-local** 1.0.7 — MIT — [github.com/suren-atoyan/state-local](https://github.com/suren-atoyan/state-local)
-- **tailwind-merge** 3.6.0 — MIT — [github.com/dcastil/tailwind-merge](https://github.com/dcastil/tailwind-merge)
+- **tailwind-merge** 3.7.0 — MIT — [github.com/dcastil/tailwind-merge](https://github.com/dcastil/tailwind-merge)
 - **tinycolor2** 1.6.0 — MIT — [github.com/bgrins/TinyColor](https://github.com/bgrins/TinyColor)
 
 ## Bundled fonts (SIL Open Font License 1.1)
@@ -291,5 +292,4 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 Declared in the dependency tree but not installed (unfulfilled optional or peer dependencies). None of their code is bundled:
 
-- @types/trusted-types
 - preact-render-to-string
