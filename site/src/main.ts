@@ -48,8 +48,9 @@ interface Segment {
   href?: string;
   /**
    * Styled like a link but not one. The hero terminal is a drawing of the app's
-   * terminal — the address in it is the developer's own machine, so making it a real
-   * `href` would send a visitor to `localhost` or nowhere at all.
+   * terminal — the address in it is the developer's own machine, so a real `href`
+   * would send a visitor to `localhost`, or to whatever they happen to have running
+   * there.
    */
   link?: boolean;
 }
