@@ -402,14 +402,14 @@ the workflow.
 After every tag push, publish the draft:
 
 ```bash
-gh release edit vX.Y.Z --repo adetoye-dev/asca-code --draft=false
+gh release edit vX.Y.Z --repo adetoye-dev/acsa-code --draft=false
 ```
 
 Then confirm the manifest that the app actually reads, not just the one in the
 release:
 
 ```bash
-curl -sL https://github.com/adetoye-dev/asca-code/releases/latest/download/latest.json | head -3
+curl -sL https://github.com/adetoye-dev/acsa-code/releases/latest/download/latest.json | head -3
 ```
 
 Expect the new version. `/latest/` sits behind a CDN, so for a minute or two

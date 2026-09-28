@@ -250,7 +250,7 @@ const TAURI_STUB = `(() => {
           updatedAt: at(3),
           durationSeconds: 487,
           sha: "913d48b1473857d8f3e09176479d1417b3ad9562",
-          url: "https://github.com/adetoye-dev/asca-code/actions/runs/36207865178",
+          url: "https://github.com/adetoye-dev/acsa-code/actions/runs/36207865178",
         },
         {
           id: 36207824813,
@@ -264,7 +264,7 @@ const TAURI_STUB = `(() => {
           updatedAt: at(4),
           durationSeconds: 523,
           sha: "2ff54a5ea2c9d0b93c58b1c5f0a5d8e4a5f2b7c9",
-          url: "https://github.com/adetoye-dev/asca-code/actions/runs/36207824813",
+          url: "https://github.com/adetoye-dev/acsa-code/actions/runs/36207824813",
         },
       ];
     window.__gh = {
@@ -272,7 +272,7 @@ const TAURI_STUB = `(() => {
       reason: null,
       detail: "",
       raw: "",
-      repo: "adetoye-dev/asca-code",
+      repo: "adetoye-dev/acsa-code",
       runs: ghRuns,
       // The branch's own numbers, over the same two runs: one passed, one failed,
       // so a rate of 50% has something to be measured against.
@@ -297,7 +297,7 @@ const TAURI_STUB = `(() => {
           branch: "dev",
           createdAt: at(30),
           updatedAt: at(2),
-          url: "https://github.com/adetoye-dev/asca-code/pull/3",
+          url: "https://github.com/adetoye-dev/acsa-code/pull/3",
           additions: 11582,
           deletions: 2735,
           changedFiles: 97,
@@ -1568,7 +1568,7 @@ const readLanding = async (s) => s.eval(`(() => {
 })()`);
 const landing = await readLanding(session);
 check("the landing state names the repository and lists its checks",
-  landing.body.includes("adetoye-dev/asca-code") &&
+  landing.body.includes("adetoye-dev/acsa-code") &&
     landing.runs.length === 2 &&
     /Release · v0\.2\.17 · success/.test(landing.runs[0] ?? ""),
   JSON.stringify(landing.runs));
@@ -1635,7 +1635,7 @@ await session.eval(`(() => {
 await sleep(300);
 check("clicking a history bar opens the run it stands for",
   (await session.eval(`window.__opens.slice(-1)[0] || ""`)) ===
-    "https://github.com/adetoye-dev/asca-code/actions/runs/36207865178",
+    "https://github.com/adetoye-dev/acsa-code/actions/runs/36207865178",
   JSON.stringify(await session.eval(`window.__opens.slice(-2)`)));
 
 await session.screenshot("repository-landing");

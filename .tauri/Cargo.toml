@@ -4,7 +4,7 @@ version = "0.2.19"
 edition = "2021"
 description = "ACSA Code — local-first AI engineering workbench with deterministic verification"
 license = "MIT"
-repository = "https://github.com/adetoye-dev/asca-code"
+repository = "https://github.com/adetoye-dev/acsa-code"
 
 [dependencies]
 tauri = { version = "2", features = ["devtools"] }
