@@ -143,7 +143,13 @@ const AUDIT = `(() => {
     headingSkips: skips,
     revealed: document.querySelectorAll("[data-reveal].is-in").length,
     reveals: document.querySelectorAll("[data-reveal]").length,
-    typed: (document.getElementById("heroTerm")?.textContent || "").length,
+    h1Text: document.querySelector("h1")?.innerText.replace(/\\s+/g, " ").trim() ?? "",
+    // The first capture has to be the app itself, and it is above the fold: it is
+    // the only evidence on the page that any of this exists.
+    hero: (() => {
+      const img = document.querySelector(".shot--hero img");
+      return img ? { src: img.getAttribute("src"), loaded: img.complete && img.naturalWidth > 0 } : null;
+    })(),
     shots: [...document.querySelectorAll('img[src*="shots/"]')].map((img) => ({
       src: img.getAttribute("src"),
       loaded: img.complete && img.naturalWidth > 0,
@@ -176,7 +182,8 @@ for (const [width, height] of [[1440, 900], [1024, 800], [390, 844]]) {
     check("every link has an href", audit.linksWithoutHref === 0, `${audit.linksWithoutHref} missing`);
     check("headings never skip a level", audit.headingSkips === 0, `${audit.headingSkips} skips`);
     check("scroll reveals fired", audit.revealed === audit.reveals, `${audit.revealed}/${audit.reveals}`);
-    check("the terminal typed itself", audit.typed > 40, `${audit.typed} chars`);
+    check("the h1 states the category", audit.h1Text === "The open-source workbench for coding agents", audit.h1Text);
+    check("the hero shows the app itself", Boolean(audit.hero?.loaded), audit.hero?.src ?? "no .shot--hero img");
     const broken = (audit.shots ?? []).filter((shot) => !shot.loaded);
     check(`${audit.shots?.length ?? 0} real screenshots load`, (audit.shots?.length ?? 0) >= 4 && broken.length === 0,
       broken.map((shot) => shot.src).join(", "));
