@@ -491,3 +491,13 @@ h1 { font-size: clamp(2.6rem, 6vw, 4.15rem); }
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
   [data-reveal] { opacity: 1; translate: none; }
 }
+
+/* ── Real screenshots ────────────────────────────────────────────────────────
+   The captures include the window's own bottom chrome: the status bar, and the
+   shell's prompt line, which shows the machine it was taken on. Fixed ratio plus
+   `object-position: top` trims that off without touching the image. */
+.shot--real img {
+  display: block; width: 100%; height: auto;
+  aspect-ratio: 1800 / 1050;
+  object-fit: cover; object-position: top center;
+}

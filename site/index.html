@@ -67,12 +67,11 @@
         <div class="wrap hero__grid">
           <div class="hero__copy">
             <p class="eyebrow" data-reveal>macOS 11+ · MIT · no account, no telemetry</p>
-            <h1 data-reveal>Agentic coding,<br /><span class="hl">with an undo&nbsp;button.</span></h1>
+            <h1 data-reveal>Rent the model.<br /><span class="hl">Own the workbench.</span></h1>
             <p class="lede" data-reveal>
-                A workbench, not a chat box: the editor, the code map, git and the agent share
-                one project on disk. Every change arrives as a diff you can read, and any turn
-                can be undone. Bring your own model — with a local one, nothing leaves the
-                machine at all.
+                An open-source workbench for coding agents. Codex CLI is the runtime; the model
+                is yours to pick — a free tier, a frontier API, or one on your own machine.
+                Every change arrives as a diff you can read, and any turn can be undone.
               </p>
             <div class="hero__cta" data-reveal>
               <a class="cta" href="https://github.com/adetoye-dev/acsa-code/releases/latest" rel="noreferrer">Download for macOS</a>
@@ -163,7 +162,8 @@
           <h2 class="h2 h2--center" data-reveal>An agent that has your files, your build and your git</h2>
           <p class="lede lede--center" data-reveal>
             So it stops guessing at your setup. The map tells it what depends on what, the
-            terminal runs your tests, and git shows you what it changed.
+            terminal runs your tests, and git shows you what it changed. Every screenshot below
+            is the app itself, on a real project — not a mockup.
           </p>
         </div>
 
@@ -190,9 +190,8 @@
                 <li>Search never lies to you: creating, deleting and the agent's own writes all refresh the index.</li>
                 <li>All of it is computed on your machine — no service, and nothing uploaded.</li>
               </ul>
-              <div class="shot" aria-hidden="true">
-                <div class="shot__bar"><span>Code map</span><span class="shot__meta">172 files · 0.39 s</span></div>
-                <canvas id="mapCanvas" width="900" height="420"></canvas>
+              <div class="shot shot--real">
+                <img src="./shots/code-map.png" alt="The code map in ACSA Code: 35 files, 30 symbols and 32 dependency edges in one TypeScript project, grouped into communities." width="1800" height="1125" loading="lazy" />
               </div>
             </article>
 
@@ -238,21 +237,8 @@
                 <li>Undo, redo, select, move: the keys you already press.</li>
                 <li>Reviews are one thread per line, so clustered findings stay readable.</li>
               </ul>
-              <div class="shot" aria-hidden="true">
-                <div class="shot__bar"><span>⌘K · src/store.ts</span><span class="shot__meta">1 hunk</span></div>
-                <div class="code">
-                  <div class="code__row"><span class="ln">12</span><span class="src">  return {</span></div>
-                  <div class="code__row"><span class="ln">13</span><span class="src">    get: () =&gt; state,</span></div>
-                  <div class="code__row code__row--del"><span class="ln">14</span><span class="src">    setFilter(filter: string) {</span></div>
-                  <div class="code__row code__row--add"><span class="ln">14</span><span class="src">    setFilter(filter: string) {</span></div>
-                  <div class="code__row code__row--add"><span class="ln">15</span><span class="src">      const query = filter.trim().toLowerCase();</span></div>
-                  <div class="code__row"><span class="ln">16</span><span class="src">      state = { ...state, filter };</span></div>
-                  <div class="code__row"><span class="ln">17</span><span class="src">    },</span></div>
-                </div>
-                <div class="shot__foot">
-                  <span class="prompt">trim the filter before storing it</span>
-                  <span class="accept">Accept</span><span class="reject">Reject</span>
-                </div>
+              <div class="shot shot--real">
+                <img src="./shots/editor.png" alt="The editor with store.ts open, the file tree beside it, and a real git log in the terminal below." width="1800" height="1125" loading="lazy" />
               </div>
             </article>
 
@@ -267,26 +253,8 @@
                 <li>Stage one hunk, so a stray debug line does not have to ride along with the fix.</li>
                 <li>It stays in step with checkouts and the agent's own writes, so it never misreports what is uncommitted.</li>
               </ul>
-              <div class="shot" aria-hidden="true">
-                <div class="shot__bar"><span>Repository</span><span class="shot__meta">main</span></div>
-                <div class="repo">
-                  <div class="repo__col">
-                    <p class="repo__label">Changes · 2</p>
-                    <div class="fileref"><span class="swatch swatch--mod"></span>src/store.ts <span class="diff">+8 −2</span></div>
-                    <div class="fileref"><span class="swatch swatch--new"></span>tests/pinned.test.ts <span class="diff">+24 −0</span></div>
-                    <p class="repo__msg">feat: pinned notes sort first</p>
-                    <span class="accept">Commit 2 files</span>
-                  </div>
-                  <div class="repo__col">
-                    <p class="repo__label">History</p>
-                    <ul class="commits">
-                      <li><b>feat</b> expose the version <span>dea6b4e</span></li>
-                      <li><b>style</b> group pinned notes <span>cb9461a</span></li>
-                      <li class="is-lead"><b>feat</b> notes store and filter <span>b9ba72f</span></li>
-                    </ul>
-                    <div class="ci"><span class="ci__pip"></span> CI · success <span class="ci__meta">4m 03s · dev</span></div>
-                  </div>
-                </div>
+              <div class="shot shot--real">
+                <img src="./shots/repository.png" alt="The Repository screen: a clean working tree, the commit box, and twelve commits in the graph with the branch and its remote." width="1800" height="1125" loading="lazy" />
               </div>
             </article>
 
@@ -319,14 +287,8 @@
                 <li>Every entry shows the command it will run before you install it.</li>
                 <li>Trust is on the card: built-in, official, or community.</li>
               </ul>
-              <div class="shot" aria-hidden="true">
-                <div class="shot__bar"><span>Marketplace</span><span class="shot__meta">MCP · skills</span></div>
-                <div class="cards">
-                  <div class="mcard"><img src="./logos/github.svg" alt="" width="22" height="22" /><b>Git</b><span>official · MCP</span></div>
-                  <div class="mcard"><img src="./logos/openai.svg" alt="" width="22" height="22" /><b>Sequential thinking</b><span>official · MCP</span></div>
-                  <div class="mcard"><span class="mcard__mark">◍</span><b>Memory</b><span>official · MCP</span></div>
-                  <div class="mcard"><span class="mcard__mark">◍</span><b>Code review</b><span>built-in · skill</span></div>
-                </div>
+              <div class="shot shot--real">
+                <img src="./shots/marketplace.png" alt="The Marketplace: 19 skills and MCP servers, grouped by category, each showing whether it is built-in, official or community." width="1800" height="1125" loading="lazy" />
               </div>
             </article>
 

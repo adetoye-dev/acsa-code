@@ -144,13 +144,10 @@ const AUDIT = `(() => {
     revealed: document.querySelectorAll("[data-reveal].is-in").length,
     reveals: document.querySelectorAll("[data-reveal]").length,
     typed: (document.getElementById("heroTerm")?.textContent || "").length,
-    canvasPainted: (() => {
-      const c = document.getElementById("mapCanvas");
-      if (!c) return false;
-      const ctx = c.getContext("2d");
-      const d = ctx.getImageData(0, 0, Math.min(c.width, 400), Math.min(c.height, 200)).data;
-      return d.some((v) => v !== 0);
-    })(),
+    shots: [...document.querySelectorAll('img[src*="shots/"]')].map((img) => ({
+      src: img.getAttribute("src"),
+      loaded: img.complete && img.naturalWidth > 0,
+    })),
   };
 })()`;
 
@@ -180,7 +177,9 @@ for (const [width, height] of [[1440, 900], [1024, 800], [390, 844]]) {
     check("headings never skip a level", audit.headingSkips === 0, `${audit.headingSkips} skips`);
     check("scroll reveals fired", audit.revealed === audit.reveals, `${audit.revealed}/${audit.reveals}`);
     check("the terminal typed itself", audit.typed > 40, `${audit.typed} chars`);
-    check("the code map drew", audit.canvasPainted === true);
+    const broken = (audit.shots ?? []).filter((shot) => !shot.loaded);
+    check(`${audit.shots?.length ?? 0} real screenshots load`, (audit.shots?.length ?? 0) >= 4 && broken.length === 0,
+      broken.map((shot) => shot.src).join(", "));
   }
   if (SHOTS) {
     const shot = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
