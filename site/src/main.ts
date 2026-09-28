@@ -122,17 +122,6 @@ const HERO_TERMINAL: Segment[] = [
   { text: "\n  ➜  Network: use --host to expose\n", cls: "t-dim" },
 ];
 
-const TERMINAL_TWO: Segment[] = [
-  { text: "$ ", cls: "t-dim" },
-  { text: "npm test\n\n" },
-  { text: " ✓ tests/pinned.test.ts (4)\n ✓ tests/store.test.ts (6)\n\n", cls: "t-ok" },
-  { text: " Test Files  2 passed (2)\n      Tests  10 passed (10)\n\n" },
-  { text: "$ ", cls: "t-dim" },
-  { text: "npx vite build --report\n" },
-  { text: "  → build guide: ", cls: "t-dim" },
-  { text: "https://vite.dev/guide/build", href: "https://vite.dev/guide/build" },
-  { text: "\n", cls: "t-dim" },
-];
 
 /* ── The code map, drawn ─────────────────────────────────────────────────── */
 interface Node {
@@ -353,8 +342,5 @@ scrollspy();
 
 const heroTerm = document.getElementById("heroTerm");
 if (heroTerm) typeInto(heroTerm, HERO_TERMINAL);
-const term2 = document.getElementById("term2");
-if (term2) typeInto(term2, TERMINAL_TWO);
-
 const mapCanvas = document.getElementById("mapCanvas");
 if (mapCanvas instanceof HTMLCanvasElement) drawMap(mapCanvas);
