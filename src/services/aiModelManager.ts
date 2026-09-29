@@ -13,7 +13,7 @@ import { appStore, type StoredProvider } from "./appStore";
 // The one list of "this is a local engine, not an API". Imported rather than
 // repeated: this codebase has been bitten by the same set existing twice and
 // drifting (see `RESERVED_RUNTIME_PROVIDER_IDS`).
-import { LOCAL_PROVIDER_IDS } from "./agentApproval";
+import { LOCAL_PROVIDER_IDS, RESPONSES_CAPABLE_PROVIDER_IDS, needsToolAdapter } from "./agentApproval";
 
 const STORAGE_KEY = "acsa_code_ai_providers_v4";
 const DEFAULT_PROVIDER_KEY = "acsa_code_default_provider_v4";
@@ -744,9 +744,15 @@ export function autoSelectBestLocalWorker(installedModels: string[]): string | n
   const clean = installedModels.filter(Boolean);
   if (clean.length === 0) return null;
 
-  const scored = clean.map((m) => ({ model: m, score: scoreLocalModel(m) }));
+  // A model that cannot call tools is not a worker, whatever its name scores.
+  // "coder" in the name used to win outright (+50), which is exactly how the app
+  // came to auto-select the one installed model measured unable to drive an agent.
+  const usable = clean.filter((m) => canRunAgent("ollama", m));
+  const pool = usable.length > 0 ? usable : clean;
+
+  const scored = pool.map((m) => ({ model: m, score: scoreLocalModel(m) }));
   scored.sort((a, b) => b.score - a.score);
-  return scored[0]?.model || clean[0];
+  return scored[0]?.model || pool[0];
 }
 
 export function getAutoSelectedLocalWorker(): string {
@@ -833,8 +839,16 @@ export function clearActiveSelectedModel(): void {
  */
 export function syncOllamaModels(
   installedModels: string[],
-  activeModel?: string
+  activeModel?: string,
+  /**
+   * The engine's per-model detail, when the caller has it. Optional so existing
+   * callers keep working, but it is the only source of a model's factual
+   * capabilities — without it, nothing below can tell a model that can call tools
+   * from one that only claims to.
+   */
+  details?: ReadonlyArray<{ tag?: string; name?: string; capabilities?: string[] }>
 ): Record<AIProviderId, AIProviderConfig> {
+  if (details) rememberModelCapabilities("ollama", details);
   const all = loadAllProviders();
   if (!all.ollama) return all;
 
@@ -1025,6 +1039,95 @@ export function resolveInitialSelectedModel(includeLocal: boolean = true): Confi
 
   // 4. No cloud model at all: a local model is the only model.
   return list.find((m) => m.isDefault) || list[0] || null;
+}
+
+/**
+ * What each local model says it can do, remembered from the engine's own probe.
+ *
+ * `/api/show` reports `capabilities` — the same flags Ollama itself uses — and the
+ * engine asks for them on every installed model on each status poll
+ * (`ollama_cli._model_detail`). They were being fetched and then dropped, so the
+ * only thing left to judge a local model by was its *name*. That is how the app
+ * came to auto-select `qwen2.5-coder:7b` for agent work: `scoreLocalModel` gives
+ * any name containing "coder" +50, and that model writes its tool calls out as
+ * text instead of making them.
+ *
+ * Held in memory, never persisted: it is a fact about a model *installed right
+ * now*, and one that has been deleted should not keep its claim.
+ */
+const MODEL_CAPABILITIES = new Map<string, string[]>();
+
+const capabilityKey = (providerId: string, model: string) =>
+  `${(providerId || "").toLowerCase()}::${(model || "").toLowerCase()}`;
+
+/** Remember what the engine reported, for one provider's models. */
+export function rememberModelCapabilities(
+  providerId: string,
+  models: ReadonlyArray<{ tag?: string; name?: string; capabilities?: string[] }> | undefined
+): void {
+  for (const model of models ?? []) {
+    const name = model?.tag || model?.name || "";
+    if (!name) continue;
+    if (Array.isArray(model.capabilities)) {
+      MODEL_CAPABILITIES.set(capabilityKey(providerId, name), model.capabilities);
+    } else {
+      MODEL_CAPABILITIES.delete(capabilityKey(providerId, name));
+    }
+  }
+}
+
+/** What the engine reported for one model, or `undefined` when it has not said. */
+export function modelCapabilities(providerId: string, model: string): string[] | undefined {
+  return MODEL_CAPABILITIES.get(capabilityKey(providerId, model));
+}
+
+/**
+ * Models measured failing to drive the agent, on top of the flag.
+ *
+ * Ollama's `tools` flag is a floor, not a guarantee: it says the model was built
+ * for the tool protocol, not that it can use it under the runtime's real prompt.
+ * Measured against that prompt (`docs/AGENT_RUNTIME.md` has the traces):
+ *
+ *   qwen2.5-coder:7b     flag says tools · writes the call as JSON *text*, nothing runs
+ *   qwen2.5-coder:1.5b   flag says tools · same
+ *   deepseek-coder:6.7b  no tools flag at all · HTTP 400
+ *   qwen3.5:9b           flag says tools · real `tool_calls` on a short prompt
+ *
+ * So `qwen2.5-coder` has to be named here; `deepseek-coder` the flag already
+ * catches. This is evidence, not preference — a model earns an entry with a
+ * reproduction, and loses it when one stops reproducing.
+ */
+const MEASURED_NO_AGENT: ReadonlyArray<RegExp> = [/^qwen2\.5-coder/i, /^deepseek-coder/i];
+
+/**
+ * Whether an agent run can use this model at all.
+ *
+ * Two separate questions, deliberately: can the runtime *reach* the provider, and
+ * can the model *act* once it does. The first is the provider sets; the second is
+ * only answerable for local models, where the engine has asked the daemon.
+ *
+ * Unknown is not a no. A local model whose detail has not been fetched yet stays
+ * eligible, because hiding a model the app cannot judge is worse than a run
+ * failing with the sentence it already prints ("Nothing ran…").
+ */
+export function canRunAgent(providerId: string | undefined, model: string | undefined): boolean {
+  const id = (providerId || "").toLowerCase();
+  const name = (model || "").trim().toLowerCase();
+  if (!id || !name) return false;
+
+  // The runtime speaks Responses and nothing else, so a provider it cannot reach
+  // cannot run an agent turn however capable the model is.
+  if (!RESPONSES_CAPABLE_PROVIDER_IDS.has(id) && !needsToolAdapter(id)) return false;
+
+  if (MEASURED_NO_AGENT.some((pattern) => pattern.test(name))) return false;
+
+  // Cloud models report no capability data anywhere we can read, and every one
+  // this app lists can call tools.
+  if (!LOCAL_PROVIDER_IDS.has(id)) return true;
+
+  const capabilities = modelCapabilities(id, model ?? "");
+  if (!capabilities) return true;
+  return capabilities.includes("tools");
 }
 
 /**

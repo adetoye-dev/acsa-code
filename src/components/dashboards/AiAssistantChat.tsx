@@ -50,6 +50,7 @@ import { ConfirmDialog } from "../ui/ConfirmDialog";
 import type { AgentQuestion, PendingFileChange, ProjectIndexState } from "../../hooks/usePipeline";
 import { approvalSummary, countDiffLines } from "../../hooks/usePipeline";
 import { localProviderFor, type ApprovalDecision } from "../../services/agentApproval";
+import { canRunAgent } from "../../services/aiModelManager";
 import { formatDuration } from "../../services/agentTurnLimit";
 import { summarizeFailure } from "../../services/providerErrors";
 
@@ -62,7 +63,9 @@ interface AiAssistantChatProps {
     activeFilePath?: string,
     selectedCode?: string,
     conversationHistory?: Array<{ role: string; content: string }>,
-    images?: string[]
+    images?: string[],
+    /** `plan` asks the agent runtime for a read-only planning turn. */
+    runMode?: "agent" | "plan"
   ) => void;
   onCancelPipeline: () => void;
   /**
@@ -945,7 +948,7 @@ export function AiAssistantChat({
     try {
       const status = await checkOllamaStatus();
       if (!status.running) return;
-      syncOllamaModels(status.models);
+      syncOllamaModels(status.models, undefined, status.modelsDetails);
       setConfiguredModels(getConfiguredModelsList());
     } catch {
       /* Not installed, or not running: leave the registry as it is. */
@@ -1195,7 +1198,7 @@ export function AiAssistantChat({
     const currentImages = attachedImages.length > 0 ? [...attachedImages] : undefined;
     const promptToSend = trimmed || (currentImages ? "Please analyze the attached image(s)." : "");
 
-    if (workflowMode === "agent") {
+    if (workflowMode === "agent" || workflowMode === "plan") {
       if (status === "running") {
         // Steering, not a second turn: the runtime takes a message into the turn
         // that is already running. This used to `return` here, so pressing Enter
@@ -1250,7 +1253,8 @@ export function AiAssistantChat({
         selectedContext?.path || undefined,
         selectedContext?.code || undefined,
         recentHistory,
-        currentImages
+        currentImages,
+        workflowMode === "plan" ? "plan" : "agent"
       );
       // Optional: add a user message to chat history too, so they see what they asked
       const userMsg: ChatMessage = {
@@ -1322,17 +1326,11 @@ export function AiAssistantChat({
     const providers = loadAllProviders();
     const activeProvider = providers[selectedModelItem.providerId];
 
+    // Chat only, now: plan mode runs on the agent runtime with a read-only
+    // sandbox, so its instruction lives in `AGENT_PLAN_INSTRUCTIONS` rather than
+    // in a system message prepended here.
     const outgoingMessages: Array<{ role: "user" | "assistant" | "system"; content: string }> =
-      workflowMode === "plan"
-        ? [
-            {
-              role: "system" as const,
-              content:
-                "You are an expert software architect and engineering planner in ACSA Code. Your objective is to help the user plan, architect, brainstorm, and evaluate technical trade-offs before writing or editing code. Structure your response with: Requirements Breakdown, Architecture & Trade-offs, Step-by-Step Implementation Plan, Edge Cases to Consider, and Verification Strategies.",
-            },
-            ...nextHistory.map((m) => ({ role: m.role, content: m.content })),
-          ]
-        : nextHistory.map((m) => ({ role: m.role, content: m.content }));
+      nextHistory.map((m) => ({ role: m.role, content: m.content }));
 
     await streamChatCompletion({
       provider: selectedModelItem.providerId,
@@ -1412,14 +1410,31 @@ export function AiAssistantChat({
   };
 
   const renderModelMenu = (isCenterHero: boolean) => {
+    // A run that goes through the runtime needs a model that can call tools —
+    // agent mode and plan mode both do. Chat mode does not: it streams a
+    // completion, so a model that can only talk is exactly the right model there.
+    //
+    // Which models qualify is not a guess. `canRunAgent` asks the provider sets
+    // whether the runtime can reach it at all, and — for a local model, where the
+    // daemon reports facts — whether the model itself supports tools.
+    const needsToolCalling = workflowMode === "agent" || workflowMode === "plan";
+    const eligibleModels = needsToolCalling
+      ? configuredModels.filter((m) => canRunAgent(m.providerId, m.model))
+      : configuredModels;
+    const hiddenCount = configuredModels.length - eligibleModels.length;
+    const selectedIsIneligible =
+      needsToolCalling &&
+      Boolean(selectedModelItem) &&
+      !canRunAgent(selectedModelItem!.providerId, selectedModelItem!.model);
+
     const cleanSearch = modelSearchQuery.trim().toLowerCase();
     const filteredModels = cleanSearch
-      ? configuredModels.filter(
+      ? eligibleModels.filter(
           (m) =>
             m.model.toLowerCase().includes(cleanSearch) ||
             m.providerName.toLowerCase().includes(cleanSearch)
         )
-      : configuredModels;
+      : eligibleModels;
 
     return (
       <div
@@ -1430,12 +1445,35 @@ export function AiAssistantChat({
       >
         <div className="flex items-center justify-between pb-1.5 mb-1.5 border-b border-zinc-800/80 shrink-0">
           <span className="text-3xs font-semibold text-zinc-400 uppercase tracking-wider font-mono">
-            Agent Model
+            {workflowMode === "plan" ? "Plan Model" : workflowMode === "chat" ? "Chat Model" : "Agent Model"}
           </span>
           <span className="text-3xs text-zinc-500 font-mono">
-            {configuredModels.length} models
+            {eligibleModels.length} models
+            {hiddenCount > 0 ? ` · ${hiddenCount} hidden` : ""}
           </span>
         </div>
+
+        {selectedIsIneligible && (
+          <div className="mb-2 shrink-0 rounded-lg border border-amber-500/40 bg-amber-950/40 p-2 space-y-1.5">
+            <p className="text-3xs text-amber-200 font-sans leading-relaxed">
+              <span className="font-mono">{selectedModelItem!.model}</span> cannot drive a{" "}
+              {workflowMode} run — it does not call tools, so a turn would read files and
+              reply without changing anything.
+            </p>
+            {eligibleModels[0] && (
+              <button
+                type="button"
+                onClick={() => {
+                  handleSelectModel(eligibleModels[0]);
+                  setIsModelMenuOpen(false);
+                }}
+                className="w-full px-2 py-1 rounded-md bg-amber-500/90 hover:bg-amber-400 text-amber-950 text-3xs font-semibold font-sans transition-colors"
+              >
+                Use {eligibleModels[0].model} instead
+              </button>
+            )}
+          </div>
+        )}
 
         {configuredModels.length > 5 && (
           <div className="mb-2 shrink-0">
@@ -1451,7 +1489,26 @@ export function AiAssistantChat({
         )}
 
         <div className="flex-1 overflow-y-auto space-y-0.5 min-h-0 pr-0.5">
-          {configuredModels.length === 0 ? (
+          {configuredModels.length > 0 && eligibleModels.length === 0 ? (
+            <div className="px-2.5 py-3 text-center space-y-2">
+              <div className="text-xs text-amber-300 font-sans">None of these can run {workflowMode} mode</div>
+              <p className="text-3xs text-zinc-500 font-sans">
+                {hiddenCount === configuredModels.length
+                  ? "Every model you have configured chats only. Agent and plan runs need one that can call tools."
+                  : "The models that can call tools are filtered out by your search."}
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsModelMenuOpen(false);
+                  openAiManagementDashboard();
+                }}
+                className="w-full px-2.5 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold font-sans transition-colors shadow-sm"
+              >
+                ⚙️ Add a model that can run the agent
+              </button>
+            </div>
+          ) : configuredModels.length === 0 ? (
             <div className="px-2.5 py-3 text-center space-y-2">
               <div className="text-xs text-zinc-400 font-sans">No model available</div>
               <p className="text-3xs text-zinc-500 font-sans">

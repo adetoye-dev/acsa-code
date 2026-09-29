@@ -1054,6 +1054,34 @@ export const AGENT_RUNTIME_FLAGS: readonly string[] = [
  * written as plain text is a dead end, which is why that is called out
  * separately from just "do the work".
  */
+/**
+ * What a plan run is, as the runtime receives it.
+ *
+ * Plan mode used to be a chat completion with a "you are an expert software
+ * architect" system message — which meant it could not read the project, so a
+ * plan was written from whatever the user had pasted. It now runs on the same
+ * runtime as agent mode, read-only, so it can read files and the index it is
+ * planning against. The sandbox is what enforces that (see `PLAN_RUN_APPROVAL`);
+ * this text is what asks for the shape of the answer.
+ */
+export const AGENT_PLAN_INSTRUCTIONS =
+  "This run is planning only. Read the project first — the files, the code map, the index — " +
+  "and plan against what is actually there rather than what you assume. " +
+  "Then structure your answer as: Requirements Breakdown, Architecture & Trade-offs, " +
+  "Step-by-Step Implementation Plan, Edge Cases to Consider, Verification Strategies. " +
+  "Do not write the change: the sandbox is read-only, so an edit cannot land, and a plan " +
+  "that was never written is worth more than a half-applied one.";
+
+/**
+ * The approval mode a plan run is pinned to.
+ *
+ * Not the user's setting, and not a preference: a plan run must not be able to
+ * write. `read-only` is the mode whose `sandboxMode` is `read-only`, which the
+ * runtime enforces below the model — so "planning" cannot decay into editing no
+ * matter what the model decides to do.
+ */
+export const PLAN_RUN_APPROVAL = "read-only" as const;
+
 export const AGENT_BASE_INSTRUCTIONS =
   "You are a coding assistant. Help the user complete their task accurately, use available tools, and verify your changes. " +
   "Verify with the checks the project already has — its build, its tests, its own dev server — and prefer the smallest change that satisfies the request. " +
@@ -1328,7 +1356,9 @@ export interface UsePipelineReturn {
     activeFilePath?: string,
     selectedCode?: string,
     conversationHistory?: Array<{ role: string; content: string }>,
-    images?: string[]
+    images?: string[],
+    /** `plan` runs the same runtime read-only instead of writing. */
+    runMode?: "agent" | "plan"
   ) => Promise<void>;
   cancelPipeline: () => void;
   /**
@@ -2198,11 +2228,13 @@ export function usePipeline(): UsePipelineReturn {
       activeFilePath?: string,
       selectedCode?: string,
       conversationHistory?: Array<{ role: string; content: string }>,
-      images?: string[]
+      images?: string[],
+      runMode: "agent" | "plan" = "agent"
     ) => {
       // The composer owns its own text now (services/chatDraft.ts); every caller
       // that wants to run something passes it in.
       const activePrompt = customPrompt ?? "";
+      const planRun = runMode === "plan";
       if (!activePrompt.trim()) return;
       if (!activeProject.path) {
         setStatus("failed");
@@ -2253,7 +2285,9 @@ export function usePipeline(): UsePipelineReturn {
       ].join("\u0000");
       const resumeThreadId = agentThreadsRef.current.get(threadKey);
 
-      const agentPrompt = buildAgentPrompt(
+      const agentPrompt =
+        (planRun ? `${AGENT_PLAN_INSTRUCTIONS}\n\n` : "") +
+        buildAgentPrompt(
         activePrompt,
         activeFilePath,
         selectedCode,
@@ -2350,7 +2384,12 @@ export function usePipeline(): UsePipelineReturn {
             transport: via,
             // Re-resolved per transport: `ask-me` needs app-server, and silently
             // keeping it on a fallback run would auto-deny rather than ask.
-            approvalMode: resolveApprovalMode(aiSettings.approvalMode ?? DEFAULT_AGENT_APPROVAL_MODE, via),
+            // A plan run ignores the setting entirely: it is read-only by
+            // definition, and the sandbox is the only thing that can guarantee
+            // that.
+            approvalMode: planRun
+              ? PLAN_RUN_APPROVAL
+              : resolveApprovalMode(aiSettings.approvalMode ?? DEFAULT_AGENT_APPROVAL_MODE, via),
             onApproval: (request) => {
               const p = request.params ?? {};
               setPendingApproval({

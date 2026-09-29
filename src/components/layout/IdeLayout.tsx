@@ -1498,7 +1498,7 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
               activityLog={activityLog}
               projectRoot={activeProject.path}
               branch={gitBranch}
-              onRunPipeline={(request, override, activePath, code, history, images) => {
+              onRunPipeline={(request, override, activePath, code, history, images, runMode) => {
                 if (override) {
                   setAiSettings({
                     ...aiSettings,
@@ -1508,7 +1508,7 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
                     baseUrl: override.baseUrl !== undefined ? override.baseUrl : aiSettings.baseUrl,
                   });
                 }
-                runPipeline(request, override, activePath || activeTabPath || undefined, code || selectedCode || undefined, history, images);
+                runPipeline(request, override, activePath || activeTabPath || undefined, code || selectedCode || undefined, history, images, runMode);
               }}
               onCancelPipeline={cancelPipeline}
               onSteerPipeline={steerPipeline}

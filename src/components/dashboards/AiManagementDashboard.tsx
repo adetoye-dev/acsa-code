@@ -106,7 +106,7 @@ export function AiManagementDashboard({
       checkOllamaStatus().then((s) => {
         setOllamaStatus(s);
         if (s.running && s.models.length > 0) {
-          const updated = syncOllamaModels(s.models);
+          const updated = syncOllamaModels(s.models, undefined, s.modelsDetails);
           setProviders(updated);
           if (updated.ollama) {
             setSelectedModel(updated.ollama.selectedModel);
@@ -128,7 +128,7 @@ export function AiManagementDashboard({
       const s = await checkOllamaStatus();
       setOllamaStatus(s);
       if (s.models.length > 0) {
-        const updatedProviders = syncOllamaModels(s.models);
+        const updatedProviders = syncOllamaModels(s.models, undefined, s.modelsDetails);
         setProviders(updatedProviders);
       } else {
         const updated: AIProviderConfig = { ...activeProvider, isConnected: true };
@@ -157,7 +157,7 @@ export function AiManagementDashboard({
 
       const s = await checkOllamaStatus();
       setOllamaStatus(s);
-      const updated = syncOllamaModels(s.models.length > 0 ? s.models : [model], model);
+      const updated = syncOllamaModels(s.models.length > 0 ? s.models : [model], model, s.modelsDetails);
       setProviders(updated);
       setSelectedModel(model);
       onModelSettingsChanged?.();
@@ -175,7 +175,7 @@ export function AiManagementDashboard({
     setSelectedModel(tag);
     handleSaveProvider(tag, baseUrlInput);
     if (ollamaStatus?.models) {
-      const updated = syncOllamaModels(ollamaStatus.models, tag);
+      const updated = syncOllamaModels(ollamaStatus.models, tag, ollamaStatus.modelsDetails);
       setProviders(updated);
     }
   };
@@ -190,7 +190,7 @@ export function AiManagementDashboard({
       if (ok) {
         const s = await checkOllamaStatus();
         setOllamaStatus(s);
-        const updated = syncOllamaModels(s.models);
+        const updated = syncOllamaModels(s.models, undefined, s.modelsDetails);
         setProviders(updated);
         if (selectedModel === tag && s.models.length > 0) {
           setSelectedModel(s.models[0]);
