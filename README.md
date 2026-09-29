@@ -11,9 +11,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/adetoye-dev/asca-code/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/adetoye-dev/asca-code/actions/workflows/ci.yml/badge.svg?branch=dev"></a>
-  <a href="https://github.com/adetoye-dev/asca-code/actions/workflows/release.yml"><img alt="Release" src="https://github.com/adetoye-dev/asca-code/actions/workflows/release.yml/badge.svg?branch=dev"></a>
-  <a href="https://github.com/adetoye-dev/asca-code/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/adetoye-dev/asca-code?label=download&color=6366f1"></a>
+  <a href="https://github.com/adetoye-dev/acsa-code/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/adetoye-dev/acsa-code/actions/workflows/ci.yml/badge.svg?branch=dev"></a>
+  <a href="https://github.com/adetoye-dev/acsa-code/actions/workflows/release.yml"><img alt="Release" src="https://github.com/adetoye-dev/acsa-code/actions/workflows/release.yml/badge.svg?branch=dev"></a>
+  <a href="https://github.com/adetoye-dev/acsa-code/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/adetoye-dev/acsa-code?label=download&color=6366f1"></a>
   <img alt="Platform: macOS 11+" src="https://img.shields.io/badge/platform-macOS%2011%2B-lightgrey">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
 </p>
@@ -111,7 +111,7 @@ See [Build from source](#build-from-source).
 ## Install
 
 Download the latest release from the
-[releases page](https://github.com/adetoye-dev/asca-code/releases/latest) and drag
+[releases page](https://github.com/adetoye-dev/acsa-code/releases/latest) and drag
 **ACSA Code** into Applications.
 
 Release builds are signed with a Developer ID certificate and notarised, so macOS
@@ -220,8 +220,8 @@ macOS for the desktop bundle. Both sidecars are gitignored build outputs, so a f
 checkout builds them first:
 
 ```bash
-git clone https://github.com/adetoye-dev/asca-code.git
-cd asca-code
+git clone https://github.com/adetoye-dev/acsa-code.git
+cd acsa-code
 
 npm ci
 scripts/fetch_codex_sidecar.sh     # the agent runtime (Apache-2.0, pinned version)
@@ -351,7 +351,7 @@ to be true before shipping).
 ## Security
 
 Please **do not** open a public issue for a vulnerability. Use GitHub's private
-[security advisory](https://github.com/adetoye-dev/asca-code/security/advisories/new)
+[security advisory](https://github.com/adetoye-dev/acsa-code/security/advisories/new)
 form instead, with what you did, what happened, and what you expected.
 
 Worth knowing when you assess a report: the runtime is a separate process with its

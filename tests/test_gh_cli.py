@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core-engine"))
 
 import gh_cli  # noqa: E402
 
-# `gh run list -L 2 --json …` against adetoye-dev/asca-code.
+# `gh run list -L 2 --json …` against adetoye-dev/acsa-code.
 REAL_RUNS = [
     {
         "conclusion": "success",
@@ -33,7 +33,7 @@ REAL_RUNS = [
         "headSha": "913d48b1473857d8f3e09176479d1417b3ad9562",
         "status": "completed",
         "updatedAt": "2026-09-26T01:24:33Z",
-        "url": "https://github.com/adetoye-dev/asca-code/actions/runs/36207865178",
+        "url": "https://github.com/adetoye-dev/acsa-code/actions/runs/36207865178",
         "workflowName": "Release",
     },
     {
@@ -46,7 +46,7 @@ REAL_RUNS = [
         "headSha": "913d48b1473857d8f3e09176479d1417b3ad9562",
         "status": "completed",
         "updatedAt": "2026-09-26T01:24:26Z",
-        "url": "https://github.com/adetoye-dev/asca-code/actions/runs/36207824813",
+        "url": "https://github.com/adetoye-dev/acsa-code/actions/runs/36207824813",
         "workflowName": "CI",
     },
 ]
@@ -65,7 +65,7 @@ REAL_PULL_REQUESTS = [
         "reviewDecision": "",
         "title": "Add agent controls, project snapshots, and workbench UI updates",
         "updatedAt": "2026-09-26T01:15:51Z",
-        "url": "https://github.com/adetoye-dev/asca-code/pull/3",
+        "url": "https://github.com/adetoye-dev/acsa-code/pull/3",
     }
 ]
 

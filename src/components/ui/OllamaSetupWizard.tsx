@@ -137,7 +137,7 @@ export function OllamaSetupWizard({ onClose, onComplete, asModal = true }: Ollam
       setPulledModel(model);
       markSetupComplete();
       const s = await checkOllamaStatus();
-      syncOllamaModels(s.models.length > 0 ? s.models : [model], model);
+      syncOllamaModels(s.models.length > 0 ? s.models : [model], model, s.modelsDetails);
       setDefaultProvider("ollama");
       setStep("done");
     } catch (err: any) {
@@ -162,7 +162,7 @@ export function OllamaSetupWizard({ onClose, onComplete, asModal = true }: Ollam
         const s = await checkOllamaStatus();
         setStatus(s);
         if (s.models.length > 0) {
-          syncOllamaModels(s.models);
+          syncOllamaModels(s.models, undefined, s.modelsDetails);
           setDefaultProvider("ollama");
           markSetupComplete();
           setStep("done");
@@ -185,7 +185,7 @@ export function OllamaSetupWizard({ onClose, onComplete, asModal = true }: Ollam
     const modelToSet = pulledModel || selectedModel || (status?.models?.[0]) || "qwen2.5-coder:7b";
     try {
       const models = status?.models && status.models.length > 0 ? status.models : [modelToSet];
-      syncOllamaModels(models, modelToSet);
+      syncOllamaModels(models, modelToSet, status?.modelsDetails);
       setDefaultProvider("ollama");
       markSetupComplete();
     } catch (err) {
@@ -202,7 +202,7 @@ export function OllamaSetupWizard({ onClose, onComplete, asModal = true }: Ollam
 
   function handleSkip() {
     if (status?.models && status.models.length > 0) {
-      syncOllamaModels(status.models);
+      syncOllamaModels(status.models, undefined, status.modelsDetails);
       setDefaultProvider("ollama");
     }
     markSetupComplete();

@@ -257,9 +257,15 @@ describe("steering a running turn", () => {
 describe("undoing the last turn", () => {
   const CHANGES = [{ path: "src/a.ts", kind: "update", diff: "@@ -1 +1 @@\n-old\n+new\n" }];
 
+  // Undo is offered *on the message it belongs to* — it moved out of the composer,
+  // so the transcript has to have a reply for the control to hang off.
+  const withATurn = {
+    chatMessages: [{ id: "turn-1", role: "assistant" as const, content: "Edited src/a.ts" }],
+  };
+
   it("offers to undo the turn that just finished", async () => {
     const undo = vi.fn().mockResolvedValue(null);
-    render(<AiAssistantChat {...baseProps} turnChanges={CHANGES} onUndoLastTurn={undo} />);
+    render(<AiAssistantChat {...baseProps} {...withATurn} turnChanges={CHANGES} onUndoLastTurn={undo} />);
 
     fireEvent.click(screen.getByTestId("undo-last-turn"));
     await waitFor(() => expect(undo).toHaveBeenCalledTimes(1));
@@ -269,7 +275,7 @@ describe("undoing the last turn", () => {
 
   it("says why when it cannot undo, rather than failing silently", async () => {
     const undo = vi.fn().mockResolvedValue("that turn's snapshot is incomplete");
-    render(<AiAssistantChat {...baseProps} turnChanges={CHANGES} onUndoLastTurn={undo} />);
+    render(<AiAssistantChat {...baseProps} {...withATurn} turnChanges={CHANGES} onUndoLastTurn={undo} />);
 
     fireEvent.click(screen.getByTestId("undo-last-turn"));
     await waitFor(() =>

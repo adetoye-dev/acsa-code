@@ -10,7 +10,7 @@
 
 import { useState, useRef, useEffect, useCallback, memo } from "react";
 import { Icon } from "../ui/Icon";
-import { Trash2, Copy, GitCommit, Maximize2, Minimize2, RefreshCw, Square, User, Check, ChevronDown, ChevronRight, Code, Code2, MessageSquare, ListTodo, X, Bot, CheckCircle2, Plus, Folder, GitBranch, ArrowUp, Image as ImageIcon, Database, AlertCircle, AtSign, Sparkles, Shield, Terminal, Search, Wrench, Users, HelpCircle } from "lucide-react";
+import { RotateCcw, Trash2, Copy, GitCommit, Maximize2, Minimize2, RefreshCw, Square, User, Check, ChevronDown, ChevronRight, Code, Code2, MessageSquare, ListTodo, X, Bot, CheckCircle2, Plus, Folder, GitBranch, ArrowUp, Image as ImageIcon, Database, AlertCircle, AtSign, Sparkles, Shield, Terminal, Search, Wrench, Users, HelpCircle } from "lucide-react";
 import type { PipelineStatus, PipelineOutputLine } from "../../types/telemetry";
 import { FOLLOW_THRESHOLD_PX, isFollowingBottom } from "../../services/scrollAnchor";
 import {
@@ -49,7 +49,9 @@ import {
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import type { AgentQuestion, PendingFileChange, ProjectIndexState } from "../../hooks/usePipeline";
 import { approvalSummary, countDiffLines } from "../../hooks/usePipeline";
-import type { ApprovalDecision } from "../../services/agentApproval";
+import { localProviderFor, type ApprovalDecision } from "../../services/agentApproval";
+import { canRunAgent, rememberTierTooSmall } from "../../services/aiModelManager";
+import { writeTextFile } from "../../services/fileAccess";
 import { formatDuration } from "../../services/agentTurnLimit";
 import { summarizeFailure } from "../../services/providerErrors";
 
@@ -62,7 +64,9 @@ interface AiAssistantChatProps {
     activeFilePath?: string,
     selectedCode?: string,
     conversationHistory?: Array<{ role: string; content: string }>,
-    images?: string[]
+    images?: string[],
+    /** `plan` asks the agent runtime for a read-only planning turn. */
+    runMode?: "agent" | "plan"
   ) => void;
   onCancelPipeline: () => void;
   /**
@@ -124,6 +128,16 @@ interface AiAssistantChatProps {
 export type WorkflowMode = "agent" | "chat" | "plan";
 
 /**
+ * What "Implement plan" sends.
+ *
+ * Names the file rather than repeating the plan: the plan is in the project, in
+ * the conversation, and in the index the agent reads — pasting it back in would
+ * be a third copy that can disagree with the other two.
+ */
+export const IMPLEMENT_PLAN_PROMPT =
+  "Implement the plan in implementation-plan.md. Follow it, verify with the project's own build and tests, and say what you deviated from and why.";
+
+/**
  * Stable empties for the optional list props.
  *
  * `agentSteps = []` in a parameter list runs on every render and hands back a new
@@ -163,6 +177,11 @@ export function cleanThoughtText(raw?: string): string {
 }
 
 interface ChatTranscriptProps {
+  /** Set on the message whose turn can be undone; null when there is nothing to undo. */
+  undoMessageId?: string | null;
+  undoBusy?: boolean;
+  undoNotice?: string | null;
+  onUndo?: () => Promise<void>;
   chatMessages: ChatMessage[];
   isWide: boolean;
   status: PipelineStatus;
@@ -206,6 +225,10 @@ const ChatTranscript = memo(function ChatTranscript({
   turnLimitMinutes,
   currentAgentPhase,
   blockedOn,
+  undoMessageId = null,
+  undoBusy = false,
+  undoNotice = null,
+  onUndo,
   turnChanges,
   pendingQuestion,
   selectedModelItem,
@@ -411,6 +434,28 @@ const ChatTranscript = memo(function ChatTranscript({
             {msg.content && (
               <div className={`mt-1 flex items-center ${msg.role === "user" ? "justify-end" : "justify-start"} px-1`}>
                 <CopyMessageButton text={msg.content} />
+                {onUndo && undoMessageId === msg.id && (
+                  <button
+                    type="button"
+                    disabled={undoBusy}
+                    data-testid="undo-last-turn"
+                    onClick={() => void onUndo()}
+                    title="Put these files back to how they were before that turn"
+                    className={`inline-flex items-center gap-1 text-3xs px-1.5 py-0.5 rounded border transition-all select-none ${
+                      undoBusy
+                        ? "text-muted border-transparent cursor-not-allowed"
+                        : "text-muted hover:text-zinc-200 hover:bg-zinc-800/80 border-transparent cursor-pointer"
+                    }`}
+                  >
+                    <Icon icon={RotateCcw} className="w-3 h-3" />
+                    {undoBusy ? "Undoing…" : "Undo"}
+                  </button>
+                )}
+                {onUndo && undoMessageId === msg.id && undoNotice && (
+                  <span role="status" data-testid="undo-notice" className="text-3xs text-muted">
+                    {undoNotice}
+                  </span>
+                )}
               </div>
             )}
           </div>
@@ -573,6 +618,23 @@ export function AiAssistantChat({
     resolveInitialSelectedModel()
   );
 
+  /** Whether this turn's plan reached disk. Drives the line under the reply. */
+  const [planFile, setPlanFile] = useState<{ path: string; ok: boolean } | null>(null);
+  /**
+   * False while a plan run's write is still in flight.
+   *
+   * The reply has to be finalised *after* that write settles: finalising first
+   * built its note from a result that had not arrived yet, which is why the first
+   * plan run finished with no note at all.
+   */
+  const [planWriteSettled, setPlanWriteSettled] = useState(true);
+  const lastWrittenPlan = useRef("");
+  // Whether the run in flight was started as a plan run. Read at send time, not at
+  // finish time: asking `workflowMode` when the turn ends means a mode change
+  // mid-run silently skips the write, and leaves the reply's note disagreeing with
+  // whether the file exists.
+  const planRunRef = useRef(false);
+
   // The registry hydrates asynchronously (from the database, over IPC), so reading
   // it in a mount-time initialiser can legitimately find nothing — and then chat
   // refuses to send with "no model is installed or selected" for the whole session,
@@ -612,7 +674,6 @@ export function AiAssistantChat({
     : `Running on ${effectiveProvider}:${effectiveModel}`;
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
   const [modelSearchQuery, setModelSearchQuery] = useState("");
-  const [isModeMenuOpen, setIsModeMenuOpen] = useState(false);
   // Persistent chat history across tab switches, panel open/close, and reloads
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>(() =>
     loadChatHistory(projectRoot)
@@ -628,6 +689,56 @@ export function AiAssistantChat({
   const [undoBusy, setUndoBusy] = useState(false);
   const [undoNotice, setUndoNotice] = useState<string | null>(null);
   const [workflowMode, setWorkflowMode] = useState<WorkflowMode>("agent");
+
+  // The finalisation effect below reads the mode and the plan-file result, but it
+  // must not *depend* on them: it appends the assistant reply, so re-running it
+  // when either changes would add the same message twice. Mirrored instead, and
+  // kept current by their own effects.
+  const workflowModeRef = useRef(workflowMode);
+  const planFileRef = useRef(planFile);
+  useEffect(() => {
+    workflowModeRef.current = workflowMode;
+  }, [workflowMode]);
+  // Entering or leaving a mode starts a new piece of work. Keeping the previous
+  // plan-file result would leave `Implement plan` enabled for a plan that is no
+  // longer on screen — the control has to mean "the plan you can see is written".
+  useEffect(() => {
+    setPlanFile(null);
+    lastWrittenPlan.current = "";
+  }, [workflowMode]);
+  useEffect(() => {
+    planFileRef.current = planFile;
+  }, [planFile]);
+
+  /**
+   * A plan run's answer *is* the plan, so it gets written down.
+   *
+   * The app writes it, not the model: the plan sandbox is read-only, which is the
+   * only thing that actually stops a planning turn from editing code, and handing
+   * the model write access to "just one file" would give that guarantee up for the
+   * whole project. Rewritten on every plan turn, so the file tracks the plan rather
+   * than keeping the first draft of it.
+   */
+  useEffect(() => {
+    if (!planRunRef.current || status !== "success" || !projectRoot) {
+      setPlanWriteSettled(true);   // nothing to write, so nothing to wait for
+      return;
+    }
+    const plan = (streamingAnswer || "").trim();
+    if (!plan || plan === lastWrittenPlan.current) {
+      setPlanWriteSettled(true);
+      return;
+    }
+    lastWrittenPlan.current = plan;
+    const path = `${projectRoot.replace(/\/+$/, "")}/implementation-plan.md`;
+    writeTextFile(path, `${plan}\n`, projectRoot)
+      .then(() => setPlanFile({ path, ok: true }))
+      .finally(() => setPlanWriteSettled(true))
+      // The plan is still in the transcript, so a failed write is a note about the
+      // file, not a failed run.
+      .catch(() => setPlanFile({ path, ok: false }));
+  }, [status, streamingAnswer, projectRoot]);
+
   const isStreamingRef = useRef(false);
 
   // Multimodal image attachment state
@@ -701,8 +812,6 @@ export function AiAssistantChat({
   /** The row for the model in use, so the list can open on it. */
   const selectedRowRef = useRef<HTMLButtonElement | null>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
-  const modeMenuRef = useRef<HTMLDivElement>(null);
-  const heroModeMenuRef = useRef<HTMLDivElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const heroContextMenuRef = useRef<HTMLDivElement>(null);
   const chatBottomRef = useRef<HTMLDivElement>(null);
@@ -811,8 +920,48 @@ export function AiAssistantChat({
       // measured (paths and sizes) rather than claiming "nothing happened" — a
       // run that answered a question legitimately changes nothing, and a design
       // that was never written is otherwise indistinguishable from one that was.
-      const noChangesNote =
-        "\n\n> No files were added, removed or resized in this run.";
+      //
+      // On a local model the same measurement means something else, and it is not
+      // the user's fault: measured against `qwen3.5:9b`, `qwen2.5-coder:7b` and
+      // `deepseek-coder:6.7b` behind the tool adapter, none of them emitted a
+      // single function call for the runtime's real prompt — they answer in prose,
+      // or write a tool call as a `<read path="…"/>` tag or a ```bash fence, which
+      // nothing executes. A short probe prompt does make `qwen3.5:9b` call tools,
+      // so it is the size of a Codex-shaped prompt that defeats them, not the
+      // plumbing. Say so, and name the way out, instead of leaving a dead turn
+      // that reads like a completed task. See docs/AGENT_RUNTIME.md.
+      // The pipeline already reports a run that never touched a tool as a step
+      // named "No tools used" — that is the measurement, rather than a guess from
+      // the reply text.
+      // A plan run's reply is not final until its write has settled — the note is
+      // built from that result, and there is nothing to say until it is known.
+      if (planRunRef.current && status === "success" && !planWriteSettled) return;
+
+      // Saying "too large for this tier" once is not enough — the next run would
+      // try the same thing again. Remember it, so the picker can drop that model
+      // from the agent list instead of offering a run that cannot fit.
+      if (
+        status === "failed" &&
+        selectedModelItem &&
+        /request too large|tokens per minute|\b413\b/i.test(`${failureDetail ?? ""} ${failureSummary ?? ""}`)
+      ) {
+        rememberTierTooSmall(selectedModelItem.providerId, selectedModelItem.model);
+      }
+
+      const usedNoTools = agentSteps.some((step) => step.name === "No tools used");
+      const localRun = Boolean(localProviderFor(selectedModelItem?.providerId)) && usedNoTools;
+      const noChangesNote = localRun
+        ? "\n\n> **Nothing ran.** The model answered without calling a single tool, so no file was read, edited or run. Local models this size usually cannot drive the agent — switch the model picker to a hosted provider (a free tier will do) and send this again."
+        : "\n\n> No files were added, removed or resized in this run.";
+      // A plan turn is *supposed* to leave the code alone, so "no files were
+      // added" is true and misleading: the file it did write is the plan. Say where
+      // it went, and offer the one next step.
+      const planNote =
+        !planFileRef.current
+          ? ""
+          : planFileRef.current.ok
+          ? `\n\n> Plan written to \`implementation-plan.md\`. **Implement plan** hands it to the agent.`
+          : "\n\n> The plan is above, but `implementation-plan.md` could not be written.";
       // The runtime's own state, not a guess from the text: it says
       // `waitingOnUserInput` when a skill has asked a question and the turn is
       // holding for an answer. Without this the reply ends the turn looking like
@@ -825,7 +974,8 @@ export function AiAssistantChat({
           : "";
       const finalContent = isSuccess
         ? (streamingAnswer || "Task completed.") +
-          (noFileChanges ? noChangesNote : "") +
+          planNote +
+          (noFileChanges && !planRunRef.current ? noChangesNote : "") +
           waitingNote
         : failureDetail || failureSummary
         ? `⚠️ **Task Failed:** ${failureDetail || failureSummary}`
@@ -863,7 +1013,7 @@ export function AiAssistantChat({
       });
     }
     prevStatusRef.current = status;
-  }, [status, failureDetail, failureSummary, noFileChanges, waitingForUser, turnChanges, projectRoot, selectedModelItem, streamingAnswer, streamingThought, agentSteps]);
+  }, [status, failureDetail, failureSummary, noFileChanges, waitingForUser, turnChanges, projectRoot, selectedModelItem, streamingAnswer, streamingThought, agentSteps, planWriteSettled]);
 
   /**
    * Ask Ollama what is actually installed, and believe it.
@@ -929,7 +1079,7 @@ export function AiAssistantChat({
     try {
       const status = await checkOllamaStatus();
       if (!status.running) return;
-      syncOllamaModels(status.models);
+      syncOllamaModels(status.models, undefined, status.modelsDetails);
       setConfiguredModels(getConfiguredModelsList());
     } catch {
       /* Not installed, or not running: leave the registry as it is. */
@@ -1072,12 +1222,6 @@ export function AiAssistantChat({
       ) {
         setIsContextMenuOpen(false);
       }
-      if (
-        (!modeMenuRef.current || !modeMenuRef.current.contains(e.target as Node)) &&
-        (!heroModeMenuRef.current || !heroModeMenuRef.current.contains(e.target as Node))
-      ) {
-        setIsModeMenuOpen(false);
-      }
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
@@ -1161,25 +1305,84 @@ export function AiAssistantChat({
     return () => cancelAnimationFrame(frame);
   }, [chatMessages.length]);
 
+  /**
+   * Whether the reader was following the tail — judged from the last *scroll
+   * event*, not from the box as it looks once an append has landed.
+   *
+   * Appends are in the DOM before this component's effects run, so the follow
+   * effect used to measure after the fact: a tall new message has already pushed
+   * `scrollHeight` up by hundreds of pixels, the container reads as someone who
+   * scrolled away, and the follow is skipped — leaving the end of the reply, and
+   * anything the reply added under it, below the fold. A short reply stays inside
+   * the threshold, which is why only long ones ever failed to follow.
+   */
+  const followingTail = useRef(true);
+  /** Scroll events we caused ourselves, during a smooth scroll, are not the user. */
+  const followLockUntil = useRef(0);
+  useEffect(() => {
+    const el = transcriptScrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      if (performance.now() < followLockUntil.current) return;
+      followingTail.current = isFollowingBottom(el);
+    };
+    onScroll();
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
+  /**
+   * Undo belongs to the turn that just finished, so it is offered *on that
+   * message* rather than in the composer — where it was a control that had
+   * nothing to do with what you were reading.
+   *
+   * The last assistant message is the one it applies to: snapshots are kept per
+   * turn and pruned, so offering it on every old reply would be a surprise rather
+   * than a convenience.
+   */
+  const undoMessageId =
+    status !== "running" && turnChanges.length > 0 && onUndoLastTurn
+      ? [...chatMessages].reverse().find((message) => message.role === "assistant")?.id ?? null
+      : null;
+
+  const handleUndo = useCallback(async () => {
+    if (!onUndoLastTurn) return;
+    setUndoBusy(true);
+    setUndoNotice(null);
+    const failure = await onUndoLastTurn();
+    setUndoNotice(failure ?? "Undone — those files are back to how they were before that turn.");
+    setUndoBusy(false);
+  }, [onUndoLastTurn]);
+
   // Follow the tail on new messages, logs and streaming updates — but only while
   // the reader is already at the bottom. Scrolling up to read something used to
   // be undone by the next token. Streaming lands many times a second and a smooth
   // scroll restarted that often never settles, so those are instant.
+  //
+  // `planFile` is in the list because it grows the transcript *after* the reply is
+  // appended: the Implement plan button appears once the plan reaches disk, and
+  // without following for that the button the reader was just told about is the
+  // one thing still below the fold.
   useEffect(() => {
-    if (!isFollowingBottom(transcriptScrollRef.current)) return;
+    if (!followingTail.current) return;
     const streaming = isStreaming || status === "running";
+    followLockUntil.current = performance.now() + 600;
     chatBottomRef.current?.scrollIntoView({ behavior: streaming ? "auto" : "smooth" });
-  }, [chatMessages, activityLog, isStreaming, streamingAnswer, agentSteps, status]);
+  }, [chatMessages, activityLog, isStreaming, streamingAnswer, agentSteps, status, planFile]);
 
   // ── Handle Send ─────────────────────────────────────────────────────────
-  const handleSend = async (textToSend = draft) => {
+  const handleSend = async (textToSend = draft, forcedMode?: WorkflowMode) => {
+    // The caller may be switching mode and sending in one click (Implement plan).
+    // Reading `workflowMode` here would use the value from before the update, and
+    // the run would take the wrong branch — planning when it was asked to build.
+    const mode = forcedMode ?? workflowMode;
     const trimmed = textToSend.trim();
     if (!trimmed && attachedImages.length === 0) return;
 
     const currentImages = attachedImages.length > 0 ? [...attachedImages] : undefined;
     const promptToSend = trimmed || (currentImages ? "Please analyze the attached image(s)." : "");
 
-    if (workflowMode === "agent") {
+    if (mode === "agent" || mode === "plan") {
       if (status === "running") {
         // Steering, not a second turn: the runtime takes a message into the turn
         // that is already running. This used to `return` here, so pressing Enter
@@ -1221,6 +1424,11 @@ export function AiAssistantChat({
           content: m.content.slice(0, 1500),
         }));
 
+      planRunRef.current = mode === "plan";
+      planFileRef.current = null;
+      lastWrittenPlan.current = "";
+      setPlanFile(null);
+      setPlanWriteSettled(mode !== "plan");
       onRunPipeline(
         promptToSend,
         selectedModelItem
@@ -1234,7 +1442,8 @@ export function AiAssistantChat({
         selectedContext?.path || undefined,
         selectedContext?.code || undefined,
         recentHistory,
-        currentImages
+        currentImages,
+        mode === "plan" ? "plan" : "agent"
       );
       // Optional: add a user message to chat history too, so they see what they asked
       const userMsg: ChatMessage = {
@@ -1294,6 +1503,8 @@ export function AiAssistantChat({
 
     const nextHistory = [...chatMessages, userMsg];
     const withPlaceholder = [...nextHistory, assistantPlaceholder];
+    planRunRef.current = false;
+    setPlanFile(null);
     setChatMessages(withPlaceholder);
     saveChatHistory(withPlaceholder, projectRoot);
     chatDraft.set("");
@@ -1306,17 +1517,11 @@ export function AiAssistantChat({
     const providers = loadAllProviders();
     const activeProvider = providers[selectedModelItem.providerId];
 
+    // Chat only, now: plan mode runs on the agent runtime with a read-only
+    // sandbox, so its instruction lives in `AGENT_PLAN_INSTRUCTIONS` rather than
+    // in a system message prepended here.
     const outgoingMessages: Array<{ role: "user" | "assistant" | "system"; content: string }> =
-      workflowMode === "plan"
-        ? [
-            {
-              role: "system" as const,
-              content:
-                "You are an expert software architect and engineering planner in ACSA Code. Your objective is to help the user plan, architect, brainstorm, and evaluate technical trade-offs before writing or editing code. Structure your response with: Requirements Breakdown, Architecture & Trade-offs, Step-by-Step Implementation Plan, Edge Cases to Consider, and Verification Strategies.",
-            },
-            ...nextHistory.map((m) => ({ role: m.role, content: m.content })),
-          ]
-        : nextHistory.map((m) => ({ role: m.role, content: m.content }));
+      nextHistory.map((m) => ({ role: m.role, content: m.content }));
 
     await streamChatCompletion({
       provider: selectedModelItem.providerId,
@@ -1396,14 +1601,31 @@ export function AiAssistantChat({
   };
 
   const renderModelMenu = (isCenterHero: boolean) => {
+    // A run that goes through the runtime needs a model that can call tools —
+    // agent mode and plan mode both do. Chat mode does not: it streams a
+    // completion, so a model that can only talk is exactly the right model there.
+    //
+    // Which models qualify is not a guess. `canRunAgent` asks the provider sets
+    // whether the runtime can reach it at all, and — for a local model, where the
+    // daemon reports facts — whether the model itself supports tools.
+    const needsToolCalling = workflowMode === "agent" || workflowMode === "plan";
+    const eligibleModels = needsToolCalling
+      ? configuredModels.filter((m) => canRunAgent(m.providerId, m.model))
+      : configuredModels;
+    const hiddenCount = configuredModels.length - eligibleModels.length;
+    const selectedIsIneligible =
+      needsToolCalling &&
+      Boolean(selectedModelItem) &&
+      !canRunAgent(selectedModelItem!.providerId, selectedModelItem!.model);
+
     const cleanSearch = modelSearchQuery.trim().toLowerCase();
     const filteredModels = cleanSearch
-      ? configuredModels.filter(
+      ? eligibleModels.filter(
           (m) =>
             m.model.toLowerCase().includes(cleanSearch) ||
             m.providerName.toLowerCase().includes(cleanSearch)
         )
-      : configuredModels;
+      : eligibleModels;
 
     return (
       <div
@@ -1414,12 +1636,35 @@ export function AiAssistantChat({
       >
         <div className="flex items-center justify-between pb-1.5 mb-1.5 border-b border-zinc-800/80 shrink-0">
           <span className="text-3xs font-semibold text-zinc-400 uppercase tracking-wider font-mono">
-            Agent Model
+            {workflowMode === "plan" ? "Plan Model" : workflowMode === "chat" ? "Chat Model" : "Agent Model"}
           </span>
           <span className="text-3xs text-zinc-500 font-mono">
-            {configuredModels.length} models
+            {eligibleModels.length} models
+            {hiddenCount > 0 ? ` · ${hiddenCount} hidden` : ""}
           </span>
         </div>
+
+        {selectedIsIneligible && (
+          <div className="mb-2 shrink-0 rounded-lg border border-amber-500/40 bg-amber-950/40 p-2 space-y-1.5">
+            <p className="text-3xs text-amber-200 font-sans leading-relaxed">
+              <span className="font-mono">{selectedModelItem!.model}</span> cannot drive a{" "}
+              {workflowMode} run — it does not call tools, so a turn would read files and
+              reply without changing anything.
+            </p>
+            {eligibleModels[0] && (
+              <button
+                type="button"
+                onClick={() => {
+                  handleSelectModel(eligibleModels[0]);
+                  setIsModelMenuOpen(false);
+                }}
+                className="w-full px-2 py-1 rounded-md bg-amber-500/90 hover:bg-amber-400 text-amber-950 text-3xs font-semibold font-sans transition-colors"
+              >
+                Use {eligibleModels[0].model} instead
+              </button>
+            )}
+          </div>
+        )}
 
         {configuredModels.length > 5 && (
           <div className="mb-2 shrink-0">
@@ -1435,7 +1680,26 @@ export function AiAssistantChat({
         )}
 
         <div className="flex-1 overflow-y-auto space-y-0.5 min-h-0 pr-0.5">
-          {configuredModels.length === 0 ? (
+          {configuredModels.length > 0 && eligibleModels.length === 0 ? (
+            <div className="px-2.5 py-3 text-center space-y-2">
+              <div className="text-xs text-amber-300 font-sans">None of these can run {workflowMode} mode</div>
+              <p className="text-3xs text-zinc-500 font-sans">
+                {hiddenCount === configuredModels.length
+                  ? "Every model you have configured chats only. Agent and plan runs need one that can call tools."
+                  : "The models that can call tools are filtered out by your search."}
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsModelMenuOpen(false);
+                  openAiManagementDashboard();
+                }}
+                className="w-full px-2.5 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold font-sans transition-colors shadow-sm"
+              >
+                ⚙️ Add a model that can run the agent
+              </button>
+            </div>
+          ) : configuredModels.length === 0 ? (
             <div className="px-2.5 py-3 text-center space-y-2">
               <div className="text-xs text-zinc-400 font-sans">No model available</div>
               <p className="text-3xs text-zinc-500 font-sans">
@@ -1511,91 +1775,6 @@ export function AiAssistantChat({
       </div>
     );
   };
-
-  const renderModeMenu = (isCenterHero: boolean) => (
-    <div
-      className={`absolute ${
-        isCenterHero ? "top-full mt-2 left-0" : "bottom-full mb-2 left-0"
-      } w-60 max-w-[calc(100vw-1.5rem)] bg-[#18181b]/95 backdrop-blur-xl border border-zinc-700/60 rounded-xl shadow-2xl p-1.5 z-popover space-y-1 text-left`}
-    >
-      {/* Option 1: Agent (Default) */}
-      <button
-        type="button"
-        onClick={() => {
-          setWorkflowMode("agent");
-          setIsModeMenuOpen(false);
-        }}
-        className={`w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-xs transition-all ${
-          workflowMode === "agent"
-            ? "border border-purple-500/60 bg-purple-950/40 text-purple-200 font-medium shadow-sm"
-            : "border border-transparent text-zinc-300 hover:bg-zinc-800/80 hover:text-zinc-100"
-        }`}
-        title="Run a multi-step agent task on your project (Shift+Cmd+I)"
-      >
-        <div className="flex items-center gap-2">
-          <Icon icon={Code2} className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-          <span className="font-medium">Agent</span>
-        </div>
-        <span className="text-3xs font-mono text-zinc-500 tracking-tighter">⇧⌘I</span>
-      </button>
-
-      {/* Option 2: Ask / Chat */}
-      <button
-        type="button"
-        onClick={() => {
-          setWorkflowMode("chat");
-          setIsModeMenuOpen(false);
-        }}
-        className={`w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-xs transition-all ${
-          workflowMode === "chat"
-            ? "border border-purple-500/60 bg-purple-950/40 text-purple-200 font-medium shadow-sm"
-            : "border border-transparent text-zinc-300 hover:bg-zinc-800/80 hover:text-zinc-100"
-        }`}
-        title="Conversational chat, code explanations & questions (Cmd+L)"
-      >
-        <div className="flex items-center gap-2">
-          <Icon icon={MessageSquare} className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-          <span className="font-medium">Ask</span>
-        </div>
-        <span className="text-3xs font-mono text-zinc-500 tracking-tighter">⌘L</span>
-      </button>
-
-      {/* Option 3: Plan / Brainstorm */}
-      <button
-        type="button"
-        onClick={() => {
-          setWorkflowMode("plan");
-          setIsModeMenuOpen(false);
-        }}
-        className={`w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-xs transition-all ${
-          workflowMode === "plan"
-            ? "border border-amber-500/60 bg-amber-950/40 text-amber-200 font-medium shadow-sm"
-            : "border border-transparent text-zinc-300 hover:bg-zinc-800/80 hover:text-zinc-100"
-        }`}
-        title="Architectural planning, task breakdown & brainstorming (Shift+Cmd+P)"
-      >
-        <div className="flex items-center gap-2">
-          <Icon icon={ListTodo} className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-          <span className="font-medium">Plan</span>
-        </div>
-        <span className="text-3xs font-mono text-zinc-500 tracking-tighter">⇧⌘P</span>
-      </button>
-
-      <div className="border-t border-zinc-800/80 my-1" />
-
-      {/* Option 4: Configure Custom Agent */}
-      <button
-        type="button"
-        onClick={() => {
-          setIsModeMenuOpen(false);
-          openAiManagementDashboard();
-        }}
-        className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60 font-sans transition-colors"
-      >
-        Configure Custom Agent...
-      </button>
-    </div>
-  );
 
   const renderAddContextMenu = (isCenterHero: boolean) => (
     <div
@@ -1690,6 +1869,33 @@ export function AiAssistantChat({
         </svg>
         <span className="font-medium">Browser</span>
       </button>
+
+      <div className="my-1 border-t border-zinc-800/80" />
+
+      {/* Modes. Codex puts its plan toggle in this same menu rather than behind a
+          second popup — one place for "what this turn is", which is what the +
+          button already means. Agent is the default, so it is the absence of
+          either of these. */}
+      {([
+        { id: "plan" as const, label: "Plan mode", hint: "Read the project, write the plan", icon: Sparkles, tone: "group-hover:text-amber-300" },
+        { id: "chat" as const, label: "Ask mode", hint: "Chat only — no tools", icon: MessageSquare, tone: "group-hover:text-purple-300" },
+      ]).map((entry) => (
+        <button
+          key={entry.id}
+          type="button"
+          onClick={() => {
+            setIsContextMenuOpen(false);
+            setWorkflowMode((prev) => (prev === entry.id ? "agent" : entry.id));
+          }}
+          className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs text-zinc-200 hover:bg-zinc-800/80 hover:text-white transition-all group"
+        >
+          <Icon icon={entry.icon} className={`w-4 h-4 text-zinc-400 ${entry.tone} shrink-0`} />
+          <span className="font-medium">{entry.label}</span>
+          <span className="text-3xs text-zinc-500 ml-auto shrink-0">
+            {workflowMode === entry.id ? "On" : "Turn on"}
+          </span>
+        </button>
+      ))}
     </div>
   );
 
@@ -1885,8 +2091,7 @@ Click to re-index project.`}
                             type="button"
                             onClick={() => {
                               setIsContextMenuOpen((prev) => !prev);
-                              setIsModeMenuOpen(false);
-                              setIsModelMenuOpen(false);
+                                                      setIsModelMenuOpen(false);
                             }}
                             className={`p-1.5 rounded-lg border transition-colors ${
                               isContextMenuOpen
@@ -1900,31 +2105,21 @@ Click to re-index project.`}
                           {isContextMenuOpen && renderAddContextMenu(true)}
                         </div>
 
-                        {/* Mode Selector Pill */}
-                        <div className="relative" ref={heroModeMenuRef}>
+                        {/* An active mode, as a chip you can dismiss. Agent is the
+                            default and shows nothing: a label that is present every
+                            time is not a label, it is furniture. */}
+                        {workflowMode !== "agent" && (
                           <button
                             type="button"
-                            onClick={() => {
-                              setIsModeMenuOpen((prev) => !prev);
-                              setIsModelMenuOpen(false);
-                            }}
-                            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-zinc-800/40 hover:bg-zinc-800/80 border border-zinc-800/80 text-xs font-medium transition-all shadow-sm ${
-                              workflowMode === "agent"
-                                ? "text-purple-300"
-                                : workflowMode === "plan"
-                                ? "text-amber-300"
-                                : "text-purple-300"
-                            }`}
-                            title={`Current mode: ${workflowMode.toUpperCase()} (Click to switch)`}
+                            onClick={() => setWorkflowMode("agent")}
+                            title={workflowMode === "plan" ? "Turn plan mode off" : "Turn ask mode off"}
+                            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/40 text-amber-200 text-xs font-medium transition-all shadow-sm"
                           >
-                            <span className="font-sans text-2xs font-medium capitalize">
-                              {workflowMode === "chat" ? "Ask" : workflowMode === "plan" ? "Plan" : "Agent"}
-                            </span>
-                            <Icon icon={ChevronDown} className="w-3 h-3 text-zinc-400 ml-0.5" />
+                            <Icon icon={X} className="w-3 h-3 shrink-0" />
+                            <span className="font-sans text-2xs">{workflowMode === "plan" ? "Plan" : "Ask"}</span>
                           </button>
+                        )}
 
-                          {isModeMenuOpen && renderModeMenu(true)}
-                        </div>
 
                         {/* Model Selector Pill */}
                         <div className="relative" ref={heroMenuRef}>
@@ -1932,8 +2127,7 @@ Click to re-index project.`}
                             type="button"
                             onClick={() => {
                               setIsModelMenuOpen((prev) => !prev);
-                              setIsModeMenuOpen(false);
-                            }}
+                                                    }}
                             className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-zinc-800/40 hover:bg-zinc-800/80 border border-zinc-800/80 text-xs text-zinc-200 font-medium transition-all shadow-sm"
                             title={modelTitle}
                           >
@@ -2061,6 +2255,10 @@ Click to re-index project.`}
           {/* Conversation Messages */}
         <ChatTranscript
           chatMessages={chatMessages}
+          undoMessageId={undoMessageId}
+          undoBusy={undoBusy}
+          undoNotice={undoNotice}
+          onUndo={handleUndo}
           isWide={isWide}
           status={status}
           streamingAnswer={streamingAnswer}
@@ -2077,6 +2275,27 @@ Click to re-index project.`}
           onCancelPipeline={onCancelPipeline}
           bottomRef={chatBottomRef}
         />
+
+        {/* Under the plan it refers to, and only once that plan is on disk. It is
+            not in the composer: a control there is present before anything has been
+            planned, which is how it came to start a write-enabled turn naming a file
+            that did not exist. */}
+        {planFile?.ok === true && !isStreaming && (
+          <div className="px-3 pb-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                setWorkflowMode("agent");
+                void handleSend(IMPLEMENT_PLAN_PROMPT, "agent");
+              }}
+              title="Switch to agent mode and implement implementation-plan.md"
+              className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold transition-colors shadow-sm"
+            >
+              <Icon icon={Wrench} className="w-3.5 h-3.5 shrink-0" />
+              <span className="font-sans">Implement plan</span>
+            </button>
+          </div>
+        )}
         </>
       </div>
 
@@ -2098,49 +2317,6 @@ Click to re-index project.`}
               >
                 <Icon icon={AlertCircle} className="w-3.5 h-3.5 mt-0.5 shrink-0 text-amber-300" />
                 <span className="break-words">{steerError}</span>
-              </div>
-            )}
-            {/* The change log said what a turn changed and offered no way back.
-                Only for the turn that just finished: snapshots are kept per turn
-                and pruned, and "undo" after two more turns would be a surprise
-                rather than a convenience. */}
-            {status !== "running" && turnChanges.length > 0 && onUndoLastTurn && (
-              <div className="mb-2 flex items-center justify-between gap-3 rounded-xl border border-zinc-800 bg-zinc-950/60 px-3 py-2">
-                <span className="text-2xs text-zinc-300">
-                  The last turn changed {turnChanges.length}{" "}
-                  {turnChanges.length === 1 ? "file" : "files"}.
-                </span>
-                <button
-                  type="button"
-                  disabled={undoBusy}
-                  data-testid="undo-last-turn"
-                  onClick={async () => {
-                    if (!onUndoLastTurn) return;
-                    setUndoBusy(true);
-                    setUndoNotice(null);
-                    const failure = await onUndoLastTurn();
-                    setUndoNotice(
-                      failure ?? "Undone — those files are back to how they were before that turn.",
-                    );
-                    setUndoBusy(false);
-                  }}
-                  className={`shrink-0 rounded-lg border px-2.5 py-1 text-2xs font-semibold transition-colors ${
-                    undoBusy
-                      ? "border-zinc-800 text-zinc-500 cursor-not-allowed"
-                      : "border-zinc-700 text-zinc-200 hover:border-zinc-600 hover:text-white cursor-pointer"
-                  }`}
-                >
-                  {undoBusy ? "Undoing…" : "Undo"}
-                </button>
-              </div>
-            )}
-            {undoNotice && (
-              <div
-                role="status"
-                data-testid="undo-notice"
-                className="mb-2 rounded-xl border border-zinc-800 bg-zinc-950/60 px-3 py-2 text-2xs leading-relaxed text-zinc-300"
-              >
-                {undoNotice}
               </div>
             )}
             {/* The agent is blocked until this is answered. */}
@@ -2393,8 +2569,7 @@ Click to re-index project.`}
                       type="button"
                       onClick={() => {
                         setIsContextMenuOpen((prev) => !prev);
-                        setIsModeMenuOpen(false);
-                        setIsModelMenuOpen(false);
+                                          setIsModelMenuOpen(false);
                       }}
                       className={`p-1 rounded-md border transition-colors shrink-0 ${
                         isContextMenuOpen
@@ -2408,31 +2583,19 @@ Click to re-index project.`}
                     {isContextMenuOpen && renderAddContextMenu(false)}
                   </div>
 
-                  {/* Mode Selector Pill Button */}
-                  <div className="relative shrink-0" ref={modeMenuRef}>
+                  {/* Active mode as a dismissable chip; see the hero composer. */}
+                  {workflowMode !== "agent" && (
                     <button
                       type="button"
-                      onClick={() => {
-                        setIsModeMenuOpen((prev) => !prev);
-                        setIsModelMenuOpen(false);
-                      }}
-                      className={`flex items-center gap-1 px-2 py-1 rounded-md bg-zinc-800/40 hover:bg-zinc-800/80 border border-zinc-800/80 text-xs font-medium transition-all ${
-                        workflowMode === "agent"
-                          ? "text-purple-300 hover:text-purple-200"
-                          : workflowMode === "plan"
-                          ? "text-amber-300 hover:text-amber-200"
-                          : "text-purple-300 hover:text-purple-200"
-                      }`}
-                      title={`Current Mode: ${workflowMode.toUpperCase()} (Click to switch)`}
+                      onClick={() => setWorkflowMode("agent")}
+                      title={workflowMode === "plan" ? "Turn plan mode off" : "Turn ask mode off"}
+                      className="relative shrink-0 flex items-center gap-1 px-2 py-1 rounded-md bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/40 text-amber-200 text-xs font-medium transition-all"
                     >
-                      <span className="font-sans text-2xs font-medium capitalize">
-                        {workflowMode === "chat" ? "Ask" : workflowMode === "plan" ? "Plan" : "Agent"}
-                      </span>
-                      <Icon icon={ChevronDown} className="w-3 h-3 text-zinc-400 ml-0.5" />
+                      <Icon icon={X} className="w-3 h-3 shrink-0" />
+                      <span className="font-sans text-2xs">{workflowMode === "plan" ? "Plan" : "Ask"}</span>
                     </button>
+                  )}
 
-                    {isModeMenuOpen && renderModeMenu(false)}
-                  </div>
 
                   {/* Model Selector Dropdown Button */}
                   <div className="relative min-w-0 flex-1" ref={menuRef}>
@@ -2440,8 +2603,7 @@ Click to re-index project.`}
                       type="button"
                       onClick={() => {
                         setIsModelMenuOpen((prev) => !prev);
-                        setIsModeMenuOpen(false);
-                      }}
+                                        }}
                       className="w-full flex items-center gap-1.5 px-2 py-1 rounded-md bg-zinc-800/40 hover:bg-zinc-800/80 border border-zinc-800/80 text-xs text-zinc-200 transition-colors"
                       title={modelTitle}
                     >

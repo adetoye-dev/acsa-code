@@ -24,6 +24,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import http_identity
 import tls_context
 
 # Vendors that speak the OpenAI wire format (`GET /models`, bearer token).
@@ -75,7 +76,11 @@ def _resolve_key(provider: str, explicit: str) -> str:
 
 
 def _get(url: str, headers: dict[str, str], timeout: float = 12.0):
-    request = urllib.request.Request(url, headers=headers, method="GET")
+    # Identity first, so a caller cannot forget it and reintroduce the Groq 403 —
+    # `urllib` fills in `Python-urllib/3.x` for any request that does not say.
+    request = urllib.request.Request(
+        url, headers={"User-Agent": http_identity.USER_AGENT, **headers}, method="GET"
+    )
     try:
         # The engine ships frozen, and the interpreter that froze it decides
         # whether TLS can verify anything at all. See tls_context.
@@ -216,7 +221,10 @@ def test_connection(payload: dict) -> dict:
 
 def _post_json(url: str, headers: dict[str, str], body: dict, timeout: float):
     request = urllib.request.Request(
-        url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST"
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={"User-Agent": http_identity.USER_AGENT, **headers},
+        method="POST",
     )
     try:
         # The engine ships frozen, and the interpreter that froze it decides

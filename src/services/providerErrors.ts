@@ -41,7 +41,15 @@ export function explainProviderFailure(raw: string): string | null {
     return `The provider rejected the API key${at}. Check the key for this provider in Settings → Providers & API keys.`;
   }
   if (/\b403\b|forbidden/.test(text)) {
-    return `The provider refused the request as not permitted${at}. The key may lack access to this model.`;
+    // Deliberately not "the key is wrong". A 403 is about *permission*, and the
+    // two things that produce one in practice are the model and the account —
+    // a retired model name comes back 403 from Groq, while a bad key comes back
+    // 401 (measured: every malformed-credential probe against
+    // `api.groq.com/openai/v1/models` answered 401). Blaming the key sent the user
+    // to re-paste a working key while the actual fault was a model that no longer
+    // exists. The provider's own words travel beside this sentence now, so the
+    // reproduction is one line instead of guesswork.
+    return `The provider refused this request as not permitted${at}. That is usually the model or the account rather than the key — check the model is one your account lists.`;
   }
   if (/\b402\b|insufficient|quota|credit|balance/.test(text)) {
     return `The provider says the account has no credit left${at}. Top it up, or pick another provider.`;
@@ -51,6 +59,13 @@ export function explainProviderFailure(raw: string): string | null {
   }
   if (/\b404\b|model[_ ]not[_ ]found|unknown model|does not exist/.test(text)) {
     return `The provider does not recognise that model name${at}. Pick another model for this provider.`;
+  }
+  // A per-minute *rate* limit is not the context window, and the two read alike: a
+  // 413 saying "Request too large … on tokens per minute (TPM): Limit 8000,
+  // Requested 18142" is a tier that cannot take one agent turn, not a conversation
+  // that has grown too long. Checked first so `too many tokens` cannot swallow it.
+  if (/\b413\b|request too large|tokens per minute|\btpm\b/.test(text)) {
+    return `This request is larger than the provider's per-minute token allowance${at}. Most of it is the agent's own instructions and tool schemas, so a tier this small cannot run an agent turn at all — use a provider with a larger allowance, or a local model.`;
   }
   if (/context length|maximum context|too many tokens|context window/.test(text)) {
     return "This conversation no longer fits the model's context window. Start a new chat, or pick a model with a larger one.";

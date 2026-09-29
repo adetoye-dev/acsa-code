@@ -322,6 +322,27 @@ export function buildArchitectureGraph(
     }))
     .sort((a, b) => b.count - a.count);
 
+  // A basename stops identifying anything when several files share it — `index.ts` in
+  // every folder, which is what most TypeScript projects look like, so the map drew five
+  // nodes with the same name and the tooltip was the only way to tell them apart. The
+  // parent folder is the shortest thing that distinguishes them, so only the ambiguous
+  // ones pay for it; a name that is already unique stays as short as it was.
+  const nameCount = new Map<string, number>();
+  for (const node of nodes) nameCount.set(node.label, (nameCount.get(node.label) || 0) + 1);
+  for (const node of nodes) {
+    if ((nameCount.get(node.label) || 0) > 1) {
+      const parent = node.path.split("/").slice(-2, -1)[0];
+      node.label = parent ? `${parent}/${node.label}` : node.path;
+    }
+  }
+  // Two folders can still collide (`a/notes/index.ts`, `b/notes/index.ts`); the path is
+  // the only thing left that is unique, so those fall back to it.
+  const stillAmbiguous = new Map<string, number>();
+  for (const node of nodes) stillAmbiguous.set(node.label, (stillAmbiguous.get(node.label) || 0) + 1);
+  for (const node of nodes) {
+    if ((stillAmbiguous.get(node.label) || 0) > 1) node.label = node.path;
+  }
+
   // Two clusters can share a directory (a big folder split in two), which makes
   // the legend ambiguous — disambiguate with a stable ordinal.
   const labelSeen = new Map<string, number>();

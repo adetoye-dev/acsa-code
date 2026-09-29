@@ -3,19 +3,19 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ACSA Code — agentic coding, on your machine</title>
+    <title>ACSA Code — your model, your workbench</title>
     <meta
       name="description"
-      content="A local-first engineering workbench: Monaco editor, a map of your codebase, git with a real commit graph, and an agent you can watch, steer, approve and undo. Bring your own model. macOS, MIT licensed, no account."
+      content="An open-source workbench for coding agents: Codex CLI is the runtime, the model is yours to pick — a free tier, a frontier API, or one on your own machine. Every change is a diff you can read, and any turn can be undone. macOS, MIT licensed, no account."
     />
     <link rel="canonical" href="https://acsacode.download/" />
     <link rel="icon" href="./apex-icon.svg" type="image/svg+xml" />
     <meta name="theme-color" content="#fbfbfd" />
     <meta property="og:type" content="website" />
-    <meta property="og:title" content="ACSA Code — agentic coding, on your machine" />
+    <meta property="og:title" content="ACSA Code — your model, your workbench" />
     <meta
       property="og:description"
-      content="An editor, a code map and a coding agent in one desktop app. Your projects, keys and history stay on your machine."
+      content="Your model; Your workbench. Steer the Codex CLI agent with any model of your choice — local, free tier, or frontier. Open source, no account, nothing to install."
     />
     <meta property="og:url" content="https://acsacode.download/" />
     <meta property="og:image" content="https://acsacode.download/og.png" />
@@ -31,30 +31,26 @@
         "operatingSystem": "macOS 11+",
         "license": "https://opensource.org/licenses/MIT",
         "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
-        "description": "A local-first agentic engineering workbench: editor, code map, git and an agent you can steer and undo."
+        "description": "An open-source workbench for coding agents: Codex CLI as the runtime, any model behind it, and a diff you can read and undo."
       }
     </script>
   </head>
   <body>
     <a class="skip" href="#main">Skip to content</a>
 
-    <header class="nav" id="nav">
+    <header class="nav">
       <div class="nav__inner">
         <a class="brand" href="#top" aria-label="ACSA Code, home">
           <img class="brand__mark" src="./apex-mark.svg" alt="" width="26" height="26" />
           <span class="brand__name">ACSA&nbsp;Code</span>
         </a>
-        <nav class="nav__links" aria-label="Sections">
-          <a href="#workbench">Workbench</a>
-          <a href="#agent">Agent</a>
-          <a href="#models">Models</a>
-          <a href="#limits">Limits</a>
-          <a href="#faq">FAQ</a>
-        </nav>
-        <div class="nav__actions">
-          <a class="ghost ghost--sm" href="https://github.com/adetoye-dev/asca-code" rel="noreferrer">GitHub</a>
-          <a class="cta cta--sm" href="https://github.com/adetoye-dev/asca-code/releases/latest" rel="noreferrer">Download</a>
-        </div>
+        <!-- One call to action, and nothing else. The page is short enough to
+             scan, and a row of section links in the nav competes with the one
+             thing we want a visitor to do. -->
+        <a class="star" href="https://github.com/adetoye-dev/acsa-code" rel="noreferrer">
+          <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="currentColor"><path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"/></svg>
+          Star on GitHub
+        </a>
       </div>
       <div class="nav__progress" id="navProgress" aria-hidden="true"></div>
     </header>
@@ -62,90 +58,25 @@
     <main id="main">
       <span id="top"></span>
 
+      <!-- Hero: the category, then the one line that says why it is different. -->
       <section class="hero">
         <div class="hero__glow" aria-hidden="true"></div>
-        <div class="wrap hero__grid">
-          <div class="hero__copy">
-            <p class="eyebrow" data-reveal>macOS 11+ · MIT · no account, no telemetry</p>
-            <h1 data-reveal>Agentic coding,<br /><span class="hl">on your machine.</span></h1>
-            <p class="lede" data-reveal>
-              ACSA Code is a local-first engineering workbench: a Monaco editor, a map of your
-              codebase, git with a real commit graph, and an agent you can watch, steer,
-              approve and undo. Bring your own model — local, free tier, or frontier.
-            </p>
-            <div class="hero__cta" data-reveal>
-              <a class="cta" href="https://github.com/adetoye-dev/asca-code/releases/latest" rel="noreferrer">Download for macOS</a>
-              <a class="ghost" href="https://github.com/adetoye-dev/asca-code" rel="noreferrer">Read the source</a>
-            </div>
-            <p class="fineprint" data-reveal>
-              0.2.19 · about 111&nbsp;MB, signed and notarised · the engine and the agent
-              runtime are inside the app
-            </p>
+        <div class="wrap hero__copy">
+          <p class="eyebrow" data-reveal>MIT · macOS 11+ · no account</p>
+          <h1 data-reveal>The open-source workbench<br /><span class="hl">for coding agents</span></h1>
+          <p class="lede" data-reveal>
+            Your model; Your workbench. Steer the Codex CLI agent with any model of your choice — local, free tier, or frontier.
+          </p>
+          <div class="hero__cta" data-reveal>
+            <a class="cta" href="https://github.com/adetoye-dev/acsa-code/releases/latest/download/ACSA-Code.app.zip" rel="noreferrer">Download for macOS</a>
+            <a class="ghost" href="https://github.com/adetoye-dev/acsa-code" rel="noreferrer">Read the source ↗</a>
           </div>
+        </div>
 
-          <!-- The product, drawn in the page rather than pasted in as a picture. -->
-          <div class="hero__art" aria-label="The workbench: file tree, code map, terminal and agent" role="img">
-            <div class="win" data-tilt data-reveal>
-              <div class="win__bar">
-                <img src="./apex-mark.svg" alt="" width="15" height="15" />
-                <span class="win__title">aurora-notes</span>
-                <span class="win__tabs">
-                  <b class="chip chip--on">store.ts</b>
-                  <b class="chip">notes.ts</b>
-                  <b class="chip">index.ts</b>
-                </span>
-              </div>
-              <div class="win__body">
-                <ul class="tree" aria-hidden="true">
-                  <li class="row">README.md</li>
-                  <li class="row row--dir">src</li>
-                  <li class="row row--file row--on">store.ts</li>
-                  <li class="row row--file">notes.ts</li>
-                  <li class="row row--file">index.ts</li>
-                  <li class="row row--dir">tests</li>
-                </ul>
-                <div class="map">
-                  <svg viewBox="0 0 480 280" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-                    <g class="map__edges">
-                      <path d="M86 66 L238 140" />
-                      <path d="M86 66 L238 40" />
-                      <path d="M238 40 L392 92" />
-                      <path d="M238 140 L392 92" />
-                      <path d="M238 140 L110 216" />
-                      <path d="M238 140 L392 214" />
-                      <path d="M392 92 L392 214" />
-                    </g>
-                    <g class="map__nodes">
-                      <g class="node"><circle cx="86" cy="66" r="7" /><text x="86" y="48">store.ts</text></g>
-                      <g class="node"><circle cx="238" cy="40" r="7" /><text x="238" y="22">types.ts</text></g>
-                      <g class="node node--lead"><circle cx="238" cy="140" r="9" /><text x="238" y="122">App.tsx</text></g>
-                      <g class="node"><circle cx="392" cy="92" r="7" /><text x="392" y="74">notes.ts</text></g>
-                      <g class="node"><circle cx="110" cy="216" r="7" /><text x="110" y="198">api.ts</text></g>
-                      <g class="node"><circle cx="392" cy="214" r="7" /><text x="392" y="196">index.ts</text></g>
-                    </g>
-                  </svg>
-                </div>
-              </div>
-            </div>
-
-            <div class="term" data-reveal>
-              <div class="term__bar"><i></i><i></i><i></i><span>terminal</span></div>
-              <pre class="term__body" id="heroTerm" aria-label="A terminal running the dev server"></pre>
-            </div>
-
-            <div class="chatcard" data-reveal>
-              <div class="chatcard__head">
-                <span class="dot"></span> Agent
-                <span class="pill pill--auto">Approve for me</span>
-              </div>
-              <ul class="steps">
-                <li class="step is-done"><i></i>read <code>src/store.ts</code></li>
-                <li class="step is-done"><i></i>edit <code>src/store.ts</code> <span class="diff">+8 −2</span></li>
-                <li class="step is-live"><i></i>run <code>npm test</code></li>
-              </ul>
-              <div class="chatcard__foot"><span class="undo">Undo this turn</span></div>
-            </div>
-          </div>
+        <div class="wrap" data-reveal>
+          <figure class="shot shot--real shot--hero">
+            <img src="./shots/models.webp" alt="The editor with the agent's model picker open over it: 29 models listed across the configured providers, from gpt-5.4-pro down to a local one." width="2224" height="1297" />
+          </figure>
         </div>
 
         <div class="wrap stats" data-reveal>
@@ -156,14 +87,16 @@
         </div>
       </section>
 
+
       <section class="band" id="workbench">
         <div class="wrap wrap--center">
           <p class="eyebrow eyebrow--center" data-reveal>What you get</p>
-          <h2 class="h2 h2--center" data-reveal>Everything the work needs, in one window</h2>
+          <h2 class="h2 h2--center" data-reveal>An agent that has your files, your build and your git</h2>
           <p class="lede lede--center" data-reveal>
-            Not a chat box bolted to a text area. The editor, the map, git and the agent share
-            one project on disk — so navigation, review and the agent never disagree about what
-            the code says.
+            So it stops guessing at your setup. The map tells it what depends on what, the
+            terminal runs your tests, and git shows you what it changed. The editor, the map,
+            the repository and the marketplace below are the app itself, on a real project —
+            not mockups.
           </p>
         </div>
 
@@ -171,38 +104,36 @@
           <nav class="toc" aria-label="Features" id="toc">
             <a href="#f-map" class="toc__item is-on">Code map</a>
             <a href="#f-agent" class="toc__item">The agent</a>
-            <a href="#f-editor" class="toc__item">Editor and Cmd-K</a>
+            <a href="#f-editor" class="toc__item">Editor</a>
             <a href="#f-repo" class="toc__item">Repository</a>
-            <a href="#f-terminal" class="toc__item">Terminal</a>
+            <a href="#f-verify" class="toc__item">Verification</a>
             <a href="#f-market" class="toc__item">Marketplace</a>
             <a href="#f-models" class="toc__item">Models and cost</a>
           </nav>
 
           <div class="features">
             <article class="feat" id="f-map" data-reveal>
-              <h3>See the shape of a codebase before you touch it</h3>
+              <h3>Understand code you didn't write</h3>
               <p>
-                The code map indexes the project in the background and draws what depends on
-                what, with a plain-language summary of each file's job. It is built locally —
-                no service, no upload.
+                The code map indexes the project as you open it and draws what depends on what,
+                with a plain sentence about what each file is for. Ask what reads a file, and
+                the answer comes from the graph rather than from a guess.
               </p>
               <ul class="ticks">
-                <li>Symbol search stays current: create, delete and agent writes refresh both the tree and the index.</li>
-                <li>Ask what reads a file and get the answer from the graph, not a guess.</li>
+                <li>Search never lies to you: creating, deleting and the agent's own writes all refresh the index.</li>
+                <li>All of it is computed on your machine — no service, and nothing uploaded.</li>
               </ul>
-              <div class="shot" aria-hidden="true">
-                <div class="shot__bar"><span>Code map</span><span class="shot__meta">172 files · 0.39 s</span></div>
-                <canvas id="mapCanvas" width="900" height="420"></canvas>
+              <div class="shot shot--real">
+                <img src="./shots/code-map.webp" alt="The code map in ACSA Code: 35 files, 30 symbols and 32 dependency edges in one TypeScript project, grouped into communities." width="2224" height="1297" loading="lazy" />
               </div>
             </article>
 
             <article class="feat" id="f-agent" data-reveal>
-              <h3>An agent that shows its work — and gives it back</h3>
+              <h3>See everything it did. Undo any of it.</h3>
               <p>
-                Put the chat in Agent mode and hand it a task. Every tool call is a step you
-                can read as it happens. A turn that changed files reports “Edited N files
-                +X −Y”, one row per file, and <em>Undo this turn</em> restores exactly what it
-                touched.
+                Hand it a task and watch the steps go by. When a turn ends it reports what
+                changed, file by file — and <em>Undo this turn</em> puts those files back
+                exactly as they were.
               </p>
               <ul class="ticks">
                 <li><b>Four approval modes</b> — Read only, Approve for me, Ask me, Full access.</li>
@@ -226,138 +157,88 @@
                   </p>
                 </div>
               </div>
+              <p class="cap">Drawn, not captured — the step list and the change log as the app shows them after a real turn.</p>
             </article>
 
             <article class="feat" id="f-editor" data-reveal>
-              <h3>A real editor, and Cmd-K for the change you did not want to type</h3>
+              <h3>Change the code where the code is</h3>
               <p>
-                Monaco — the editor underneath VS Code — with tabs, real paths and real saves.
-                Select code, press ⌘K, describe the change, and accept or reject a diff in
-                place. A whole-file review lands as comments anchored to the lines they are
-                about.
+                The editor is Monaco, with tabs and real saves — the floor, not the pitch. The
+                part worth your time is ⌘K: select a block, describe the change, and accept or
+                reject the diff without leaving the file.
               </p>
               <ul class="ticks">
                 <li>Undo, redo, select, move: the keys you already press.</li>
                 <li>Reviews are one thread per line, so clustered findings stay readable.</li>
               </ul>
-              <div class="shot" aria-hidden="true">
-                <div class="shot__bar"><span>⌘K · src/store.ts</span><span class="shot__meta">1 hunk</span></div>
-                <div class="code">
-                  <div class="code__row"><span class="ln">12</span><span class="src">  return {</span></div>
-                  <div class="code__row"><span class="ln">13</span><span class="src">    get: () =&gt; state,</span></div>
-                  <div class="code__row code__row--del"><span class="ln">14</span><span class="src">    setFilter(filter: string) {</span></div>
-                  <div class="code__row code__row--add"><span class="ln">14</span><span class="src">    setFilter(filter: string) {</span></div>
-                  <div class="code__row code__row--add"><span class="ln">15</span><span class="src">      const query = filter.trim().toLowerCase();</span></div>
-                  <div class="code__row"><span class="ln">16</span><span class="src">      state = { ...state, filter };</span></div>
-                  <div class="code__row"><span class="ln">17</span><span class="src">    },</span></div>
-                </div>
-                <div class="shot__foot">
-                  <span class="prompt">trim the filter before storing it</span>
-                  <span class="accept">Accept</span><span class="reject">Reject</span>
-                </div>
+              <div class="shot shot--real">
+                <img src="./shots/editor.webp" alt="The editor with store.ts open, the file tree beside it, and a real git log in the terminal below." width="2224" height="1297" loading="lazy" />
               </div>
             </article>
 
             <article class="feat" id="f-repo" data-reveal>
-              <h3>Commit, review and read your CI without opening a browser</h3>
+              <h3>Read the change, then commit it</h3>
               <p>
-                Stage a whole file or one hunk at a time, read the commit graph, open any
-                commit's files and diff, and compare any commit against your working tree. On
-                a repository it recognises, the page also shows the latest CI run and a failed
-                run's log in place.
+                The diff, the commit graph and the commit box are one screen. Stage a file or a
+                single hunk, compare any commit against your working tree, and on a repository
+                it recognises a failed CI run opens beside the change that caused it.
               </p>
               <ul class="ticks">
-                <li>Renames, quoted paths, merge conflicts and both sides of a diff read correctly.</li>
-                <li>The page hears about checkouts and agent writes it did not make.</li>
+                <li>Stage one hunk, so a stray debug line does not have to ride along with the fix.</li>
+                <li>It stays in step with checkouts and the agent's own writes, so it never misreports what is uncommitted.</li>
               </ul>
-              <div class="shot" aria-hidden="true">
-                <div class="shot__bar"><span>Repository</span><span class="shot__meta">main</span></div>
-                <div class="repo">
-                  <div class="repo__col">
-                    <p class="repo__label">Changes · 2</p>
-                    <div class="fileref"><span class="swatch swatch--mod"></span>src/store.ts <span class="diff">+8 −2</span></div>
-                    <div class="fileref"><span class="swatch swatch--new"></span>tests/pinned.test.ts <span class="diff">+24 −0</span></div>
-                    <p class="repo__msg">feat: pinned notes sort first</p>
-                    <span class="accept">Commit 2 files</span>
-                  </div>
-                  <div class="repo__col">
-                    <p class="repo__label">History</p>
-                    <ul class="commits">
-                      <li><b>feat</b> expose the version <span>dea6b4e</span></li>
-                      <li><b>style</b> group pinned notes <span>cb9461a</span></li>
-                      <li class="is-lead"><b>feat</b> notes store and filter <span>b9ba72f</span></li>
-                    </ul>
-                    <div class="ci"><span class="ci__pip"></span> CI · success <span class="ci__meta">4m 03s · dev</span></div>
-                  </div>
-                </div>
+              <div class="shot shot--real">
+                <img src="./shots/repository.webp" alt="The Repository screen: a clean working tree, the commit box, thirteen commits in the graph, and the latest CI run with its duration, trigger and the three-run history." width="2224" height="1297" loading="lazy" />
               </div>
             </article>
 
-            <article class="feat" id="f-terminal" data-reveal>
-              <h3>The terminal, with links you can actually click</h3>
+            <article class="feat" id="f-verify" data-reveal>
+              <h3>It checks its own work with your project's tests</h3>
               <p>
-                A real shell in the bottom dock. When something prints an address —
-                <code>npm run dev</code>, a preview URL, a docs link — it is clickable, and it
-                opens in your browser instead of asking you to select text out of a canvas.
+                The agent is told to verify with what the project already has — your build, your
+                test command, your dev server — instead of inventing a harness for the
+                occasion. It is an expectation rather than a guarantee, and it is the
+                difference between “done” and done.
               </p>
               <ul class="ticks">
-                <li>Move through your last commands, and resize the dock without losing the session.</li>
-                <li>Real OSC 8 hyperlinks route exactly the same way.</li>
+                <li>A run that changed no files says so, rather than being presented as a finished task.</li>
+                <li>The bottom dock is a real shell, so you can watch the verification go by — or take over.</li>
               </ul>
-              <div class="shot" aria-hidden="true">
-                <div class="shot__bar"><span>Terminal</span><span class="shot__meta">zsh · aurora-notes</span></div>
-                <pre class="term2" id="term2"></pre>
+              <div class="shot shot--real">
+                <img src="./shots/tests.webp" alt="The app's own terminal running the project's test command: six test files and seven tests passed in 95 milliseconds." width="2224" height="1297" loading="lazy" />
               </div>
             </article>
 
             <article class="feat" id="f-market" data-reveal>
-              <h3>Install tools and skills the agent will actually use</h3>
+              <h3>Give it your tools and your conventions</h3>
               <p>
-                The marketplace installs real MCP servers and skills into your project.
-                Installed skills are mirrored into the agent runtime's own home, so they reach
-                the prompt — and your host's <code>~/.agents/skills</code> keep working
-                alongside them.
+                Skills and MCP servers install into the project and are handed to the agent —
+                including the skills already on your machine. It can follow the way your team
+                works instead of a generic one.
               </p>
               <ul class="ticks">
                 <li>Every entry shows the command it will run before you install it.</li>
                 <li>Trust is on the card: built-in, official, or community.</li>
               </ul>
-              <div class="shot" aria-hidden="true">
-                <div class="shot__bar"><span>Marketplace</span><span class="shot__meta">MCP · skills</span></div>
-                <div class="cards">
-                  <div class="mcard"><img src="./logos/github.svg" alt="" width="22" height="22" /><b>Git</b><span>official · MCP</span></div>
-                  <div class="mcard"><img src="./logos/openai.svg" alt="" width="22" height="22" /><b>Sequential thinking</b><span>official · MCP</span></div>
-                  <div class="mcard"><span class="mcard__mark">◍</span><b>Memory</b><span>official · MCP</span></div>
-                  <div class="mcard"><span class="mcard__mark">◍</span><b>Code review</b><span>built-in · skill</span></div>
-                </div>
+              <div class="shot shot--real">
+                <img src="./shots/marketplace.webp" alt="The Marketplace: 19 skills and MCP servers, grouped by category, each showing whether it is built-in, official or community." width="2224" height="1297" loading="lazy" />
               </div>
             </article>
 
             <article class="feat" id="f-models" data-reveal>
-              <h3>Any model. And the numbers to prove what it cost.</h3>
+              <h3>Pay for the model, not for the app</h3>
               <p>
                 Eleven providers ship in the picker, and any OpenAI-compatible endpoint can be
-                added with a base URL and a key. Run a local model and nothing leaves the
-                machine at all. The performance page keeps tokens and cost per provider —
+                added with a base URL and a key. Point it at a free tier — or at a local model,
+                and nothing is metered at all. The ledger keeps tokens and cost per provider,
                 including what a local model saved you.
               </p>
               <ul class="ticks">
-                <li>Keys go to the OS keychain and are write-only: a page can set or clear one, never read it back.</li>
+                <li>Your keys go to the OS keychain: the app can set or clear one and ask whether it exists, never read it back.</li>
                 <li>Small local models often cannot drive tools — the app says so instead of pretending a run worked.</li>
               </ul>
-              <div class="shot" aria-hidden="true">
-                <div class="shot__bar"><span>Performance</span><span class="shot__meta">14 days</span></div>
-                <div class="cost">
-                  <div class="bars">
-                    <div class="bar"><span>deepseek-flash</span><i style="--w: 78%"></i><b>1.24M</b></div>
-                    <div class="bar"><span>qwen2.5-coder</span><i style="--w: 46%"></i><b>0.72M</b></div>
-                    <div class="bar"><span>gpt-oss-20b</span><i style="--w: 21%"></i><b>0.31M</b></div>
-                  </div>
-                  <div class="cost__sum">
-                    <div><b>$4.18</b><span>spent</span></div>
-                    <div><b>$11.90</b><span>local-model savings</span></div>
-                  </div>
-                </div>
+              <div class="shot shot--real">
+                <img src="./shots/providers.webp" alt="AI Models &amp; Providers: Ollama connected on this machine, the cloud APIs listed beside it, and the installed local models with their sizes." width="2224" height="1297" loading="lazy" />
               </div>
             </article>
           </div>
@@ -413,7 +294,7 @@
           </ul>
 
           <div class="free" data-reveal>
-            <h3>Ways to start without a bill</h3>
+            <h3>Start for free!</h3>
             <div class="free__grid">
               <a href="https://console.groq.com/keys" rel="noreferrer"><b>Groq</b><span>free tier — the fastest of them</span></a>
               <a href="https://aistudio.google.com/apikey" rel="noreferrer"><b>Google Gemini</b><span>free tier — the most capable of them</span></a>
@@ -431,7 +312,7 @@
       <section class="band band--dark" id="privacy">
         <div class="wrap wrap--center">
           <p class="eyebrow eyebrow--center" data-reveal>Yours, by default</p>
-          <h2 class="h2 h2--center" data-reveal>Nothing here is ours to collect</h2>
+          <h2 class="h2 h2--center" data-reveal>100% Data Ownership & Privacy</h2>
           <div class="grid4">
             <div data-reveal>
               <h3>Keys in the keychain</h3>
@@ -475,7 +356,7 @@
               <p>It is a different protocol, so the adapter cannot front it. OpenAI and DeepSeek serve the runtime directly; the rest go through the adapter.</p>
             </div>
             <div class="limit" data-reveal>
-              <b>Free tiers throttle, and a wrapped URL is left as text</b>
+              <b>Free tiers throttle</b>
               <p>Rate limits belong to the provider, not the app. And a link the terminal wraps onto a second line stays text, because the visible half is not the address.</p>
             </div>
           </div>
@@ -507,8 +388,8 @@
             and ask for something small.
           </p>
           <div class="hero__cta hero__cta--center" data-reveal>
-            <a class="cta" href="https://github.com/adetoye-dev/asca-code/releases/latest" rel="noreferrer">Download for macOS</a>
-            <a class="ghost" href="https://github.com/adetoye-dev/asca-code" rel="noreferrer">Star on GitHub</a>
+            <a class="cta" href="https://github.com/adetoye-dev/acsa-code/releases/latest/download/ACSA-Code.app.zip" rel="noreferrer">Download for macOS</a>
+            <a class="ghost" href="https://github.com/adetoye-dev/acsa-code" rel="noreferrer">Star on GitHub</a>
           </div>
           <p class="fineprint" data-reveal>
             Signed with a Developer ID, notarised and stapled — it opens without a Gatekeeper detour.
@@ -528,23 +409,23 @@
         </div>
         <nav aria-label="Product">
           <h3>Product</h3>
-          <a href="https://github.com/adetoye-dev/asca-code/releases/latest" rel="noreferrer">Download</a>
-          <a href="https://github.com/adetoye-dev/asca-code/blob/dev/CHANGELOG.md" rel="noreferrer">Changelog</a>
-          <a href="https://github.com/adetoye-dev/asca-code/blob/dev/README.md" rel="noreferrer">README</a>
-          <a href="https://github.com/adetoye-dev/asca-code/blob/dev/docs/AGENT_RUNTIME.md" rel="noreferrer">How the agent is wired</a>
+          <a href="https://github.com/adetoye-dev/acsa-code/releases/latest/download/ACSA-Code.app.zip" rel="noreferrer">Download</a>
+          <a href="https://github.com/adetoye-dev/acsa-code/blob/dev/CHANGELOG.md" rel="noreferrer">Changelog</a>
+          <a href="https://github.com/adetoye-dev/acsa-code/blob/dev/README.md" rel="noreferrer">README</a>
+          <a href="https://github.com/adetoye-dev/acsa-code/blob/dev/docs/AGENT_RUNTIME.md" rel="noreferrer">How the agent is wired</a>
         </nav>
         <nav aria-label="Project">
           <h3>Project</h3>
-          <a href="https://github.com/adetoye-dev/asca-code" rel="noreferrer">Source</a>
-          <a href="https://github.com/adetoye-dev/asca-code/issues" rel="noreferrer">Issues</a>
-          <a href="https://github.com/adetoye-dev/asca-code/blob/dev/THIRD-PARTY-NOTICES.md" rel="noreferrer">Third-party notices</a>
-          <a href="https://github.com/adetoye-dev/asca-code/blob/dev/LICENSE" rel="noreferrer">MIT licence</a>
+          <a href="https://github.com/adetoye-dev/acsa-code" rel="noreferrer">Source</a>
+          <a href="https://github.com/adetoye-dev/acsa-code/issues" rel="noreferrer">Issues</a>
+          <a href="https://github.com/adetoye-dev/acsa-code/blob/dev/THIRD-PARTY-NOTICES.md" rel="noreferrer">Third-party notices</a>
+          <a href="https://github.com/adetoye-dev/acsa-code/blob/dev/LICENSE" rel="noreferrer">MIT licence</a>
         </nav>
         <nav aria-label="Support">
           <h3>Support</h3>
-          <a href="https://github.com/adetoye-dev/asca-code/security/advisories/new" rel="noreferrer">Report a vulnerability</a>
-          <a href="https://github.com/adetoye-dev/asca-code/blob/dev/docs/RELEASING.md" rel="noreferrer">Release process</a>
-          <a href="https://github.com/adetoye-dev/asca-code/blob/dev/docs/PRODUCTION_CHECKLIST.md" rel="noreferrer">Production checklist</a>
+          <a href="https://github.com/adetoye-dev/acsa-code/security/advisories/new" rel="noreferrer">Report a vulnerability</a>
+          <a href="https://github.com/adetoye-dev/acsa-code/blob/dev/docs/RELEASING.md" rel="noreferrer">Release process</a>
+          <a href="https://github.com/adetoye-dev/acsa-code/blob/dev/docs/PRODUCTION_CHECKLIST.md" rel="noreferrer">Production checklist</a>
         </nav>
       </div>
       <div class="wrap foot__base">

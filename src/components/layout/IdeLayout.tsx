@@ -852,7 +852,8 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
       activePath?: string,
       code?: string,
       history?: Array<{ role: string; content: string }>,
-      images?: string[]
+      images?: string[],
+      runMode?: "agent" | "plan"
     ) => {
       if (override) {
         setAiSettings({
@@ -869,7 +870,8 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
         activePath || activeTabPath || undefined,
         code || selectedCode || undefined,
         history,
-        images
+        images,
+        runMode
       );
     },
     onCancelPipeline: cancelPipeline,
@@ -1498,7 +1500,7 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
               activityLog={activityLog}
               projectRoot={activeProject.path}
               branch={gitBranch}
-              onRunPipeline={(request, override, activePath, code, history, images) => {
+              onRunPipeline={(request, override, activePath, code, history, images, runMode) => {
                 if (override) {
                   setAiSettings({
                     ...aiSettings,
@@ -1508,7 +1510,7 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
                     baseUrl: override.baseUrl !== undefined ? override.baseUrl : aiSettings.baseUrl,
                   });
                 }
-                runPipeline(request, override, activePath || activeTabPath || undefined, code || selectedCode || undefined, history, images);
+                runPipeline(request, override, activePath || activeTabPath || undefined, code || selectedCode || undefined, history, images, runMode);
               }}
               onCancelPipeline={cancelPipeline}
               onSteerPipeline={steerPipeline}

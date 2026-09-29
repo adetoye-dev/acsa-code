@@ -62,6 +62,50 @@ the Output panel, instead of being presented as a finished task. The check is
 mechanical: `runAgentOnCodex` counts `command_execution`, `file_change`,
 `mcp_tool_call` and `web_search` items.
 
+#### The wall is the prompt, not the plumbing — measured
+
+The adapter exists so a local model *can* call tools at all, and it works: the
+tools reach Ollama. What fails is the model. Reproduced outside the app by
+running the bundled CLI against a copy of the adapter and capturing the exact
+body the adapter forwards upstream:
+
+```
+codex exec --strict-config --skip-git-repo-check \
+  "Add a one-line JSDoc comment above the sortNotes function in src/notes/sort.ts."
+```
+
+The upstream body is 36 KB: a 17 KB Codex system prompt, a 10 KB skills block, an
+`<environment_context>` user item, and seven tools — `exec_command`, `write_stdin`,
+`request_user_input`, `view_image`, `get_goal`, `create_goal`, `update_goal`.
+There is no file-read and no patch tool: everything goes through the shell.
+
+| Model | Real prompt | Short probe prompt (2–7 tools, no Codex system text) |
+| --- | --- | --- |
+| `qwen3.5:9b` | 0 tool calls — prose, then a `<read path="…"/>` tag, or a ```bash fence | **calls tools** (`read_file`) |
+| `qwen2.5-coder:7b` | 0 tool calls — writes the finished edit inside a fence | writes the call as JSON *text* |
+| `deepseek-coder:6.7b` | HTTP 400 — no tool support at all | HTTP 400 |
+
+So the same model that returns a real `tool_calls` array for a short prompt
+returns none for the runtime's own. Three follow-ups were tried against the
+captured body and all failed: a system message telling it to use the function
+interface and never to write tags, the same appended to the main system prompt,
+and the same request non-streamed. Streaming is not the cause.
+
+The practical conclusion is the one the landing page states: **a local model of
+this size is for chat and completions; agent runs want a hosted provider.** The
+panel now says exactly that when a local run ends with zero tool calls, instead
+of the generic "no files changed" line that reads like a finished task.
+
+Two things the same trace settled, because both were assumed rather than checked:
+
+* `tool_call_from_text` recovers a call only when the answer *starts* with `{`,
+  `[` or a fence. `qwen2.5-coder` does exactly that, so the recovery path is live
+  for the case it was written for — a prose prefix would defeat it, but no
+  installed model produces that shape, so the guard stands.
+* The two `system` and two `user` messages in the captured body are Codex's own
+  (`instructions` plus a `<skills_instructions>` developer item), not a
+  duplication introduced by `chat_messages`.
+
 ## Continuing a conversation
 
 A follow-up turn runs `codex exec resume <thread-id>` instead of a fresh `exec`,
@@ -281,3 +325,86 @@ reserved and cannot be overridden), with no `env_key` because a local runtime ha
 no credential. If the adapter cannot start, the run falls back to the runtime's
 own `--oss --local-provider` path and says so in the OUTPUT panel, because that
 path reaches the model but cannot run tools.
+
+## Which hosted providers can be pointed at directly
+
+The runtime speaks the Responses API and nothing else, so a provider either serves
+it or is fronted by the adapter. `RESPONSES_CAPABLE_PROVIDER_IDS` in
+`src/services/agentApproval.ts` is the list, and adding to it is a claim that both
+halves below were checked:
+
+| Provider | `<base>/responses` | The runtime's own request to it |
+| --- | --- | --- |
+| OpenAI | serves it | reaches auth |
+| DeepSeek | serves it | reaches auth |
+| **Groq** | **serves it** | **reaches auth** |
+| NVIDIA NIM, Mistral, xAI, Moonshot, Together, OpenRouter | 404 | — |
+| Anthropic | not OpenAI-shaped (`/v1/messages`); no adapter either | — |
+
+### Groq, both halves, as measured
+
+Documentation is not enough here: Groq's docs list `llama-3.3-70b-versatile` and
+`llama-3.1-8b-instant` as production models, and a live account reports neither.
+So the probe is the API's own answer.
+
+**The API supports it.** Asked for a tool call:
+
+```bash
+curl -sS https://api.groq.com/openai/v1/responses \
+  -H "Authorization: Bearer $GROQ_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"model":"openai/gpt-oss-120b","stream":false,
+       "input":[{"type":"message","role":"user",
+                 "content":[{"type":"input_text","text":"Use the get_time tool to find the time in Lagos."}]}],
+       "tools":[{"type":"function","name":"get_time","description":"Get the current time",
+                 "parameters":{"type":"object","properties":{"zone":{"type":"string"}},"required":["zone"]}}]}'
+```
+
+answered `200` with a real item, not prose:
+
+```json
+{"type":"function_call","id":"fc_…","call_id":"fc_…","name":"get_time",
+ "arguments":"{\"zone\":\"Africa/Lagos\"}"}
+```
+
+alongside a `reasoning` item, `usage.output_tokens_details.reasoning_tokens`, and
+`parallel_tool_calls: true`.
+
+**And we are allowed to make that request.** Groq sits behind an edge that refuses
+some clients before it looks at a credential — it answers `403 error code: 1010`
+to the user agent `urllib` sends by default, which is a bug this repo has already
+paid for once (see `core-engine/http_identity.py`). So the runtime's *own* request
+was pointed at the same URL with a deliberately invalid key:
+
+```
+unexpected status 401 Unauthorized: Invalid API Key,
+url: https://api.groq.com/openai/v1/responses, cf-ray: a42a0115cb5aaf03-NBO
+```
+
+401 and not 403, so the request reached Groq's authentication and the block does
+not apply to the runtime. A 403 would have meant keeping the adapter whatever the
+API supports.
+
+### Groq was tried on this path and taken back off it
+
+Both probes above passed and the direct path still failed in use. A real agent run
+against `openai/gpt-oss-120b` returned:
+
+```
+⚠️ Task Failed: {"error":{"message":"invalid JSON body","type":"invalid_request_error"}}
+```
+
+So Groq serves the protocol and permits the call, but not the request body this
+runtime builds. That is the difference the two probes could not see, and the
+reason the direct path is only shipped once a *turn* has completed on it — the
+probes prove reachability, not compatibility.
+
+Groq is back behind the adapter (`RESPONSES_CAPABLE_PROVIDER_IDS` has two entries
+again), which is the path it worked on before. To retry the direct route: add it
+back, run one real turn, and capture the outgoing body with the logging proxy
+described above to see which field Groq objects to — `invalid JSON body` with no
+field named is exactly the failure a capture is for.
+
+Two things this does **not** yet prove, because both need a valid key: that a
+complete agent turn finishes over the direct path, and that Groq's
+`store: false` default is acceptable to a runtime that may ask for server-side
+state (`previous_response_id` came back `null`). One real task settles both.

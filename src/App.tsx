@@ -69,7 +69,7 @@ export function App() {
 
       if (status.running) {
         if (status.models.length > 0) {
-          syncOllamaModels(status.models);
+          syncOllamaModels(status.models, undefined, status.modelsDetails);
         }
         return;
       }

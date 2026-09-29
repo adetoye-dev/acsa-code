@@ -210,3 +210,89 @@ describe("the endpoint a provider ships with", () => {
     }
   });
 });
+
+/**
+ * Which models may run an agent turn, and which may not.
+ *
+ * The bug behind these: the picker offered every model in every mode, so agent
+ * mode listed local models that cannot call tools, and the app *auto-selected*
+ * one of them — `scoreLocalModel` gives any name containing "coder" +50, which
+ * beat a tool-capable model on name alone.
+ */
+describe("which models can run the agent", () => {
+  beforeEach(reset);
+
+  it("reaches a provider the runtime can talk to, and no further", () => {
+    // Responses-native, and adapter-fronted cloud: both fine.
+    expect(models.canRunAgent("openai", "gpt-5.3-codex")).toBe(true);
+    expect(models.canRunAgent("groq", "openai/gpt-oss-120b")).toBe(true);
+    // Anthropic is neither: `/v1/messages` is not OpenAI-shaped, so agent mode
+    // is honestly unavailable rather than silently empty.
+    expect(models.canRunAgent("anthropic", "claude-sonnet-4")).toBe(false);
+    expect(models.canRunAgent("", "anything")).toBe(false);
+    expect(models.canRunAgent("groq", "")).toBe(false);
+  });
+
+  it("asks the daemon about a local model instead of its name", () => {
+    // Before anything has been reported: eligible. Hiding a model the app cannot
+    // judge would be worse than the run failing with the sentence it prints.
+    expect(models.canRunAgent("ollama", "qwen3.5:9b")).toBe(true);
+
+    models.rememberModelCapabilities("ollama", [
+      { name: "qwen3.5:9b", capabilities: ["completion", "vision", "tools", "thinking"] },
+      { name: "deepseek-coder:6.7b", capabilities: ["completion"] },
+    ]);
+
+    expect(models.canRunAgent("ollama", "qwen3.5:9b")).toBe(true);
+    // No `tools` flag: the daemon itself says it cannot.
+    expect(models.canRunAgent("ollama", "deepseek-coder:6.7b")).toBe(false);
+  });
+
+  it("keeps out a model we measured failing, even when the flag says tools", () => {
+    // Ollama reports `tools` for qwen2.5-coder, and it still cannot drive the
+    // agent: it writes the call out as text and nothing runs. The flag is a
+    // floor, not a guarantee — this is the case that proves it.
+    models.rememberModelCapabilities("ollama", [
+      { name: "qwen2.5-coder:7b", capabilities: ["completion", "tools", "insert"] },
+    ]);
+    expect(models.canRunAgent("ollama", "qwen2.5-coder:7b")).toBe(false);
+    expect(models.canRunAgent("ollama", "qwen2.5-coder:1.5b")).toBe(false);
+  });
+
+  it("will not auto-select a worker that cannot call tools", () => {
+    models.rememberModelCapabilities("ollama", [
+      { name: "qwen2.5-coder:7b", capabilities: ["completion", "tools", "insert"] },
+      { name: "qwen3.5:9b", capabilities: ["completion", "tools", "thinking"] },
+      { name: "deepseek-coder:6.7b", capabilities: ["completion"] },
+    ]);
+
+    // "coder" scores +50 and used to win outright.
+    expect(models.scoreLocalModel("qwen2.5-coder:7b")).toBeGreaterThan(
+      models.scoreLocalModel("qwen3.5:9b"),
+    );
+    expect(
+      models.autoSelectBestLocalWorker(["qwen2.5-coder:7b", "qwen3.5:9b", "deepseek-coder:6.7b"]),
+    ).toBe("qwen3.5:9b");
+  });
+
+  it("stops offering a model whose tier refused the request as too large", () => {
+    // Groq's free tier, measured: 8k tokens per minute against an 18k request.
+    // The agent's instructions are most of it, so there is no smaller version.
+    expect(models.canRunAgent("groq", "openai/gpt-oss-120b")).toBe(true);
+    models.rememberTierTooSmall("groq", "openai/gpt-oss-120b");
+    expect(models.canRunAgent("groq", "openai/gpt-oss-120b")).toBe(false);
+    // Only the model that was refused: another model may have another allowance.
+    expect(models.canRunAgent("groq", "llama-3.3-70b-versatile")).toBe(true);
+    // And it is not a fact about the provider for chat mode, which does not filter.
+    expect(models.tierRefusedTooLarge("groq", "openai/gpt-oss-120b")).toBe(true);
+  });
+
+  it("still picks something when every installed model is a chat model", () => {
+    // A worker that cannot tool-call is bad; no worker at all is worse, and the
+    // run's own report says plainly that nothing ran.
+    models.rememberModelCapabilities("ollama", [
+      { name: "deepseek-coder:6.7b", capabilities: ["completion"] },
+    ]);
+    expect(models.autoSelectBestLocalWorker(["deepseek-coder:6.7b"])).toBe("deepseek-coder:6.7b");
+  });
+});

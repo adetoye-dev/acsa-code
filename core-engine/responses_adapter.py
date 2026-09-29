@@ -14,6 +14,8 @@ to Codex and `/api/chat` to Ollama, translating tool calls and results in both
 directions, and forwards Ollama's text deltas untouched.
 
 Stdlib only, on purpose: it ships inside the app and must not add a dependency.
+It does import `tls_context` from the engine it ships beside, for the CA bundle a
+frozen interpreter does not carry.
 
 Verified, not assumed: with a provider table pointed at this and
 `llama3.2:3b` as the model, `codex exec "Run the shell command: echo
@@ -31,6 +33,9 @@ own tool schema rejects — so nulls are dropped on the way out.
 from __future__ import annotations
 
 import http.client
+
+import http_identity
+import tls_context
 import http.server
 import json
 import os
@@ -1096,7 +1101,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 warn("no upstream base URL: pass --base-url (or ACSA_ADAPTER_URL)")
                 raise RuntimeError("no upstream base URL: pass --base-url (or ACSA_ADAPTER_URL)")
             conn = (
-                http.client.HTTPSConnection(host, port, timeout=timeout)
+                http.client.HTTPSConnection(
+                    # The engine ships frozen, and the interpreter that froze it
+                    # decides whether TLS can verify anything at all. `http.client`
+                    # on its own uses the default context, which in a frozen app
+                    # has no CA bundle — so every hosted provider the adapter fronts
+                    # answered `CERTIFICATE_VERIFY_FAILED … unable to get local
+                    # issuer certificate`. `ai_cli` has always passed this; the
+                    # adapter was the one Python path that did not.
+                    host, port, timeout=timeout, context=tls_context.https_context()
+                )
                 if scheme == "https"
                 else http.client.HTTPConnection(host, port, timeout=timeout)
             )
@@ -1107,6 +1121,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             headers = {
                 "Content-Type": "application/json",
                 "Accept": "text/event-stream" if stream else "application/json",
+                "User-Agent": http_identity.USER_AGENT,
             }
             if UPSTREAM_KEY:
                 headers["Authorization"] = f"Bearer {UPSTREAM_KEY}"
@@ -1118,7 +1133,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "POST",
             "/api/chat",
             body=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": http_identity.USER_AGENT,
+            },
         )
         return conn, conn.getresponse()
 

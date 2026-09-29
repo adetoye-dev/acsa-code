@@ -104,7 +104,12 @@ describe("local providers", () => {
   it("explains a local run that cannot act, and stays quiet otherwise", () => {
     const note = localToolCallingNote("ollama");
     expect(note).toContain("ollama");
-    expect(note).toMatch(/Responses API/);
+    // The behaviour, not the plumbing: it says the run will not edit or run
+    // anything and points at a hosted provider. The mechanism was rewritten once
+    // the adapter made the old wording ("its Responses API drops tool definitions")
+    // describe a path a run no longer takes.
+    expect(note).toMatch(/will not edit files or run commands/);
+    expect(note).toMatch(/hosted provider/);
     expect(localToolCallingNote("deepseek")).toBeNull();
   });
 });
@@ -120,9 +125,14 @@ describe("local providers", () => {
  * default, which is the branch that works for every OpenAI-compatible provider.
  */
 describe("how the agent reaches a provider", () => {
-  it("goes straight to the two providers whose Responses support was verified", () => {
+  it("goes straight to the two providers verified end to end", () => {
     expect(needsToolAdapter("openai")).toBe(false);
     expect(needsToolAdapter("deepseek")).toBe(false);
+    // Groq serves Responses and we may call it, but the runtime's real body is
+    // rejected with `invalid JSON body` — a run against `openai/gpt-oss-120b`
+    // failed that way on the direct path. Serving a protocol and accepting this
+    // client's shape of it are different claims, so it is back behind the adapter.
+    expect(needsToolAdapter("groq")).toBe(true);
   });
 
   it("fronts everything else with the adapter, including a provider added later", () => {

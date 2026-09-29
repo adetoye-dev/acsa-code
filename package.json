@@ -1,7 +1,7 @@
 {
   "name": "acsa-code",
   "private": true,
-  "version": "0.2.19",
+  "version": "0.2.25",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -70,7 +70,7 @@
   "author": "Adetoye Adewoye",
   "repository": {
     "type": "git",
-    "url": "https://github.com/adetoye-dev/asca-code.git"
+    "url": "https://github.com/adetoye-dev/acsa-code.git"
   },
-  "homepage": "https://github.com/adetoye-dev/asca-code#readme"
+  "homepage": "https://github.com/adetoye-dev/acsa-code#readme"
 }

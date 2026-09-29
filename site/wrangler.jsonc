@@ -9,11 +9,15 @@
   // at build time. That matters here beyond convenience: this site is deliberately a
   // package the host must not mutate.
   "$schema": "node_modules/wrangler/config-schema.json",
-  // Must match the Worker name in the Cloudflare dashboard — Workers Builds
-  // deploys to the name here, and it is `asca-code` (Cloudflare's own setup
-  // derived it from the repository). Change this line if the project is named
-  // differently.
-  "name": "asca-code",
+  // Must match the Worker name in the Cloudflare dashboard, because Workers Builds
+  // deploys to the name here. Cloudflare's setup derived `acsa-code` from the
+  // repository, and it kept that name when the repository became `acsa-code`: this is
+  // a Cloudflare resource, not a repository path, and renaming the Worker instead
+  // would create a new one and orphan the custom domain.
+  //
+  // If the Worker is ever renamed in the dashboard, change this line in the same
+  // breath — a mismatch fails the deploy.
+  "name": "acsa-code",
   "compatibility_date": "2026-09-28",
   "assets": {
     "directory": "./dist",

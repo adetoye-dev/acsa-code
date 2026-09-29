@@ -51,7 +51,7 @@ const RUN = {
   updatedAt: new Date(Date.now() - 3 * 3600_000 + 487_000).toISOString(),
   durationSeconds: 487,
   sha: "913d48b1473857d8f3e09176479d1417b3ad9562",
-  url: "https://github.com/adetoye-dev/asca-code/actions/runs/36207865178",
+  url: "https://github.com/adetoye-dev/acsa-code/actions/runs/36207865178",
 };
 
 const FAILED_RUN = {
@@ -62,7 +62,7 @@ const FAILED_RUN = {
   conclusion: "failure",
   branch: "dev",
   durationSeconds: 523,
-  url: "https://github.com/adetoye-dev/asca-code/actions/runs/36207824813",
+  url: "https://github.com/adetoye-dev/acsa-code/actions/runs/36207824813",
 };
 
 const PR = {
@@ -74,7 +74,7 @@ const PR = {
   branch: "dev",
   createdAt: "2026-09-24T18:04:42Z",
   updatedAt: new Date(Date.now() - 2 * 86400_000).toISOString(),
-  url: "https://github.com/adetoye-dev/asca-code/pull/3",
+  url: "https://github.com/adetoye-dev/acsa-code/pull/3",
   additions: 11582,
   deletions: 2735,
   changedFiles: 97,
@@ -88,7 +88,7 @@ const bar = (id: number, conclusion: string, seconds: number, at: string) => ({
   durationSeconds: seconds,
   createdAt: at,
   updatedAt: at,
-  url: `https://github.com/adetoye-dev/asca-code/actions/runs/${id}`,
+  url: `https://github.com/adetoye-dev/acsa-code/actions/runs/${id}`,
 });
 
 /** Four runs on dev, three of which passed, oldest first for the bars. */
@@ -117,7 +117,7 @@ const available = (over: Partial<GhOverview> = {}): GhOverview => ({
   reason: null,
   detail: "",
   raw: "",
-  repo: "adetoye-dev/asca-code",
+  repo: "adetoye-dev/acsa-code",
   runs: [RUN],
   summary: SUMMARY,
   pullRequests: [PR],
@@ -166,7 +166,7 @@ describe("the repository landing panel", () => {
 
   it("names the repository and each run's outcome, workflow, branch and length", () => {
     renderPanel(available());
-    expect(screen.getByText("adetoye-dev/asca-code")).toBeTruthy();
+    expect(screen.getByText("adetoye-dev/acsa-code")).toBeTruthy();
     // Scoped to the row: the status card above it shows the same run's length, and
     // an unscoped query would be ambiguous rather than wrong.
     const row = within(screen.getByTestId("gh-run-36207865178"));
@@ -230,7 +230,7 @@ describe("the repository landing panel", () => {
             author: "ada",
             labels: [{ name: "bug", color: "#d73a4a" }],
             updatedAt: new Date().toISOString(),
-            url: "https://github.com/adetoye-dev/asca-code/issues/12",
+            url: "https://github.com/adetoye-dev/acsa-code/issues/12",
           },
         ],
       })
@@ -317,7 +317,7 @@ describe("the repository landing panel", () => {
 
     fireEvent.click(screen.getByText("913d48b"));
     expect(opened.urls.at(-1)).toBe(
-      "https://github.com/adetoye-dev/asca-code/commit/913d48b1473857d8f3e09176479d1417b3ad9562"
+      "https://github.com/adetoye-dev/acsa-code/commit/913d48b1473857d8f3e09176479d1417b3ad9562"
     );
   });
 

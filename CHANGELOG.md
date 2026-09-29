@@ -17,14 +17,132 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.25] - 2026-09-29
+
+### Fixed
+
+- **Agent runs work on every hosted provider the adapter fronts — not just the two
+  that speak Responses natively.** The tool adapter opened HTTPS with
+  `http.client`'s default TLS context, which in a frozen build carries no CA
+  bundle, so the run died with
+  `[SSL: CERTIFICATE_VERIFY_FAILED] unable to get local issuer certificate`. Groq,
+  NVIDIA NIM, Together, OpenRouter, Moonshot, Cohere and xAI all go through that
+  adapter, so all of them failed this way while the connection test and chat — which
+  use the engine's `tls_context` — passed. That is exactly the shape the complaints
+  had: the key tests fine, the agent does nothing. The adapter verifies through
+  `tls_context` now, like the rest of the engine.
+
+## [0.2.24] - 2026-09-29
+
+### Fixed
+
+- **A plan run that fails says so.** 0.2.23 made the reply wait for its plan write
+  before finalising, which was right for a run that writes — and wrong for one that
+  does not: a failed run, or one that produced no plan text, never started a write,
+  so the wait never ended and the transcript showed nothing at all. The wait now
+  applies only to a run that is going to write, and the failure message appears as
+  it should.
+
+## [0.2.23] - 2026-09-29
+
+### Fixed
+
+- **A plan run's reply says where the plan went, every time.** The note was built
+  before the write it describes had finished, so the first plan run could finish
+  with no note at all, and a second run in the same mode could inherit the
+  previous run's success. The reply now waits for its own write, and each plan run
+  starts from a clean slate — including the record of what was last written, so an
+  identical plan is written again rather than skipped as already done.
+- **Undo moved onto the message it applies to.** It sat above the composer, where
+  it read as a setting unrelated to what you were reading. It is now a button
+  beside Copy on the reply, and its outcome is stated there too.
+
+## [0.2.22] - 2026-09-29
+
+### Fixed
+
+- **A long reply scrolls into view, along with anything it adds underneath.** The
+  transcript decided whether to follow the tail by measuring the container *after*
+  the new message was in it, so a tall reply — a plan, typically — looked like a
+  reader who had scrolled away and the view stayed put. It now goes by the last
+  scroll event, which is the last thing the reader actually did. The **Implement
+  plan** button renders when the plan reaches disk, after the reply, so the write
+  result is a dependency of the follow too: the one thing the reply had just
+  announced was the one thing below the fold.
+
+## [0.2.21] - 2026-09-29
+
+### Fixed
+
+- **Plan mode writes `implementation-plan.md`, and only offers to implement it once
+  it has.** The write was gated on the mode at the moment the turn *finished*, so
+  changing modes mid-run skipped it — the reply then said nothing had changed and no
+  file appeared. Whether a run is a plan run is now recorded when it is sent, and the
+  note and the file read the same flag.
+- **Implement plan moved out of the composer** and into the transcript, under the
+  plan it refers to. In the composer it was present as soon as plan mode was on —
+  before anything had been planned — and clicking it started a write-enabled agent
+  turn naming a file that did not exist. It now appears only after the plan is on
+  disk, and disappears once implementation starts.
+- **Groq is back behind the tool adapter.** 0.2.20 sent its agent runs straight to
+  Groq's Responses API, which answers 200 to a probe and then rejects the runtime's
+  real request body: a run against `openai/gpt-oss-120b` failed with
+  `invalid JSON body`. Serving the protocol and accepting this client's shape of it
+  are different claims, and the earlier probes only proved the first. Groq's agent
+  runs work on the adapter path, as they did before 0.2.20.
+
+## [0.2.20] - 2026-09-29
+
 ### Added
 
-- **A landing page** (`site/`) — what the app is, what it costs, and what it does not
-  do yet. It is its own package with its own lockfile and workflow, so the app's build
+- **The model picker offers what the mode can use.** Agent and plan runs list only
+  models that can drive them: providers the runtime can reach, plus local models
+  the Ollama daemon itself reports as supporting tools. Chat lists everything,
+  because chat only needs a model that can talk. When the model you have selected
+  cannot run the current mode, the menu says why and offers the best one that can —
+  and the app no longer auto-selects a local model it has measured failing.
+- **Plan mode reads the project, and writes the plan down.** It runs on the same
+  runtime as agent mode with the sandbox pinned read-only, so it can read files and
+  the index it is planning against, and it cannot edit code even if it decides to.
+  The plan is written to `implementation-plan.md` on every plan turn, and
+  **Implement plan** hands that file to agent mode in one click.
+- **Modes moved into the `+` menu**, beside the other things that decide what a
+  turn is. An active mode shows as a chip you can dismiss; agent is the default, so
+  it shows nothing.
+- **A landing page** (`site/`) — the app in its own words, with six real screenshots
+  of it running a real project, filed under a sticky index of what each screen is
+  for. It is its own package with its own lockfile and workflow, so the app's build
   and release pipeline cannot be affected by it.
 
 ### Fixed
 
+- **Groq works at all now — your key was never the problem.** Every request the app
+  sent to a provider went out as `Python-urllib/3.x`, and Groq's edge refuses that
+  signature with `403 error code: 1010` *before* it looks at the credential. So a
+  valid key was reported as "the provider refused the request as not permitted" and
+  nothing the user could do to the key would have changed it. Requests now identify
+  the app. Chat and inline edit were failing the same way, not just the test button.
+- **Groq's agent runs talk to Groq directly.** Its `/responses` serves the Responses
+  API with real `function_call` items, so the translation layer is not in the path
+  any more.
+- **Groq's model list is what an account actually has.** The default was
+  `deepseek-r1-distill-llama-70b`, which Groq has retired, so a fresh setup offered a
+  model that could only ever fail.
+- **The site's Download button downloads the app.** It used to open the GitHub
+  release page and leave you to find the file. It now points at
+  `releases/latest/download/ACSA-Code.app.zip`, which GitHub serves from whatever
+  the newest release is, so it needs no edit per release.
+- **A local agent run now says why it did nothing.** When a local model answers
+  without calling a single tool, the reply said only that no files had changed —
+  which reads like a finished task. It now says the model never reached for a tool,
+  and that a hosted provider is what agent runs want. Measured, not assumed: behind
+  the tool adapter, `qwen3.5:9b`, `qwen2.5-coder:7b` and `deepseek-coder:6.7b` each
+  emit no function call for the runtime's real prompt. The same `qwen3.5:9b` does
+  call tools when the prompt is short, so this is the model's ceiling, not the
+  transport's. `docs/AGENT_RUNTIME.md` has the whole trace.
+- **The provider list no longer calls local engines "Offline"** while the row beside
+  it reads "Connected & Verified". The group is named for where the model runs —
+  now "On-Device" — and the dot keeps carrying the state.
 - **Links the terminal prints are clickable.** Running `npm run dev` printed
   `http://localhost:5173/` as plain text that could not be clicked; any `http(s)`
   URL in a command's output opens in the browser now, hover underline and all.
@@ -284,25 +402,31 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/asca-code/compare/v0.2.19...dev
-[0.2.19]: https://github.com/adetoye-dev/asca-code/compare/v0.2.18...v0.2.19
-[0.2.18]: https://github.com/adetoye-dev/asca-code/compare/v0.2.17...v0.2.18
-[0.2.17]: https://github.com/adetoye-dev/asca-code/compare/v0.2.16...v0.2.17
-[0.2.16]: https://github.com/adetoye-dev/asca-code/compare/v0.2.15...v0.2.16
-[0.2.15]: https://github.com/adetoye-dev/asca-code/compare/v0.2.14...v0.2.15
-[0.2.14]: https://github.com/adetoye-dev/asca-code/compare/v0.2.13...v0.2.14
-[0.2.13]: https://github.com/adetoye-dev/asca-code/compare/v0.2.12...v0.2.13
-[0.2.12]: https://github.com/adetoye-dev/asca-code/compare/v0.2.11...v0.2.12
-[0.2.11]: https://github.com/adetoye-dev/asca-code/compare/v0.2.10...v0.2.11
-[0.2.10]: https://github.com/adetoye-dev/asca-code/compare/v0.2.9...v0.2.10
-[0.2.9]: https://github.com/adetoye-dev/asca-code/compare/v0.2.8...v0.2.9
-[0.2.8]: https://github.com/adetoye-dev/asca-code/compare/v0.2.7...v0.2.8
-[0.2.7]: https://github.com/adetoye-dev/asca-code/compare/v0.2.6...v0.2.7
-[0.2.6]: https://github.com/adetoye-dev/asca-code/compare/v0.2.5...v0.2.6
-[0.2.5]: https://github.com/adetoye-dev/asca-code/compare/v0.2.4...v0.2.5
-[0.2.4]: https://github.com/adetoye-dev/asca-code/compare/v0.2.3...v0.2.4
-[0.2.3]: https://github.com/adetoye-dev/asca-code/compare/v0.2.2...v0.2.3
-[0.2.2]: https://github.com/adetoye-dev/asca-code/compare/v0.2.1...v0.2.2
-[0.2.1]: https://github.com/adetoye-dev/asca-code/compare/v0.2.0...v0.2.1
-[0.2.0]: https://github.com/adetoye-dev/asca-code/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/adetoye-dev/asca-code/releases/tag/v0.1.0
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.25...dev
+[0.2.25]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.24...v0.2.25
+[0.2.24]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.23...v0.2.24
+[0.2.23]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.22...v0.2.23
+[0.2.22]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.21...v0.2.22
+[0.2.21]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.20...v0.2.21
+[0.2.20]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.19...v0.2.20
+[0.2.19]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.18...v0.2.19
+[0.2.18]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.17...v0.2.18
+[0.2.17]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.16...v0.2.17
+[0.2.16]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.15...v0.2.16
+[0.2.15]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.14...v0.2.15
+[0.2.14]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.13...v0.2.14
+[0.2.13]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.12...v0.2.13
+[0.2.12]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.11...v0.2.12
+[0.2.11]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.10...v0.2.11
+[0.2.10]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.9...v0.2.10
+[0.2.9]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.8...v0.2.9
+[0.2.8]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.7...v0.2.8
+[0.2.7]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.6...v0.2.7
+[0.2.6]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.5...v0.2.6
+[0.2.5]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.4...v0.2.5
+[0.2.4]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.3...v0.2.4
+[0.2.3]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.2...v0.2.3
+[0.2.2]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/adetoye-dev/acsa-code/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/adetoye-dev/acsa-code/releases/tag/v0.1.0

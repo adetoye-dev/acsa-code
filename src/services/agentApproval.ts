@@ -99,17 +99,28 @@ export function localProviderFor(providerId: string | undefined): string | null 
  * Providers measured to serve the Responses API, so the runtime can reach them
  * directly.
  *
- * Both were confirmed by running the agent against them: the runtime posts to
+ * Each was confirmed by running the agent against it: the runtime posts to
  * `<base>/responses` and gets a stream back. Everything else goes through the
  * tool adapter, and that default is the fix for a specific trap: the registry
  * offered fifteen providers, the runtime speaks Responses and nothing else
  * (`wire_api = "chat"` is a hard config error on this Codex build), and only
- * these two implement it. So a dozen entries were advertised as agent-capable
- * and answered 404 on the first tool call — verified on NVIDIA NIM, Mistral and
+ * these implement it. So a dozen entries were advertised as agent-capable and
+ * answered 404 on the first tool call — verified on NVIDIA NIM, Mistral and
  * Anthropic. Routing an OpenAI-compatible provider through the adapter always
  * works, because the adapter speaks the chat completions API they all have;
  * pointing the runtime straight at one works only once its Responses support has
  * been checked. One extra hop, no 404s.
+ *
+ * Groq was tried here and taken back out. Its `/openai/v1/responses` does serve
+ * the Responses API — asked for a tool call it answered 200 with a real
+ * `function_call`, and the runtime's own request reached its auth rather than the
+ * edge in front of it. What neither probe covered is whether the runtime's
+ * *actual* request body is accepted, and it is not: a real agent run against
+ * `openai/gpt-oss-120b` came back `{"error":{"message":"invalid JSON body",
+ * "type":"invalid_request_error"}}`. Serving the protocol and accepting this
+ * client's shape of it are different claims, and only the second one matters.
+ * Back behind the adapter until a captured request says which field it objects
+ * to. The adapter is the path Groq worked on before.
  */
 export const RESPONSES_CAPABLE_PROVIDER_IDS = new Set(["openai", "deepseek"]);
 
@@ -146,7 +157,13 @@ export function needsToolAdapter(providerId: string | undefined): boolean {
 export function localToolCallingNote(providerId: string | undefined): string | null {
   const local = localProviderFor(providerId);
   if (!local) return null;
-  return `[agent] ${local} is reachable but cannot run tools: its Responses API drops tool definitions, so this run can read and reply but will not edit files or run commands. Use a hosted provider for agent mode.`;
+  // Reached only when the tool adapter could not be started. Against Ollama's own
+  // Responses endpoint the reason is that it accepts `tools` and ignores them; that
+  // is the plumbing gap the adapter exists to close. When the adapter *is* running
+  // the remaining limit is the model, not the transport — measured, not assumed:
+  // `qwen3.5:9b`, `qwen2.5-coder:7b` and `deepseek-coder:6.7b` each emit no function
+  // call for the runtime's real prompt. See docs/AGENT_RUNTIME.md.
+  return `[agent] ${local} is reachable but this run has no tool adapter: the model can read and reply but will not edit files or run commands. Use a hosted provider for agent mode.`;
 }
 
 /**
