@@ -59,6 +59,18 @@ describe("explaining a provider failure", () => {
     expect(explained).not.toMatch(/check the key|key (may|might|lacks)/i);
   });
 
+  it("reads a per-minute token cap as a rate limit, not a context window", () => {
+    // Groq's free tier, verbatim: 8k TPM against one agent turn.
+    const explained = explainProviderFailure(
+      "HTTP 413: Request too large for model `openai/gpt-oss-120b` in organization org_x " +
+        "service tier `on_demand` on tokens per minute (TPM): Limit 8000, Requested 18142, please reduce your",
+    );
+    expect(explained).toContain("per-minute token allowance");
+    expect(explained).toContain("cannot run an agent turn");
+    // Not the context-window sentence: the conversation is not the problem.
+    expect(explained).not.toContain("context window");
+  });
+
   it("says nothing rather than guessing at a failure it does not know", () => {
     // The important one. A confident wrong diagnosis sends someone to fix the wrong
     // thing, so an unrecognised failure must leave the old generic sentence alone.

@@ -60,6 +60,13 @@ export function explainProviderFailure(raw: string): string | null {
   if (/\b404\b|model[_ ]not[_ ]found|unknown model|does not exist/.test(text)) {
     return `The provider does not recognise that model name${at}. Pick another model for this provider.`;
   }
+  // A per-minute *rate* limit is not the context window, and the two read alike: a
+  // 413 saying "Request too large … on tokens per minute (TPM): Limit 8000,
+  // Requested 18142" is a tier that cannot take one agent turn, not a conversation
+  // that has grown too long. Checked first so `too many tokens` cannot swallow it.
+  if (/\b413\b|request too large|tokens per minute|\btpm\b/.test(text)) {
+    return `This request is larger than the provider's per-minute token allowance${at}. Most of it is the agent's own instructions and tool schemas, so a tier this small cannot run an agent turn at all — use a provider with a larger allowance, or a local model.`;
+  }
   if (/context length|maximum context|too many tokens|context window/.test(text)) {
     return "This conversation no longer fits the model's context window. Start a new chat, or pick a model with a larger one.";
   }
