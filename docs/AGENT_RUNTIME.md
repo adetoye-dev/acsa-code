@@ -325,3 +325,71 @@ reserved and cannot be overridden), with no `env_key` because a local runtime ha
 no credential. If the adapter cannot start, the run falls back to the runtime's
 own `--oss --local-provider` path and says so in the OUTPUT panel, because that
 path reaches the model but cannot run tools.
+
+## Which hosted providers can be pointed at directly
+
+The runtime speaks the Responses API and nothing else, so a provider either serves
+it or is fronted by the adapter. `RESPONSES_CAPABLE_PROVIDER_IDS` in
+`src/services/agentApproval.ts` is the list, and adding to it is a claim that both
+halves below were checked:
+
+| Provider | `<base>/responses` | The runtime's own request to it |
+| --- | --- | --- |
+| OpenAI | serves it | reaches auth |
+| DeepSeek | serves it | reaches auth |
+| **Groq** | **serves it** | **reaches auth** |
+| NVIDIA NIM, Mistral, xAI, Moonshot, Together, OpenRouter | 404 | — |
+| Anthropic | not OpenAI-shaped (`/v1/messages`); no adapter either | — |
+
+### Groq, both halves, as measured
+
+Documentation is not enough here: Groq's docs list `llama-3.3-70b-versatile` and
+`llama-3.1-8b-instant` as production models, and a live account reports neither.
+So the probe is the API's own answer.
+
+**The API supports it.** Asked for a tool call:
+
+```bash
+curl -sS https://api.groq.com/openai/v1/responses \
+  -H "Authorization: Bearer $GROQ_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"model":"openai/gpt-oss-120b","stream":false,
+       "input":[{"type":"message","role":"user",
+                 "content":[{"type":"input_text","text":"Use the get_time tool to find the time in Lagos."}]}],
+       "tools":[{"type":"function","name":"get_time","description":"Get the current time",
+                 "parameters":{"type":"object","properties":{"zone":{"type":"string"}},"required":["zone"]}}]}'
+```
+
+answered `200` with a real item, not prose:
+
+```json
+{"type":"function_call","id":"fc_…","call_id":"fc_…","name":"get_time",
+ "arguments":"{\"zone\":\"Africa/Lagos\"}"}
+```
+
+alongside a `reasoning` item, `usage.output_tokens_details.reasoning_tokens`, and
+`parallel_tool_calls: true`.
+
+**And we are allowed to make that request.** Groq sits behind an edge that refuses
+some clients before it looks at a credential — it answers `403 error code: 1010`
+to the user agent `urllib` sends by default, which is a bug this repo has already
+paid for once (see `core-engine/http_identity.py`). So the runtime's *own* request
+was pointed at the same URL with a deliberately invalid key:
+
+```
+unexpected status 401 Unauthorized: Invalid API Key,
+url: https://api.groq.com/openai/v1/responses, cf-ray: a42a0115cb5aaf03-NBO
+```
+
+401 and not 403, so the request reached Groq's authentication and the block does
+not apply to the runtime. A 403 would have meant keeping the adapter whatever the
+API supports.
+
+The app therefore emits a normal `[model_providers.acsa-groq]` table — namespaced,
+because the runtime's built-in ids are not ours to keep up with — with
+`wire_api = "responses"` and `env_key = "ACSA_CODEX_API_KEY"`, and starts no
+adapter for it.
+
+Two things this does **not** yet prove, because both need a valid key: that a
+complete agent turn finishes over the direct path, and that Groq's
+`store: false` default is acceptable to a runtime that may ask for server-side
+state (`previous_response_id` came back `null`). One real task settles both.

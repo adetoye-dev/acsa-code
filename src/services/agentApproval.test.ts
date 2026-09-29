@@ -125,15 +125,20 @@ describe("local providers", () => {
  * default, which is the branch that works for every OpenAI-compatible provider.
  */
 describe("how the agent reaches a provider", () => {
-  it("goes straight to the two providers whose Responses support was verified", () => {
+  it("goes straight to the three providers whose Responses support was verified", () => {
     expect(needsToolAdapter("openai")).toBe(false);
     expect(needsToolAdapter("deepseek")).toBe(false);
+    // Groq's `/openai/v1/responses` answered 200 with a real `function_call` when
+    // asked for a tool call, and the runtime's own request to that URL reached its
+    // auth rather than the edge in front of it. Both halves are needed: the first
+    // says the API supports it, the second says we are allowed to try.
+    expect(needsToolAdapter("groq")).toBe(false);
   });
 
   it("fronts everything else with the adapter, including a provider added later", () => {
     // NVIDIA NIM is chat-completions only — its `/v1/responses` is a 404 — so it
     // is exactly the provider that must not be pointed at directly.
-    for (const id of ["nvidia", "groq", "mistral", "xai", "moonshot", "together", "openrouter"]) {
+    for (const id of ["nvidia", "mistral", "xai", "moonshot", "together", "openrouter"]) {
       expect(needsToolAdapter(id), id).toBe(true);
     }
     expect(needsToolAdapter("something-the-user-added")).toBe(true);

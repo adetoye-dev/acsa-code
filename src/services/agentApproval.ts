@@ -99,19 +99,30 @@ export function localProviderFor(providerId: string | undefined): string | null 
  * Providers measured to serve the Responses API, so the runtime can reach them
  * directly.
  *
- * Both were confirmed by running the agent against them: the runtime posts to
+ * Each was confirmed by running the agent against it: the runtime posts to
  * `<base>/responses` and gets a stream back. Everything else goes through the
  * tool adapter, and that default is the fix for a specific trap: the registry
  * offered fifteen providers, the runtime speaks Responses and nothing else
  * (`wire_api = "chat"` is a hard config error on this Codex build), and only
- * these two implement it. So a dozen entries were advertised as agent-capable
- * and answered 404 on the first tool call — verified on NVIDIA NIM, Mistral and
+ * these implement it. So a dozen entries were advertised as agent-capable and
+ * answered 404 on the first tool call — verified on NVIDIA NIM, Mistral and
  * Anthropic. Routing an OpenAI-compatible provider through the adapter always
  * works, because the adapter speaks the chat completions API they all have;
  * pointing the runtime straight at one works only once its Responses support has
  * been checked. One extra hop, no 404s.
+ *
+ * Groq joined on a probe rather than on its documentation, because the two have
+ * disagreed before (its docs list two models a live account does not have). Asked
+ * for a tool call with `openai/gpt-oss-120b`, `POST /openai/v1/responses`
+ * answered 200 with a real `function_call` item — name, `call_id`, JSON-string
+ * arguments — alongside a `reasoning` item and the token counts. Then the
+ * runtime's own request was pointed at the same URL with a deliberately invalid
+ * key, because the edge in front of Groq blocks some clients before it looks at
+ * credentials: it answered `401 Unauthorized … url:
+ * https://api.groq.com/openai/v1/responses`, i.e. it reached Groq's auth. A 403
+ * would have meant keeping the adapter regardless of what the API supports.
  */
-export const RESPONSES_CAPABLE_PROVIDER_IDS = new Set(["openai", "deepseek"]);
+export const RESPONSES_CAPABLE_PROVIDER_IDS = new Set(["openai", "deepseek", "groq"]);
 
 /**
  * Providers whose API is not OpenAI-shaped, so the adapter cannot front them
