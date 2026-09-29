@@ -1244,15 +1244,47 @@ export function AiAssistantChat({
     return () => cancelAnimationFrame(frame);
   }, [chatMessages.length]);
 
+  /**
+   * Whether the reader was following the tail — judged from the last *scroll
+   * event*, not from the box as it looks once an append has landed.
+   *
+   * Appends are in the DOM before this component's effects run, so the follow
+   * effect used to measure after the fact: a tall new message has already pushed
+   * `scrollHeight` up by hundreds of pixels, the container reads as someone who
+   * scrolled away, and the follow is skipped — leaving the end of the reply, and
+   * anything the reply added under it, below the fold. A short reply stays inside
+   * the threshold, which is why only long ones ever failed to follow.
+   */
+  const followingTail = useRef(true);
+  /** Scroll events we caused ourselves, during a smooth scroll, are not the user. */
+  const followLockUntil = useRef(0);
+  useEffect(() => {
+    const el = transcriptScrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      if (performance.now() < followLockUntil.current) return;
+      followingTail.current = isFollowingBottom(el);
+    };
+    onScroll();
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
   // Follow the tail on new messages, logs and streaming updates — but only while
   // the reader is already at the bottom. Scrolling up to read something used to
   // be undone by the next token. Streaming lands many times a second and a smooth
   // scroll restarted that often never settles, so those are instant.
+  //
+  // `planFile` is in the list because it grows the transcript *after* the reply is
+  // appended: the Implement plan button appears once the plan reaches disk, and
+  // without following for that the button the reader was just told about is the
+  // one thing still below the fold.
   useEffect(() => {
-    if (!isFollowingBottom(transcriptScrollRef.current)) return;
+    if (!followingTail.current) return;
     const streaming = isStreaming || status === "running";
+    followLockUntil.current = performance.now() + 600;
     chatBottomRef.current?.scrollIntoView({ behavior: streaming ? "auto" : "smooth" });
-  }, [chatMessages, activityLog, isStreaming, streamingAnswer, agentSteps, status]);
+  }, [chatMessages, activityLog, isStreaming, streamingAnswer, agentSteps, status, planFile]);
 
   // ── Handle Send ─────────────────────────────────────────────────────────
   const handleSend = async (textToSend = draft, forcedMode?: WorkflowMode) => {
