@@ -17,6 +17,21 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.25] - 2026-09-29
+
+### Fixed
+
+- **Agent runs work on every hosted provider the adapter fronts — not just the two
+  that speak Responses natively.** The tool adapter opened HTTPS with
+  `http.client`'s default TLS context, which in a frozen build carries no CA
+  bundle, so the run died with
+  `[SSL: CERTIFICATE_VERIFY_FAILED] unable to get local issuer certificate`. Groq,
+  NVIDIA NIM, Together, OpenRouter, Moonshot, Cohere and xAI all go through that
+  adapter, so all of them failed this way while the connection test and chat — which
+  use the engine's `tls_context` — passed. That is exactly the shape the complaints
+  had: the key tests fine, the agent does nothing. The adapter verifies through
+  `tls_context` now, like the rest of the engine.
+
 ## [0.2.24] - 2026-09-29
 
 ### Fixed
@@ -387,7 +402,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.24...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.25...dev
+[0.2.25]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.24...v0.2.25
 [0.2.24]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.23...v0.2.24
 [0.2.23]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.22...v0.2.23
 [0.2.22]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.21...v0.2.22
