@@ -31,6 +31,7 @@ own tool schema rejects — so nulls are dropped on the way out.
 from __future__ import annotations
 
 import http.client
+import http_identity
 import http.server
 import json
 import os
@@ -1107,6 +1108,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             headers = {
                 "Content-Type": "application/json",
                 "Accept": "text/event-stream" if stream else "application/json",
+                "User-Agent": http_identity.USER_AGENT,
             }
             if UPSTREAM_KEY:
                 headers["Authorization"] = f"Bearer {UPSTREAM_KEY}"
@@ -1118,7 +1120,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "POST",
             "/api/chat",
             body=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": http_identity.USER_AGENT,
+            },
         )
         return conn, conn.getresponse()
 

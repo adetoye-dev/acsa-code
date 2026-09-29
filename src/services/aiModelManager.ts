@@ -67,19 +67,24 @@ export const INITIAL_PROVIDERS: Record<AIProviderId, AIProviderConfig> = {
     isDefault: false,
     apiKey: "",
     baseUrl: "https://api.groq.com/openai/v1",
-    // Taken from Groq's own "Supported Models" page rather than from memory. The
-    // entry that used to be here, `deepseek-r1-distill-llama-70b`, is retired: it is
-    // not on that page and it is not in the model list a real account reports, so a
-    // fresh install shipped a default that could only ever fail — and the failure
-    // arrived as a 403 that read like a bad key. `openai/gpt-oss-120b` is the
-    // featured model, carries the same 131k context, and is the one Groq advertises
-    // for tool use, which is what agent mode needs.
+    // What a real Groq account reports from `GET /openai/v1/models`, not what its
+    // docs list. The two disagree: the docs still call `llama-3.3-70b-versatile`
+    // and `llama-3.1-8b-instant` production, and a live account does not have
+    // either. Shipping the docs' list would repeat the bug this replaces — the
+    // retired `deepseek-r1-distill-llama-70b` that used to sit here, which is in
+    // neither list. Anything an account does have that is missing below arrives on
+    // the next Fetch Latest Models; `curateProviderModels` keeps it if the provider
+    // still reports it.
+    //
+    // `openai/gpt-oss-120b` leads because it is the featured one, it carries the
+    // full 131k context, and it is the model Groq advertises for tool use — which
+    // is what agent mode needs. `qwen/qwen3.8-27b` is here for the same reason it
+    // is unusual: it is the only model on the account that accepts images.
     selectedModel: "openai/gpt-oss-120b",
     availableModels: [
       "openai/gpt-oss-120b",
       "openai/gpt-oss-20b",
-      "llama-3.3-70b-versatile",
-      "llama-3.1-8b-instant",
+      "qwen/qwen3.8-27b",
     ],
     speedBadge: "Fast",
   },
