@@ -17,6 +17,19 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.22] - 2026-09-29
+
+### Fixed
+
+- **A long reply scrolls into view, along with anything it adds underneath.** The
+  transcript decided whether to follow the tail by measuring the container *after*
+  the new message was in it, so a tall reply — a plan, typically — looked like a
+  reader who had scrolled away and the view stayed put. It now goes by the last
+  scroll event, which is the last thing the reader actually did. The **Implement
+  plan** button renders when the plan reaches disk, after the reply, so the write
+  result is a dependency of the follow too: the one thing the reply had just
+  announced was the one thing below the fold.
+
 ## [0.2.21] - 2026-09-29
 
 ### Fixed
@@ -349,7 +362,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.21...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.22...dev
+[0.2.22]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.21...v0.2.22
 [0.2.21]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.20...v0.2.21
 [0.2.20]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.19...v0.2.20
 [0.2.19]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.18...v0.2.19
