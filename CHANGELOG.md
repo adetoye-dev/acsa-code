@@ -17,6 +17,20 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.23] - 2026-09-29
+
+### Fixed
+
+- **A plan run's reply says where the plan went, every time.** The note was built
+  before the write it describes had finished, so the first plan run could finish
+  with no note at all, and a second run in the same mode could inherit the
+  previous run's success. The reply now waits for its own write, and each plan run
+  starts from a clean slate — including the record of what was last written, so an
+  identical plan is written again rather than skipped as already done.
+- **Undo moved onto the message it applies to.** It sat above the composer, where
+  it read as a setting unrelated to what you were reading. It is now a button
+  beside Copy on the reply, and its outcome is stated there too.
+
 ## [0.2.22] - 2026-09-29
 
 ### Fixed
@@ -362,7 +376,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.22...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.23...dev
+[0.2.23]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.22...v0.2.23
 [0.2.22]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.21...v0.2.22
 [0.2.21]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.20...v0.2.21
 [0.2.20]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.19...v0.2.20
