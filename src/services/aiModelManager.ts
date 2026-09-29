@@ -67,8 +67,20 @@ export const INITIAL_PROVIDERS: Record<AIProviderId, AIProviderConfig> = {
     isDefault: false,
     apiKey: "",
     baseUrl: "https://api.groq.com/openai/v1",
-    selectedModel: "deepseek-r1-distill-llama-70b",
-    availableModels: ["deepseek-r1-distill-llama-70b", "llama-3.3-70b-versatile"],
+    // Taken from Groq's own "Supported Models" page rather than from memory. The
+    // entry that used to be here, `deepseek-r1-distill-llama-70b`, is retired: it is
+    // not on that page and it is not in the model list a real account reports, so a
+    // fresh install shipped a default that could only ever fail — and the failure
+    // arrived as a 403 that read like a bad key. `openai/gpt-oss-120b` is the
+    // featured model, carries the same 131k context, and is the one Groq advertises
+    // for tool use, which is what agent mode needs.
+    selectedModel: "openai/gpt-oss-120b",
+    availableModels: [
+      "openai/gpt-oss-120b",
+      "openai/gpt-oss-20b",
+      "llama-3.3-70b-versatile",
+      "llama-3.1-8b-instant",
+    ],
     speedBadge: "Fast",
   },
   deepseek: {

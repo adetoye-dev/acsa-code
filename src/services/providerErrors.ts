@@ -41,7 +41,15 @@ export function explainProviderFailure(raw: string): string | null {
     return `The provider rejected the API key${at}. Check the key for this provider in Settings → Providers & API keys.`;
   }
   if (/\b403\b|forbidden/.test(text)) {
-    return `The provider refused the request as not permitted${at}. The key may lack access to this model.`;
+    // Deliberately not "the key is wrong". A 403 is about *permission*, and the
+    // two things that produce one in practice are the model and the account —
+    // a retired model name comes back 403 from Groq, while a bad key comes back
+    // 401 (measured: every malformed-credential probe against
+    // `api.groq.com/openai/v1/models` answered 401). Blaming the key sent the user
+    // to re-paste a working key while the actual fault was a model that no longer
+    // exists. The provider's own words travel beside this sentence now, so the
+    // reproduction is one line instead of guesswork.
+    return `The provider refused this request as not permitted${at}. That is usually the model or the account rather than the key — check the model is one your account lists.`;
   }
   if (/\b402\b|insufficient|quota|credit|balance/.test(text)) {
     return `The provider says the account has no credit left${at}. Top it up, or pick another provider.`;

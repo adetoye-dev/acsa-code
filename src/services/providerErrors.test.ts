@@ -42,6 +42,23 @@ describe("explaining a provider failure", () => {
     expect(explainProviderFailure("maximum context length exceeded")).toContain("context window");
   });
 
+  it("does not blame the key for a 403", () => {
+    // Measured against `api.groq.com/openai/v1/models`: an invalid, an empty, a
+    // wrongly prefixed and a non-ASCII credential all answer 401. A 403 is about
+    // permission, and the one that prompted this came from a retired model name. A
+    // message saying "the key may lack access to this model" sends the user to
+    // re-paste a key that was never the problem.
+    const explained = explainProviderFailure(
+      'HTTP 403: {"error":{"message":"Model deepseek-r1-distill-llama-70b not found"}}',
+    );
+    expect(explained).toContain("not permitted");
+    expect(explained).toContain("model");
+    // It may *mention* the key, but only to rule it out. What it must not do is
+    // send the user to the key field, which is where the old sentence pointed.
+    expect(explained).toMatch(/check the model/);
+    expect(explained).not.toMatch(/check the key|key (may|might|lacks)/i);
+  });
+
   it("says nothing rather than guessing at a failure it does not know", () => {
     // The important one. A confident wrong diagnosis sends someone to fix the wrong
     // thing, so an unrecognised failure must leave the old generic sentence alone.

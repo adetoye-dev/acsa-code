@@ -55,7 +55,13 @@ export function AiManagementDashboard({
   const [selectedModel, setSelectedModel] = useState("");
   const [showApiKey, setShowApiKey] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{ ok: boolean; latencyMs?: number; message?: string } | null>(null);
+  const [testResult, setTestResult] = useState<{
+    ok: boolean;
+    latencyMs?: number;
+    message?: string;
+    /** What the provider actually said, kept verbatim beside the plain-English line. */
+    detail?: string;
+  } | null>(null);
   // Which store took the last credential, and why it was not the keychain. Without
   // this the fallback is silent, and a build with no working keychain looks exactly
   // like one whose keys are encrypted by the OS.
@@ -272,9 +278,21 @@ export function AiManagementDashboard({
         // so a rejected key, an account with no credit and a dead network all read
         // "Connection failed. Please check endpoint or API key." `explainProviderFailure`
         // turns the reason into the fix, and falls back to the provider's own words.
-        const reason =
-          explainProviderFailure(String(data?.error ?? "")) ?? String(data?.error ?? data?.message ?? "");
-        setTestResult({ ok: Boolean(data?.success ?? data?.ok), latencyMs: data?.latencyMs, message: reason });
+        const raw = String(data?.error ?? "").trim();
+        const reason = explainProviderFailure(raw) ?? String(data?.error ?? data?.message ?? "");
+        // Keep the provider's own words as well as our reading of them. Replacing
+        // them outright is how "HTTP 403: <the provider's explanation>" became "the
+        // key may lack access to this model" — a guess the user could neither
+        // confirm nor disprove, because the sentence that would have settled it had
+        // been thrown away one line earlier. Settings already showed the raw text
+        // (see `SettingsModal`), so the two surfaces disagreed about the same
+        // failure.
+        setTestResult({
+          ok: Boolean(data?.success ?? data?.ok),
+          latencyMs: data?.latencyMs,
+          message: reason,
+          detail: raw && raw !== reason ? raw : undefined,
+        });
         const success = Boolean(data?.success ?? data?.ok);
         const rawList = data.models && data.models.length > 0 ? data.models : activeProvider.availableModels;
         const newModels: string[] = curateProviderModels(activeProvider.id, rawList);
@@ -1188,21 +1206,28 @@ export function AiManagementDashboard({
 
                 {testResult && (
                   <div
-                    className={`p-3 rounded-xl text-xs flex items-center gap-2 font-mono ${
+                    className={`p-3 rounded-xl text-xs flex items-start gap-2 font-mono ${
                       testResult.ok
                         ? "bg-emerald-950/60 border border-emerald-500/40 text-emerald-300"
                         : "bg-red-950/60 border border-red-500/40 text-red-300"
                     }`}
                   >
                     {testResult.ok ? (
-                      <Icon icon={CheckCircle2} className="w-4 h-4 shrink-0 text-emerald-400" />
+                      <Icon icon={CheckCircle2} className="w-4 h-4 shrink-0 mt-0.5 text-emerald-400" />
                     ) : (
-                      <Icon icon={AlertCircle} className="w-4 h-4 shrink-0 text-red-400" />
+                      <Icon icon={AlertCircle} className="w-4 h-4 shrink-0 mt-0.5 text-red-400" />
                     )}
-                    <span>
-                      {testResult.ok
-                        ? `Connection verified! Round-trip latency: ${testResult.latencyMs}ms`
-                        : testResult.message || "Connection failed. Please check endpoint or API key."}
+                    <span className="min-w-0">
+                      <span className="block">
+                        {testResult.ok
+                          ? `Connection verified! Round-trip latency: ${testResult.latencyMs}ms`
+                          : testResult.message || "Connection failed. Please check endpoint or API key."}
+                      </span>
+                      {testResult.detail && (
+                        <span className="block mt-1 text-3xs leading-relaxed text-red-400/80 break-words">
+                          Provider said: {testResult.detail}
+                        </span>
+                      )}
                     </span>
                   </div>
                 )}
