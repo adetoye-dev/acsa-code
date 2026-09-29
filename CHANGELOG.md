@@ -17,8 +17,24 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.20] - 2026-09-29
+
 ### Added
 
+- **The model picker offers what the mode can use.** Agent and plan runs list only
+  models that can drive them: providers the runtime can reach, plus local models
+  the Ollama daemon itself reports as supporting tools. Chat lists everything,
+  because chat only needs a model that can talk. When the model you have selected
+  cannot run the current mode, the menu says why and offers the best one that can —
+  and the app no longer auto-selects a local model it has measured failing.
+- **Plan mode reads the project, and writes the plan down.** It runs on the same
+  runtime as agent mode with the sandbox pinned read-only, so it can read files and
+  the index it is planning against, and it cannot edit code even if it decides to.
+  The plan is written to `implementation-plan.md` on every plan turn, and
+  **Implement plan** hands that file to agent mode in one click.
+- **Modes moved into the `+` menu**, beside the other things that decide what a
+  turn is. An active mode shows as a chip you can dismiss; agent is the default, so
+  it shows nothing.
 - **A landing page** (`site/`) — the app in its own words, with six real screenshots
   of it running a real project, filed under a sticky index of what each screen is
   for. It is its own package with its own lockfile and workflow, so the app's build
@@ -26,6 +42,18 @@ for them, not which file moved.
 
 ### Fixed
 
+- **Groq works at all now — your key was never the problem.** Every request the app
+  sent to a provider went out as `Python-urllib/3.x`, and Groq's edge refuses that
+  signature with `403 error code: 1010` *before* it looks at the credential. So a
+  valid key was reported as "the provider refused the request as not permitted" and
+  nothing the user could do to the key would have changed it. Requests now identify
+  the app. Chat and inline edit were failing the same way, not just the test button.
+- **Groq's agent runs talk to Groq directly.** Its `/responses` serves the Responses
+  API with real `function_call` items, so the translation layer is not in the path
+  any more.
+- **Groq's model list is what an account actually has.** The default was
+  `deepseek-r1-distill-llama-70b`, which Groq has retired, so a fresh setup offered a
+  model that could only ever fail.
 - **The site's Download button downloads the app.** It used to open the GitHub
   release page and leave you to find the file. It now points at
   `releases/latest/download/ACSA-Code.app.zip`, which GitHub serves from whatever
@@ -300,7 +328,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.19...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.20...dev
+[0.2.20]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.19...v0.2.20
 [0.2.19]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.18...v0.2.19
 [0.2.18]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.17...v0.2.18
 [0.2.17]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.16...v0.2.17
