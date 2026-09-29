@@ -655,6 +655,13 @@ export function AiAssistantChat({
   useEffect(() => {
     workflowModeRef.current = workflowMode;
   }, [workflowMode]);
+  // Entering or leaving a mode starts a new piece of work. Keeping the previous
+  // plan-file result would leave `Implement plan` enabled for a plan that is no
+  // longer on screen — the control has to mean "the plan you can see is written".
+  useEffect(() => {
+    setPlanFile(null);
+    lastWrittenPlan.current = "";
+  }, [workflowMode]);
   useEffect(() => {
     planFileRef.current = planFile;
   }, [planFile]);
@@ -1986,7 +1993,7 @@ Click to re-index project.`}
                           </button>
                         )}
 
-                        {workflowMode === "plan" && (
+                        {workflowMode === "plan" && planFile?.ok === true && (
                           <button
                             type="button"
                             onClick={() => {
@@ -2498,7 +2505,7 @@ Click to re-index project.`}
                     </button>
                   )}
 
-                  {workflowMode === "plan" && (
+                  {workflowMode === "plan" && planFile?.ok === true && (
                     <button
                       type="button"
                       onClick={() => {
