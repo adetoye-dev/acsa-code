@@ -720,9 +720,15 @@ export function AiAssistantChat({
    * than keeping the first draft of it.
    */
   useEffect(() => {
-    if (!planRunRef.current || status !== "success" || !projectRoot) return;
+    if (!planRunRef.current || status !== "success" || !projectRoot) {
+      setPlanWriteSettled(true);   // nothing to write, so nothing to wait for
+      return;
+    }
     const plan = (streamingAnswer || "").trim();
-    if (!plan || plan === lastWrittenPlan.current) return;
+    if (!plan || plan === lastWrittenPlan.current) {
+      setPlanWriteSettled(true);
+      return;
+    }
     lastWrittenPlan.current = plan;
     const path = `${projectRoot.replace(/\/+$/, "")}/implementation-plan.md`;
     writeTextFile(path, `${plan}\n`, projectRoot)
@@ -929,7 +935,7 @@ export function AiAssistantChat({
       // the reply text.
       // A plan run's reply is not final until its write has settled — the note is
       // built from that result, and there is nothing to say until it is known.
-      if (planRunRef.current && !planWriteSettled) return;
+      if (planRunRef.current && status === "success" && !planWriteSettled) return;
 
       const usedNoTools = agentSteps.some((step) => step.name === "No tools used");
       const localRun = Boolean(localProviderFor(selectedModelItem?.providerId)) && usedNoTools;

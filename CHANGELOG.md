@@ -17,6 +17,17 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.24] - 2026-09-29
+
+### Fixed
+
+- **A plan run that fails says so.** 0.2.23 made the reply wait for its plan write
+  before finalising, which was right for a run that writes — and wrong for one that
+  does not: a failed run, or one that produced no plan text, never started a write,
+  so the wait never ended and the transcript showed nothing at all. The wait now
+  applies only to a run that is going to write, and the failure message appears as
+  it should.
+
 ## [0.2.23] - 2026-09-29
 
 ### Fixed
@@ -376,7 +387,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.23...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.24...dev
+[0.2.24]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.23...v0.2.24
 [0.2.23]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.22...v0.2.23
 [0.2.22]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.21...v0.2.22
 [0.2.21]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.20...v0.2.21
