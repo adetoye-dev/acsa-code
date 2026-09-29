@@ -17,6 +17,15 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Groq is back behind the tool adapter.** 0.2.20 sent its agent runs straight to
+  Groq's Responses API, which answers 200 to a probe and then rejects the runtime's
+  real request body: a run against `openai/gpt-oss-120b` failed with
+  `invalid JSON body`. Serving the protocol and accepting this client's shape of it
+  are different claims, and the earlier probes only proved the first. Groq's agent
+  runs work on the adapter path, as they did before 0.2.20.
+
 ## [0.2.20] - 2026-09-29
 
 ### Added

@@ -111,18 +111,18 @@ export function localProviderFor(providerId: string | undefined): string | null 
  * pointing the runtime straight at one works only once its Responses support has
  * been checked. One extra hop, no 404s.
  *
- * Groq joined on a probe rather than on its documentation, because the two have
- * disagreed before (its docs list two models a live account does not have). Asked
- * for a tool call with `openai/gpt-oss-120b`, `POST /openai/v1/responses`
- * answered 200 with a real `function_call` item — name, `call_id`, JSON-string
- * arguments — alongside a `reasoning` item and the token counts. Then the
- * runtime's own request was pointed at the same URL with a deliberately invalid
- * key, because the edge in front of Groq blocks some clients before it looks at
- * credentials: it answered `401 Unauthorized … url:
- * https://api.groq.com/openai/v1/responses`, i.e. it reached Groq's auth. A 403
- * would have meant keeping the adapter regardless of what the API supports.
+ * Groq was tried here and taken back out. Its `/openai/v1/responses` does serve
+ * the Responses API — asked for a tool call it answered 200 with a real
+ * `function_call`, and the runtime's own request reached its auth rather than the
+ * edge in front of it. What neither probe covered is whether the runtime's
+ * *actual* request body is accepted, and it is not: a real agent run against
+ * `openai/gpt-oss-120b` came back `{"error":{"message":"invalid JSON body",
+ * "type":"invalid_request_error"}}`. Serving the protocol and accepting this
+ * client's shape of it are different claims, and only the second one matters.
+ * Back behind the adapter until a captured request says which field it objects
+ * to. The adapter is the path Groq worked on before.
  */
-export const RESPONSES_CAPABLE_PROVIDER_IDS = new Set(["openai", "deepseek", "groq"]);
+export const RESPONSES_CAPABLE_PROVIDER_IDS = new Set(["openai", "deepseek"]);
 
 /**
  * Providers whose API is not OpenAI-shaped, so the adapter cannot front them

@@ -384,10 +384,25 @@ url: https://api.groq.com/openai/v1/responses, cf-ray: a42a0115cb5aaf03-NBO
 not apply to the runtime. A 403 would have meant keeping the adapter whatever the
 API supports.
 
-The app therefore emits a normal `[model_providers.acsa-groq]` table — namespaced,
-because the runtime's built-in ids are not ours to keep up with — with
-`wire_api = "responses"` and `env_key = "ACSA_CODEX_API_KEY"`, and starts no
-adapter for it.
+### Groq was tried on this path and taken back off it
+
+Both probes above passed and the direct path still failed in use. A real agent run
+against `openai/gpt-oss-120b` returned:
+
+```
+⚠️ Task Failed: {"error":{"message":"invalid JSON body","type":"invalid_request_error"}}
+```
+
+So Groq serves the protocol and permits the call, but not the request body this
+runtime builds. That is the difference the two probes could not see, and the
+reason the direct path is only shipped once a *turn* has completed on it — the
+probes prove reachability, not compatibility.
+
+Groq is back behind the adapter (`RESPONSES_CAPABLE_PROVIDER_IDS` has two entries
+again), which is the path it worked on before. To retry the direct route: add it
+back, run one real turn, and capture the outgoing body with the logging proxy
+described above to see which field Groq objects to — `invalid JSON body` with no
+field named is exactly the failure a capture is for.
 
 Two things this does **not** yet prove, because both need a valid key: that a
 complete agent turn finishes over the direct path, and that Groq's
