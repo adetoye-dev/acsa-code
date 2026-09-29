@@ -275,6 +275,18 @@ describe("which models can run the agent", () => {
     ).toBe("qwen3.5:9b");
   });
 
+  it("stops offering a model whose tier refused the request as too large", () => {
+    // Groq's free tier, measured: 8k tokens per minute against an 18k request.
+    // The agent's instructions are most of it, so there is no smaller version.
+    expect(models.canRunAgent("groq", "openai/gpt-oss-120b")).toBe(true);
+    models.rememberTierTooSmall("groq", "openai/gpt-oss-120b");
+    expect(models.canRunAgent("groq", "openai/gpt-oss-120b")).toBe(false);
+    // Only the model that was refused: another model may have another allowance.
+    expect(models.canRunAgent("groq", "llama-3.3-70b-versatile")).toBe(true);
+    // And it is not a fact about the provider for chat mode, which does not filter.
+    expect(models.tierRefusedTooLarge("groq", "openai/gpt-oss-120b")).toBe(true);
+  });
+
   it("still picks something when every installed model is a chat model", () => {
     // A worker that cannot tool-call is bad; no worker at all is worse, and the
     // run's own report says plainly that nothing ran.

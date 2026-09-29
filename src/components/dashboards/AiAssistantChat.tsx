@@ -50,7 +50,7 @@ import { ConfirmDialog } from "../ui/ConfirmDialog";
 import type { AgentQuestion, PendingFileChange, ProjectIndexState } from "../../hooks/usePipeline";
 import { approvalSummary, countDiffLines } from "../../hooks/usePipeline";
 import { localProviderFor, type ApprovalDecision } from "../../services/agentApproval";
-import { canRunAgent } from "../../services/aiModelManager";
+import { canRunAgent, rememberTierTooSmall } from "../../services/aiModelManager";
 import { writeTextFile } from "../../services/fileAccess";
 import { formatDuration } from "../../services/agentTurnLimit";
 import { summarizeFailure } from "../../services/providerErrors";
@@ -936,6 +936,17 @@ export function AiAssistantChat({
       // A plan run's reply is not final until its write has settled — the note is
       // built from that result, and there is nothing to say until it is known.
       if (planRunRef.current && status === "success" && !planWriteSettled) return;
+
+      // Saying "too large for this tier" once is not enough — the next run would
+      // try the same thing again. Remember it, so the picker can drop that model
+      // from the agent list instead of offering a run that cannot fit.
+      if (
+        status === "failed" &&
+        selectedModelItem &&
+        /request too large|tokens per minute|\b413\b/i.test(`${failureDetail ?? ""} ${failureSummary ?? ""}`)
+      ) {
+        rememberTierTooSmall(selectedModelItem.providerId, selectedModelItem.model);
+      }
 
       const usedNoTools = agentSteps.some((step) => step.name === "No tools used");
       const localRun = Boolean(localProviderFor(selectedModelItem?.providerId)) && usedNoTools;

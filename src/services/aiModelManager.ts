@@ -1110,6 +1110,27 @@ const MEASURED_NO_AGENT: ReadonlyArray<RegExp> = [/^qwen2\.5-coder/i, /^deepseek
  * eligible, because hiding a model the app cannot judge is worse than a run
  * failing with the sentence it already prints ("Nothing ran…").
  */
+/**
+ * Providers and tiers that have already refused one request as too large.
+ *
+ * A per-minute cap is an account fact we cannot read anywhere, and a table of
+ * advertised limits would go stale the way Groq's model list did. So this is set
+ * by the refusal itself: a 413 saying the request exceeds the allowance means one
+ * agent turn does not fit in that tier, at all. Remembered for the session, so the
+ * picker can stop offering it before the run instead of after it. Upgrading the
+ * account clears it on the next launch.
+ */
+const TIER_REFUSED_TOO_LARGE = new Set<string>();
+
+export function rememberTierTooSmall(providerId: string, model: string): void {
+  const key = capabilityKey(providerId, model);
+  if (key !== "::") TIER_REFUSED_TOO_LARGE.add(key);
+}
+
+export function tierRefusedTooLarge(providerId: string, model: string): boolean {
+  return TIER_REFUSED_TOO_LARGE.has(capabilityKey(providerId, model));
+}
+
 export function canRunAgent(providerId: string | undefined, model: string | undefined): boolean {
   const id = (providerId || "").toLowerCase();
   const name = (model || "").trim().toLowerCase();
@@ -1120,6 +1141,11 @@ export function canRunAgent(providerId: string | undefined, model: string | unde
   if (!RESPONSES_CAPABLE_PROVIDER_IDS.has(id) && !needsToolAdapter(id)) return false;
 
   if (MEASURED_NO_AGENT.some((pattern) => pattern.test(name))) return false;
+
+  // A tier that has already refused a request as too large cannot run a turn — the
+  // agent's own instructions are most of the request, so there is no smaller
+  // version of it to send.
+  if (tierRefusedTooLarge(id, model ?? "")) return false;
 
   // Cloud models report no capability data anywhere we can read, and every one
   // this app lists can call tools.
