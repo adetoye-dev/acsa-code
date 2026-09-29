@@ -589,6 +589,14 @@ export function AiAssistantChat({
 
   /** Whether this turn's plan reached disk. Drives the line under the reply. */
   const [planFile, setPlanFile] = useState<{ path: string; ok: boolean } | null>(null);
+  /**
+   * False while a plan run's write is still in flight.
+   *
+   * The reply has to be finalised *after* that write settles: finalising first
+   * built its note from a result that had not arrived yet, which is why the first
+   * plan run finished with no note at all.
+   */
+  const [planWriteSettled, setPlanWriteSettled] = useState(true);
   const lastWrittenPlan = useRef("");
   // Whether the run in flight was started as a plan run. Read at send time, not at
   // finish time: asking `workflowMode` when the turn ends means a mode change
@@ -688,6 +696,7 @@ export function AiAssistantChat({
     const path = `${projectRoot.replace(/\/+$/, "")}/implementation-plan.md`;
     writeTextFile(path, `${plan}\n`, projectRoot)
       .then(() => setPlanFile({ path, ok: true }))
+      .finally(() => setPlanWriteSettled(true))
       // The plan is still in the transcript, so a failed write is a note about the
       // file, not a failed run.
       .catch(() => setPlanFile({ path, ok: false }));
@@ -887,6 +896,10 @@ export function AiAssistantChat({
       // The pipeline already reports a run that never touched a tool as a step
       // named "No tools used" — that is the measurement, rather than a guess from
       // the reply text.
+      // A plan run's reply is not final until its write has settled — the note is
+      // built from that result, and there is nothing to say until it is known.
+      if (planRunRef.current && !planWriteSettled) return;
+
       const usedNoTools = agentSteps.some((step) => step.name === "No tools used");
       const localRun = Boolean(localProviderFor(selectedModelItem?.providerId)) && usedNoTools;
       const noChangesNote = localRun
@@ -952,7 +965,7 @@ export function AiAssistantChat({
       });
     }
     prevStatusRef.current = status;
-  }, [status, failureDetail, failureSummary, noFileChanges, waitingForUser, turnChanges, projectRoot, selectedModelItem, streamingAnswer, streamingThought, agentSteps]);
+  }, [status, failureDetail, failureSummary, noFileChanges, waitingForUser, turnChanges, projectRoot, selectedModelItem, streamingAnswer, streamingThought, agentSteps, planWriteSettled]);
 
   /**
    * Ask Ollama what is actually installed, and believe it.
@@ -1341,6 +1354,10 @@ export function AiAssistantChat({
         }));
 
       planRunRef.current = mode === "plan";
+      planFileRef.current = null;
+      lastWrittenPlan.current = "";
+      setPlanFile(null);
+      setPlanWriteSettled(mode !== "plan");
       onRunPipeline(
         promptToSend,
         selectedModelItem
