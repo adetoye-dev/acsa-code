@@ -345,13 +345,20 @@ h1 { font-size: clamp(2.6rem, 6vw, 4.15rem); }
 }
 
 /* ── Real screenshots ────────────────────────────────────────────────────────
-   The captures include the window's own bottom chrome: the status bar, and the
-   shell's prompt line, which shows the machine it was taken on. Fixed ratio plus
-   `object-position: top` trims that off without touching the image. */
+   The captures are stored cropped to this ratio and 2224px wide — 2x the 1112px
+   column they are displayed in. The crop is baked into the file rather than done
+   here, because the bottom of a capture is the app's status bar and, in the
+   terminal shots, a shell prompt line printing the machine it was taken on.
+   Trimming that here would still ship it; trimming it there does not.
+
+   The ratio stays as the guard. `cover` frames a future replacement that arrives
+   uncropped instead of showing its chrome — `stretch` would instead squash the
+   whole image by whatever the ratio difference is, which on a 1800x1125 capture
+   is a 7% vertical squeeze that is easy to see in the text. */
 .shot--real img {
   display: block; width: 100%; height: auto;
   aspect-ratio: 1800 / 1050;
-  object-fit: stretch; object-position: top center;
+  object-fit: cover; object-position: top center;
 }
 
 /* A drawing that reads like a screenshot says which it is. */
