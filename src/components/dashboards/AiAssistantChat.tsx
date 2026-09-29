@@ -590,6 +590,11 @@ export function AiAssistantChat({
   /** Whether this turn's plan reached disk. Drives the line under the reply. */
   const [planFile, setPlanFile] = useState<{ path: string; ok: boolean } | null>(null);
   const lastWrittenPlan = useRef("");
+  // Whether the run in flight was started as a plan run. Read at send time, not at
+  // finish time: asking `workflowMode` when the turn ends means a mode change
+  // mid-run silently skips the write, and leaves the reply's note disagreeing with
+  // whether the file exists.
+  const planRunRef = useRef(false);
 
   // The registry hydrates asynchronously (from the database, over IPC), so reading
   // it in a mount-time initialiser can legitimately find nothing — and then chat
@@ -676,7 +681,7 @@ export function AiAssistantChat({
    * than keeping the first draft of it.
    */
   useEffect(() => {
-    if (workflowMode !== "plan" || status !== "success" || !projectRoot) return;
+    if (!planRunRef.current || status !== "success" || !projectRoot) return;
     const plan = (streamingAnswer || "").trim();
     if (!plan || plan === lastWrittenPlan.current) return;
     lastWrittenPlan.current = plan;
@@ -686,7 +691,7 @@ export function AiAssistantChat({
       // The plan is still in the transcript, so a failed write is a note about the
       // file, not a failed run.
       .catch(() => setPlanFile({ path, ok: false }));
-  }, [workflowMode, status, streamingAnswer, projectRoot]);
+  }, [status, streamingAnswer, projectRoot]);
 
   const isStreamingRef = useRef(false);
 
@@ -909,7 +914,7 @@ export function AiAssistantChat({
       const finalContent = isSuccess
         ? (streamingAnswer || "Task completed.") +
           planNote +
-          (noFileChanges && workflowModeRef.current !== "plan" ? noChangesNote : "") +
+          (noFileChanges && !planRunRef.current ? noChangesNote : "") +
           waitingNote
         : failureDetail || failureSummary
         ? `⚠️ **Task Failed:** ${failureDetail || failureSummary}`
@@ -1303,6 +1308,7 @@ export function AiAssistantChat({
           content: m.content.slice(0, 1500),
         }));
 
+      planRunRef.current = mode === "plan";
       onRunPipeline(
         promptToSend,
         selectedModelItem
@@ -1377,6 +1383,7 @@ export function AiAssistantChat({
 
     const nextHistory = [...chatMessages, userMsg];
     const withPlaceholder = [...nextHistory, assistantPlaceholder];
+    planRunRef.current = false;
     setPlanFile(null);
     setChatMessages(withPlaceholder);
     saveChatHistory(withPlaceholder, projectRoot);
@@ -1993,24 +2000,6 @@ Click to re-index project.`}
                           </button>
                         )}
 
-                        {workflowMode === "plan" && planFile?.ok === true && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              // Switched in the same call rather than through the
-                              // modal, and the run is told which mode to use, so it
-                              // does not race the state update and run read-only.
-                              setWorkflowMode("agent");
-                              void handleSend(IMPLEMENT_PLAN_PROMPT, "agent");
-                            }}
-                            disabled={isStreaming}
-                            title="Switch to agent mode and implement implementation-plan.md"
-                            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-semibold transition-colors shadow-sm"
-                          >
-                            <Icon icon={Wrench} className="w-3 h-3 shrink-0" />
-                            <span className="font-sans text-2xs">Implement plan</span>
-                          </button>
-                        )}
 
                         {/* Model Selector Pill */}
                         <div className="relative" ref={heroMenuRef}>
@@ -2162,6 +2151,27 @@ Click to re-index project.`}
           onCancelPipeline={onCancelPipeline}
           bottomRef={chatBottomRef}
         />
+
+        {/* Under the plan it refers to, and only once that plan is on disk. It is
+            not in the composer: a control there is present before anything has been
+            planned, which is how it came to start a write-enabled turn naming a file
+            that did not exist. */}
+        {planFile?.ok === true && !isStreaming && (
+          <div className="px-3 pb-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                setWorkflowMode("agent");
+                void handleSend(IMPLEMENT_PLAN_PROMPT, "agent");
+              }}
+              title="Switch to agent mode and implement implementation-plan.md"
+              className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold transition-colors shadow-sm"
+            >
+              <Icon icon={Wrench} className="w-3.5 h-3.5 shrink-0" />
+              <span className="font-sans">Implement plan</span>
+            </button>
+          </div>
+        )}
         </>
       </div>
 
@@ -2505,21 +2515,6 @@ Click to re-index project.`}
                     </button>
                   )}
 
-                  {workflowMode === "plan" && planFile?.ok === true && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setWorkflowMode("agent");
-                        void handleSend(IMPLEMENT_PLAN_PROMPT, "agent");
-                      }}
-                      disabled={isStreaming}
-                      title="Switch to agent mode and implement implementation-plan.md"
-                      className="relative shrink-0 flex items-center gap-1 px-2 py-1 rounded-md bg-purple-600 hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-semibold transition-colors"
-                    >
-                      <Icon icon={Wrench} className="w-3 h-3 shrink-0" />
-                      <span className="font-sans text-2xs">Implement plan</span>
-                    </button>
-                  )}
 
                   {/* Model Selector Dropdown Button */}
                   <div className="relative min-w-0 flex-1" ref={menuRef}>
