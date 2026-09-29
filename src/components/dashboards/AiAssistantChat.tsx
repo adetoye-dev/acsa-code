@@ -10,7 +10,7 @@
 
 import { useState, useRef, useEffect, useCallback, memo } from "react";
 import { Icon } from "../ui/Icon";
-import { Trash2, Copy, GitCommit, Maximize2, Minimize2, RefreshCw, Square, User, Check, ChevronDown, ChevronRight, Code, Code2, MessageSquare, ListTodo, X, Bot, CheckCircle2, Plus, Folder, GitBranch, ArrowUp, Image as ImageIcon, Database, AlertCircle, AtSign, Sparkles, Shield, Terminal, Search, Wrench, Users, HelpCircle } from "lucide-react";
+import { RotateCcw, Trash2, Copy, GitCommit, Maximize2, Minimize2, RefreshCw, Square, User, Check, ChevronDown, ChevronRight, Code, Code2, MessageSquare, ListTodo, X, Bot, CheckCircle2, Plus, Folder, GitBranch, ArrowUp, Image as ImageIcon, Database, AlertCircle, AtSign, Sparkles, Shield, Terminal, Search, Wrench, Users, HelpCircle } from "lucide-react";
 import type { PipelineStatus, PipelineOutputLine } from "../../types/telemetry";
 import { FOLLOW_THRESHOLD_PX, isFollowingBottom } from "../../services/scrollAnchor";
 import {
@@ -177,6 +177,11 @@ export function cleanThoughtText(raw?: string): string {
 }
 
 interface ChatTranscriptProps {
+  /** Set on the message whose turn can be undone; null when there is nothing to undo. */
+  undoMessageId?: string | null;
+  undoBusy?: boolean;
+  undoNotice?: string | null;
+  onUndo?: () => Promise<void>;
   chatMessages: ChatMessage[];
   isWide: boolean;
   status: PipelineStatus;
@@ -220,6 +225,10 @@ const ChatTranscript = memo(function ChatTranscript({
   turnLimitMinutes,
   currentAgentPhase,
   blockedOn,
+  undoMessageId = null,
+  undoBusy = false,
+  undoNotice = null,
+  onUndo,
   turnChanges,
   pendingQuestion,
   selectedModelItem,
@@ -425,6 +434,28 @@ const ChatTranscript = memo(function ChatTranscript({
             {msg.content && (
               <div className={`mt-1 flex items-center ${msg.role === "user" ? "justify-end" : "justify-start"} px-1`}>
                 <CopyMessageButton text={msg.content} />
+                {onUndo && undoMessageId === msg.id && (
+                  <button
+                    type="button"
+                    disabled={undoBusy}
+                    data-testid="undo-last-turn"
+                    onClick={() => void onUndo()}
+                    title="Put these files back to how they were before that turn"
+                    className={`inline-flex items-center gap-1 text-3xs px-1.5 py-0.5 rounded border transition-all select-none ${
+                      undoBusy
+                        ? "text-muted border-transparent cursor-not-allowed"
+                        : "text-muted hover:text-zinc-200 hover:bg-zinc-800/80 border-transparent cursor-pointer"
+                    }`}
+                  >
+                    <Icon icon={RotateCcw} className="w-3 h-3" />
+                    {undoBusy ? "Undoing…" : "Undo"}
+                  </button>
+                )}
+                {onUndo && undoMessageId === msg.id && undoNotice && (
+                  <span role="status" data-testid="undo-notice" className="text-3xs text-muted">
+                    {undoNotice}
+                  </span>
+                )}
               </div>
             )}
           </div>
@@ -1282,6 +1313,29 @@ export function AiAssistantChat({
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll);
   }, []);
+
+  /**
+   * Undo belongs to the turn that just finished, so it is offered *on that
+   * message* rather than in the composer — where it was a control that had
+   * nothing to do with what you were reading.
+   *
+   * The last assistant message is the one it applies to: snapshots are kept per
+   * turn and pruned, so offering it on every old reply would be a surprise rather
+   * than a convenience.
+   */
+  const undoMessageId =
+    status !== "running" && turnChanges.length > 0 && onUndoLastTurn
+      ? [...chatMessages].reverse().find((message) => message.role === "assistant")?.id ?? null
+      : null;
+
+  const handleUndo = useCallback(async () => {
+    if (!onUndoLastTurn) return;
+    setUndoBusy(true);
+    setUndoNotice(null);
+    const failure = await onUndoLastTurn();
+    setUndoNotice(failure ?? "Undone — those files are back to how they were before that turn.");
+    setUndoBusy(false);
+  }, [onUndoLastTurn]);
 
   // Follow the tail on new messages, logs and streaming updates — but only while
   // the reader is already at the bottom. Scrolling up to read something used to
@@ -2184,6 +2238,10 @@ Click to re-index project.`}
           {/* Conversation Messages */}
         <ChatTranscript
           chatMessages={chatMessages}
+          undoMessageId={undoMessageId}
+          undoBusy={undoBusy}
+          undoNotice={undoNotice}
+          onUndo={handleUndo}
           isWide={isWide}
           status={status}
           streamingAnswer={streamingAnswer}
@@ -2242,49 +2300,6 @@ Click to re-index project.`}
               >
                 <Icon icon={AlertCircle} className="w-3.5 h-3.5 mt-0.5 shrink-0 text-amber-300" />
                 <span className="break-words">{steerError}</span>
-              </div>
-            )}
-            {/* The change log said what a turn changed and offered no way back.
-                Only for the turn that just finished: snapshots are kept per turn
-                and pruned, and "undo" after two more turns would be a surprise
-                rather than a convenience. */}
-            {status !== "running" && turnChanges.length > 0 && onUndoLastTurn && (
-              <div className="mb-2 flex items-center justify-between gap-3 rounded-xl border border-zinc-800 bg-zinc-950/60 px-3 py-2">
-                <span className="text-2xs text-zinc-300">
-                  The last turn changed {turnChanges.length}{" "}
-                  {turnChanges.length === 1 ? "file" : "files"}.
-                </span>
-                <button
-                  type="button"
-                  disabled={undoBusy}
-                  data-testid="undo-last-turn"
-                  onClick={async () => {
-                    if (!onUndoLastTurn) return;
-                    setUndoBusy(true);
-                    setUndoNotice(null);
-                    const failure = await onUndoLastTurn();
-                    setUndoNotice(
-                      failure ?? "Undone — those files are back to how they were before that turn.",
-                    );
-                    setUndoBusy(false);
-                  }}
-                  className={`shrink-0 rounded-lg border px-2.5 py-1 text-2xs font-semibold transition-colors ${
-                    undoBusy
-                      ? "border-zinc-800 text-zinc-500 cursor-not-allowed"
-                      : "border-zinc-700 text-zinc-200 hover:border-zinc-600 hover:text-white cursor-pointer"
-                  }`}
-                >
-                  {undoBusy ? "Undoing…" : "Undo"}
-                </button>
-              </div>
-            )}
-            {undoNotice && (
-              <div
-                role="status"
-                data-testid="undo-notice"
-                className="mb-2 rounded-xl border border-zinc-800 bg-zinc-950/60 px-3 py-2 text-2xs leading-relaxed text-zinc-300"
-              >
-                {undoNotice}
               </div>
             )}
             {/* The agent is blocked until this is answered. */}

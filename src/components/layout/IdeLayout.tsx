@@ -852,7 +852,8 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
       activePath?: string,
       code?: string,
       history?: Array<{ role: string; content: string }>,
-      images?: string[]
+      images?: string[],
+      runMode?: "agent" | "plan"
     ) => {
       if (override) {
         setAiSettings({
@@ -869,7 +870,8 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
         activePath || activeTabPath || undefined,
         code || selectedCode || undefined,
         history,
-        images
+        images,
+        runMode
       );
     },
     onCancelPipeline: cancelPipeline,
