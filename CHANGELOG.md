@@ -17,8 +17,20 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.21] - 2026-09-29
+
 ### Fixed
 
+- **Plan mode writes `implementation-plan.md`, and only offers to implement it once
+  it has.** The write was gated on the mode at the moment the turn *finished*, so
+  changing modes mid-run skipped it — the reply then said nothing had changed and no
+  file appeared. Whether a run is a plan run is now recorded when it is sent, and the
+  note and the file read the same flag.
+- **Implement plan moved out of the composer** and into the transcript, under the
+  plan it refers to. In the composer it was present as soon as plan mode was on —
+  before anything had been planned — and clicking it started a write-enabled agent
+  turn naming a file that did not exist. It now appears only after the plan is on
+  disk, and disappears once implementation starts.
 - **Groq is back behind the tool adapter.** 0.2.20 sent its agent runs straight to
   Groq's Responses API, which answers 200 to a probe and then rejects the runtime's
   real request body: a run against `openai/gpt-oss-120b` failed with
@@ -337,7 +349,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.20...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.21...dev
+[0.2.21]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.20...v0.2.21
 [0.2.20]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.19...v0.2.20
 [0.2.19]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.18...v0.2.19
 [0.2.18]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.17...v0.2.18
