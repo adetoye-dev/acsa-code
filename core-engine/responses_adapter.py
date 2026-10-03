@@ -671,52 +671,6 @@ def body_hint(body: bytes) -> str:
     return ""
 
 
-def _provider_id_for_ledger() -> str:
-    """Which provider the ledger should file this turn under.
-
-    The adapter is not told the app's provider id — the Rust caller passes the
-    upstream URL and the credential, not the name — so the vendor is inferred from
-    the host, which is what the ledger's pricing table keys on. A local runtime is
-    one id either way.
-    """
-    if not upstream_is_openai():
-        return "ollama"
-    host = (UPSTREAM_URL or "").split("://")[-1].split("/")[0].lower()
-    for needle, provider in (
-        ("groq", "groq"), ("deepseek", "deepseek"), ("openai", "openai"),
-        ("nvidia", "nvidia"), ("together", "together"), ("openrouter", "openrouter"),
-        ("moonshot", "moonshot"), ("cohere", "cohere"), ("x.ai", "xai"), ("grok", "xai"),
-    ):
-        if needle in host:
-            return provider
-    return "openai"
-
-
-def record_turn_usage(provider: str, model: str, prompt_tokens: int, output_tokens: int) -> None:
-    """Append one agent turn to the app's usage ledger. Best-effort, like ai_cli's.
-
-    Until this existed the ledger held only chat calls: the adapter received the
-    token counts and passed them on for the runtime to bill against, but never
-    recorded them itself — so an agent run, the expensive kind, left no trace. That
-    is the number any question about what a run costs turns on.
-    """
-    try:
-        import db_cli
-
-        db_cli._cmd_usage_record(
-            {
-                "provider": provider,
-                "model": model or provider,
-                "prompt_tokens": int(prompt_tokens or 0),
-                "completion_tokens": int(output_tokens or 0),
-                "latency_ms": 0.0,
-                "project_path": None,
-            }
-        )
-    except Exception as error:  # noqa: BLE001 - metering must never fail a turn
-        warn("could not record usage:", error)
-
-
 def envelope(resp_id: str, model: str, status: str, output, usage=None, error=None) -> dict:
     return {
         "background": False,
@@ -1054,8 +1008,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 }
             )
         finished.extend(self._pending_calls)
-        record_turn_usage(_provider_id_for_ledger(), model, prompt_tokens, output_tokens)
-
         # Report the counters Ollama gives us, so the app's usage ledger and cost
         # page show real numbers for local runs instead of zeros.
         usage = None
