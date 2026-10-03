@@ -464,7 +464,7 @@ async function runAgent(params: {
           // Metering is diagnostics and must never fail a run — but it failed
           // *silently*, and a finished plan run left no ledger row with nothing to
           // say why. The write is still best-effort; the silence is not.
-          params.log?.(\`[usage] this turn's tokens were not recorded: \${error}\`);
+          params.log?.("[usage] this turn's tokens were not recorded: " + String(error));
         }
       })();
     }
