@@ -1,11 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  DEFAULT_TURN_LIMIT_MINUTES,
-  formatDuration,
-  shouldStopTurn,
-  turnLimitMs,
-  turnLimitNotice,
-} from "./agentTurnLimit";
+import { DEFAULT_TURN_LIMIT_MINUTES, formatDuration, shouldStopTurn, turnLimitMs, turnLimitNotice, stopReason, turnStepLimitNotice } from "./agentTurnLimit";
 
 describe("the turn limit", () => {
   it("converts minutes to milliseconds, and zero to no limit at all", () => {
@@ -43,5 +37,28 @@ describe("the turn limit", () => {
     const notice = turnLimitNotice(20);
     expect(notice).toMatch(/20 minute/);
     expect(notice).toMatch(/Settings/);
+  });
+});
+
+describe("the step ceiling", () => {
+  const base = { elapsedMs: 0, limitMinutes: 20, blockedOnUser: false };
+
+  it("stops a busy turn that a clock would never catch", () => {
+    // 3m15s and 29 steps is the measured case: well inside the clock, far past
+    // what a five-item plan needs.
+    expect(stopReason({ ...base, steps: 29 })).toBeNull();
+    expect(stopReason({ ...base, steps: 60 })).toBe("steps");
+    expect(stopReason({ ...base, steps: 200 })).toBe("steps");
+  });
+
+  it("reports time as time, so the sentence can be the right one", () => {
+    expect(stopReason({ ...base, elapsedMs: 21 * 60_000 })).toBe("time");
+    expect(turnStepLimitNotice(60)).toContain("60 steps");
+  });
+
+  it("keeps the old boolean answer, and neither bound counts a waiting turn", () => {
+    expect(shouldStopTurn({ ...base, steps: 500 })).toBe(true);
+    expect(shouldStopTurn({ elapsedMs: 99 * 60_000, steps: 500, limitMinutes: 20, blockedOnUser: true })).toBe(false);
+    expect(stopReason({ ...base, steps: 500, blockedOnUser: true })).toBeNull();
   });
 });
