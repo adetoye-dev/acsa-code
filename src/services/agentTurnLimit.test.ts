@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_TURN_LIMIT_MINUTES, formatDuration, shouldStopTurn, turnLimitMs, turnLimitNotice, stopReason, turnStepLimitNotice } from "./agentTurnLimit";
+import { DEFAULT_TURN_LIMIT_MINUTES, formatDuration, shouldStopTurn, turnLimitMs, turnLimitNotice, stopReason, turnStepLimitNotice, repeatedAction, turnRepeatNotice } from "./agentTurnLimit";
 
 describe("the turn limit", () => {
   it("converts minutes to milliseconds, and zero to no limit at all", () => {
@@ -60,5 +60,51 @@ describe("the step ceiling", () => {
     expect(shouldStopTurn({ ...base, steps: 500 })).toBe(true);
     expect(shouldStopTurn({ elapsedMs: 99 * 60_000, steps: 500, limitMinutes: 20, blockedOnUser: true })).toBe(false);
     expect(stopReason({ ...base, steps: 500, blockedOnUser: true })).toBeNull();
+  });
+});
+
+describe("the repeat detector", () => {
+  const base = { elapsedMs: 0, limitMinutes: 20, blockedOnUser: false };
+
+  it("fires on the same action five times, not on five different ones", () => {
+    // Reading files is the flow. Reading the same file five times is not.
+    expect(stopReason({ ...base, signatures: ["cat a", "cat a", "cat a", "cat a"] })).toBeNull();
+    expect(
+      stopReason({ ...base, signatures: ["cat a", "cat a", "cat a", "cat a", "cat a"] })
+    ).toBe("repeats");
+    expect(
+      stopReason({ ...base, signatures: ["cat a", "cat b", "cat c", "cat d", "cat e", "cat f"] })
+    ).toBeNull();
+  });
+
+  it("compares whole actions, so different paths are not a loop", () => {
+    // Normalising is the caller's job and is where this could go wrong: a
+    // normaliser that stripped the path would call these a loop.
+    expect(repeatedAction(["cat src/a.ts", "cat src/b.ts", "cat src/c.ts"], 3)).toBeNull();
+    expect(repeatedAction(["npm test", "npm test", "npm test"], 3)).toEqual({
+      signature: "npm test",
+      count: 3,
+    });
+  });
+
+  it("counts across the run, so an alternating loop still fires", () => {
+    expect(
+      stopReason({ ...base, repeatLimit: 3, signatures: ["npm test", "cat a", "npm test", "cat a", "npm test"] })
+    ).toBe("repeats");
+  });
+
+  it("names the action, because 'too many steps' tells the reader nothing", () => {
+    expect(turnRepeatNotice("npm test", 5)).toContain("npm test");
+  });
+
+  it("keeps the total as a backstop, and a loop wins over it", () => {
+    expect(stopReason({ ...base, steps: 60, signatures: ["a", "b", "c"] })).toBe("steps");
+    expect(stopReason({ ...base, steps: 500, signatures: ["a", "a", "a", "a", "a"] })).toBe("repeats");
+  });
+
+  it("still counts neither bound while the turn waits on the user", () => {
+    expect(
+      stopReason({ ...base, blockedOnUser: true, steps: 500, signatures: ["a", "a", "a", "a", "a"] })
+    ).toBeNull();
   });
 });
