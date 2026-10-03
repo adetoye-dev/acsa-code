@@ -36,7 +36,11 @@ import {
 import { ensureProvidersHydrated } from "../services/aiModelManager";
 import {
   DEFAULT_TURN_LIMIT_MINUTES,
-  shouldStopTurn,
+  stopReason,
+  repeatedAction,
+  actionSignature,
+  turnRepeatNotice,
+  turnStepLimitNotice,
   turnLimitNotice,
 } from "../services/agentTurnLimit";
 import { PROVIDER_RETRY_LIMIT, providerRetryReason } from "../services/providerRetry";
@@ -2587,20 +2591,35 @@ export function usePipeline(): UsePipelineReturn {
   const turnLimitMinutes = aiSettings.turnLimitMinutes ?? DEFAULT_TURN_LIMIT_MINUTES;
   useEffect(() => {
     if (status !== "running") return;
-    if (!shouldStopTurn({ elapsedMs: turnElapsedMs, limitMinutes: turnLimitMinutes, blockedOnUser: Boolean(waitingForUser) })) {
-      return;
-    }
+    const signatures = agentSteps.map((step) => actionSignature(step));
+    const reason = stopReason({
+      elapsedMs: turnElapsedMs,
+      limitMinutes: turnLimitMinutes,
+      steps: agentSteps.length,
+      signatures,
+      blockedOnUser: Boolean(waitingForUser),
+    });
+    if (!reason) return;
+    // The sentence names which bound fired. "Stopped after 60 steps" tells the
+    // reader only that we intervened; the repeated action tells them what to fix.
+    const repeated = reason === "repeats" ? repeatedAction(signatures) : null;
+    const sentence =
+      reason === "repeats" && repeated
+        ? turnRepeatNotice(repeated.signature, repeated.count)
+        : reason === "steps"
+        ? turnStepLimitNotice(agentSteps.length)
+        : turnLimitNotice(turnLimitMinutes);
     setActivityLog((prev) => [
       ...prev,
       {
         line_number: prev.length + 1,
-        content: turnLimitNotice(turnLimitMinutes),
+        content: sentence,
         stream: "stderr" as const,
         is_json: false,
       },
     ]);
     void cancelPipeline();
-  }, [status, turnElapsedMs, turnLimitMinutes, waitingForUser, cancelPipeline]);
+  }, [status, turnElapsedMs, turnLimitMinutes, waitingForUser, cancelPipeline, agentSteps]);
 
   const clearLog = useCallback(() => {
     setActivityLog([]);

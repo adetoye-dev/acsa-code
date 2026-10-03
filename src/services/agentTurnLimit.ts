@@ -76,6 +76,20 @@ export function turnLimitMs(minutes: number | undefined | null): number {
  * `cat src/a.ts` and `cat src/b.ts` are different actions, and a normaliser that
  * strips the path would call them a loop.
  */
+/**
+ * The identity of one step, for repeat detection.
+ *
+ * Built from what the step list actually holds: a command's text is its `detail`,
+ * and an edit's is the set of files it touched — so the same command twice is the
+ * same signature and editing `Home.js` then `App.js` is not. Whitespace is
+ * collapsed because the detail arrives as one truncated string that may wrap.
+ */
+export function actionSignature(step: { name?: string; detail?: string } | null | undefined): string {
+  const name = String(step?.name ?? "").trim();
+  const detail = String(step?.detail ?? "").replace(/\s+/g, " ").trim();
+  return `${name} ${detail}`.trim();
+}
+
 export function repeatedAction(
   signatures: readonly string[] | null | undefined,
   limit: number = DEFAULT_REPEAT_LIMIT

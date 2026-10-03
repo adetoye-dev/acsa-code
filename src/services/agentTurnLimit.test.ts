@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_TURN_LIMIT_MINUTES, formatDuration, shouldStopTurn, turnLimitMs, turnLimitNotice, stopReason, turnStepLimitNotice, repeatedAction, turnRepeatNotice } from "./agentTurnLimit";
+import { DEFAULT_TURN_LIMIT_MINUTES, formatDuration, shouldStopTurn, turnLimitMs, turnLimitNotice, stopReason, turnStepLimitNotice, repeatedAction, turnRepeatNotice, actionSignature } from "./agentTurnLimit";
 
 describe("the turn limit", () => {
   it("converts minutes to milliseconds, and zero to no limit at all", () => {
@@ -106,5 +106,21 @@ describe("the repeat detector", () => {
     expect(
       stopReason({ ...base, blockedOnUser: true, steps: 500, signatures: ["a", "a", "a", "a", "a"] })
     ).toBeNull();
+  });
+});
+
+describe("what counts as the same step", () => {
+  it("tells a repeated command from two different ones", () => {
+    const a = actionSignature({ name: "Run Command", detail: "npm test" });
+    expect(actionSignature({ name: "Run Command", detail: "npm test" })).toBe(a);
+    expect(actionSignature({ name: "Run Command", detail: "npm run build" })).not.toBe(a);
+    // The detail is one truncated string and may wrap; wrapping is not a difference.
+    expect(actionSignature({ name: "Run Command", detail: "npm  test\n" })).toBe(a);
+  });
+
+  it("does not confuse an edit to one file with an edit to another", () => {
+    expect(actionSignature({ name: "Edit Files", detail: "Home.js" })).not.toBe(
+      actionSignature({ name: "Edit Files", detail: "App.js" })
+    );
   });
 });
