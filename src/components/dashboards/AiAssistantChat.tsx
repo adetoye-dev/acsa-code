@@ -956,12 +956,6 @@ export function AiAssistantChat({
       // A plan turn is *supposed* to leave the code alone, so "no files were
       // added" is true and misleading: the file it did write is the plan. Say where
       // it went, and offer the one next step.
-      const planNote =
-        !planFileRef.current
-          ? ""
-          : planFileRef.current.ok
-          ? `\n\n> Plan written to \`implementation-plan.md\`. **Implement plan** hands it to the agent.`
-          : "\n\n> The plan is above, but `implementation-plan.md` could not be written.";
       // The runtime's own state, not a guess from the text: it says
       // `waitingOnUserInput` when a skill has asked a question and the turn is
       // holding for an answer. Without this the reply ends the turn looking like
@@ -974,7 +968,6 @@ export function AiAssistantChat({
           : "";
       const finalContent = isSuccess
         ? (streamingAnswer || "Task completed.") +
-          planNote +
           (noFileChanges && !planRunRef.current ? noChangesNote : "") +
           waitingNote
         : failureDetail || failureSummary
@@ -2280,6 +2273,13 @@ Click to re-index project.`}
             not in the composer: a control there is present before anything has been
             planned, which is how it came to start a write-enabled turn naming a file
             that did not exist. */}
+        {planFile && !isStreaming && (
+          <p className="px-3 pb-1 shrink-0 text-3xs text-zinc-400" data-testid="plan-note">
+            {planFile.ok
+              ? "Plan written to implementation-plan.md — the agent can implement it from there."
+              : "The plan is above, but implementation-plan.md could not be written."}
+          </p>
+        )}
         {planFile?.ok === true && !isStreaming && (
           <div className="px-3 pb-2 shrink-0">
             <button
