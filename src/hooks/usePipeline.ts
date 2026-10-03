@@ -460,8 +460,11 @@ async function runAgent(params: {
               projectPath: params.projectRoot,
             }),
           ]);
-        } catch {
-          /* metering is diagnostics; never let it surface as a run failure */
+        } catch (error) {
+          // Metering is diagnostics and must never fail a run — but it failed
+          // *silently*, and a finished plan run left no ledger row with nothing to
+          // say why. The write is still best-effort; the silence is not.
+          params.log?.(\`[usage] this turn's tokens were not recorded: \${error}\`);
         }
       })();
     }
