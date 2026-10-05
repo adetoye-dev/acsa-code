@@ -363,9 +363,16 @@ export function OllamaSetupWizard({ onClose, onComplete, asModal = true }: Ollam
       return (
         <div className="space-y-4">
           <div className="space-y-2">
-            <label htmlFor="ollamasetupwizard-select-local-model-to-download-1" className="text-xs font-semibold text-zinc-300">
-              Model to download
-            </label>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label htmlFor="ollamasetupwizard-select-local-model-to-download-1" className="text-xs font-semibold text-zinc-300">
+                Model to download
+              </label>
+              {status && status.totalRamGb > 0 && (
+                <span className="px-2 py-0.5 rounded-full text-3xs font-mono font-medium bg-purple-950/60 text-purple-300 border border-purple-500/30">
+                  Recommended for your PC
+                </span>
+              )}
+            </div>
             <select id="ollamasetupwizard-select-local-model-to-download-1"
               value={selectedModel}
               onChange={(e) => setSelectedModel(e.target.value)}
@@ -378,21 +385,26 @@ export function OllamaSetupWizard({ onClose, onComplete, asModal = true }: Ollam
                 </option>
               ))}
             </select>
-            {/* The choice is already made. Saying "Select a model" next to a
-                dropdown that arrives filled in reads as a step the user has to
-                work out, when the only real decision is whether to change it. */}
+            {/* The conclusion, not just the control: what we found on this
+                machine, which model that led to, and what it buys them. Saying
+                "select a model" above a filled-in box hid all of that behind a
+                menu with a default nobody had explained. */}
             <p className="text-2xs text-zinc-400 leading-relaxed">
               {status && status.totalRamGb > 0 ? (
                 <>
-                  ACSA Code picked{" "}
-                  <span className="text-purple-400 font-mono font-semibold">{status.recommendedModel}</span>{" "}
-                  for this machine — it fits{" "}
-                  <span className="text-zinc-200 font-mono font-medium">{status.totalRamGb} GB</span> of RAM.
+                  We detected{" "}
+                  <span className="text-zinc-200 font-mono font-medium">{status.totalRamGb} GB</span> of RAM.{" "}
+                  <span className="text-purple-400 font-mono font-semibold">{status.recommendedModel}</span> is
+                  the best balance of capability and speed at that size — it runs fully offline and leaves the
+                  machine responsive.
                 </>
               ) : (
-                <>ACSA Code picked a model for this machine.</>
+                <>
+                  Picked for this machine as the best balance of capability and speed — it runs fully offline
+                  and leaves the machine responsive.
+                </>
               )}
-              {!isBusy && " Pick a different one if you'd rather."}
+              {!isBusy && " Prefer another? Change it above."}
             </p>
           </div>
 

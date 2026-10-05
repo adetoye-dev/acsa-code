@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
 /**
- * What the setup wizard says about the model it picked.
+ * What the setup wizard says about the model it picked for this machine.
  *
  * The pull step arrives with a model already chosen for the machine — for a
- * user who has never run a local model, that is the whole point of it. It used
- * to be headed "Select Local Model to Download" above a dropdown that was
- * already filled in, which reads as a decision the user has to make and does not
- * explain why the box is full. These tests pin the honest version.
+ * user who has never run a local model, that is the whole point of it. Two ways
+ * to get it wrong, and both were live at some point: heading it "Select Local
+ * Model to Download" above a dropdown that is already filled in (reads as a
+ * decision the user has to work out), and stripping it back to a bare "Model to
+ * download" (throws away the finding and the reasoning that justify the pick).
+ * These tests pin the version that states its conclusion.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
@@ -60,12 +62,17 @@ describe("the pull step", () => {
     expect(screen.queryByText(/Select Local Model to Download/i)).toBeNull();
   });
 
-  it("says that a model was chosen for this machine, and that it can be changed", async () => {
+  it("states the recommendation, the spec it came from, and what it buys", async () => {
     await renderPullStep();
 
-    expect(screen.getByText(/ACSA Code picked/i)).toBeTruthy();
+    // The conclusion has to be visible, not implied by a filled-in box.
+    expect(screen.getByText(/Recommended for your PC/i)).toBeTruthy();
+    // And it has to show its working: the detected spec, not just a verdict.
+    expect(screen.getByText(/We detected/i)).toBeTruthy();
     expect(screen.getByText(/16 GB/)).toBeTruthy();
-    expect(screen.getByText(/Pick a different one if you'd rather/i)).toBeTruthy();
+    expect(screen.getByText(/best balance of capability and speed/i)).toBeTruthy();
+    // Still a choice, not an instruction.
+    expect(screen.getByText(/Prefer another\?/i)).toBeTruthy();
   });
 
   it("offers the recommendation as the chosen option", async () => {
