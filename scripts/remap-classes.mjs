@@ -10,11 +10,14 @@
  * are not wrong, they are just unrelated: `text-[11px]` and `text-[10px]` and
  * `text-[13px]` were each typed by hand, so nothing could be adjusted together.
  *
- * Every mapping here is **exactly the same pixel value under a name** — the
- * scale steps in `tailwind.config.js` are size-only for the same reason an
- * arbitrary `text-[11px]` is: no line-height is set either way. This script
- * therefore cannot change how anything looks, which is what makes it safe to run
- * across the whole tree in one go.
+ * Every mapping here is **the same pixel value under a name** — the scale steps
+ * in `tailwind.config.js` are size-only for the same reason an arbitrary
+ * `text-[11px]` is: no line-height is set either way. That is what made it safe
+ * to run across the whole tree in one go, and it is no longer quite true: the
+ * scale has since been raised so nothing renders below 11px, so the `9px` and
+ * `10px` entries below now map *up* to the floor on purpose. Every other entry
+ * still cannot change how anything looks, and none of them are applied anywhere
+ * today — `--check` reports zero would-change files.
  *
  * Two values are deliberately left alone: `text-[12.5px]` (2 uses) has no step
  * on the scale, and inventing one for two call sites is how the sprawl started.
