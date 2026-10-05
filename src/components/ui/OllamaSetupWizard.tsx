@@ -364,14 +364,8 @@ export function OllamaSetupWizard({ onClose, onComplete, asModal = true }: Ollam
         <div className="space-y-4">
           <div className="space-y-2">
             <label htmlFor="ollamasetupwizard-select-local-model-to-download-1" className="text-xs font-semibold text-zinc-300">
-              Select Local Model to Download
+              Model to download
             </label>
-            {status && status.totalRamGb > 0 && (
-              <p className="text-2xs text-zinc-400">
-                System RAM: <span className="text-zinc-200 font-mono font-medium">{status.totalRamGb} GB</span> ·
-                Recommended: <span className="text-purple-400 font-mono font-semibold">{status.recommendedModel}</span>
-              </p>
-            )}
             <select id="ollamasetupwizard-select-local-model-to-download-1"
               value={selectedModel}
               onChange={(e) => setSelectedModel(e.target.value)}
@@ -384,6 +378,22 @@ export function OllamaSetupWizard({ onClose, onComplete, asModal = true }: Ollam
                 </option>
               ))}
             </select>
+            {/* The choice is already made. Saying "Select a model" next to a
+                dropdown that arrives filled in reads as a step the user has to
+                work out, when the only real decision is whether to change it. */}
+            <p className="text-2xs text-zinc-400 leading-relaxed">
+              {status && status.totalRamGb > 0 ? (
+                <>
+                  ACSA Code picked{" "}
+                  <span className="text-purple-400 font-mono font-semibold">{status.recommendedModel}</span>{" "}
+                  for this machine — it fits{" "}
+                  <span className="text-zinc-200 font-mono font-medium">{status.totalRamGb} GB</span> of RAM.
+                </>
+              ) : (
+                <>ACSA Code picked a model for this machine.</>
+              )}
+              {!isBusy && " Pick a different one if you'd rather."}
+            </p>
           </div>
 
           {/* One-line loading hash bar during model pull */}
