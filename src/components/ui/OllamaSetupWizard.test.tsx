@@ -10,8 +10,15 @@
  * download" (throws away the finding and the reasoning that justify the pick).
  * These tests pin the version that states its conclusion.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+
+/** What the engine was asked to pull, and whether to hold the reply open. */
+const pull = vi.hoisted(() => ({
+  asked: [] as string[],
+  hold: false,
+  release: null as null | (() => void),
+}));
 
 vi.mock("../../services/openExternal", () => ({
   openExternal: async () => true,
@@ -37,7 +44,13 @@ vi.mock("../../services/ollamaSetup", () => ({
     error: null,
   }),
   installOllama: async () => "/tmp/ollama",
-  pullOllamaModel: async () => "qwen2.5-coder:7b",
+  pullOllamaModel: (model: string) => {
+    pull.asked.push(model);
+    if (!pull.hold) return Promise.resolve(model);
+    return new Promise<string>((resolve) => {
+      pull.release = () => resolve(model);
+    });
+  },
   startOllamaServer: async () => true,
   markSetupComplete: () => undefined,
   openAiManagementDashboard: () => undefined,
@@ -45,6 +58,12 @@ vi.mock("../../services/ollamaSetup", () => ({
 }));
 
 const { OllamaSetupWizard } = await import("./OllamaSetupWizard");
+
+beforeEach(() => {
+  pull.asked = [];
+  pull.hold = false;
+  pull.release = null;
+});
 
 afterEach(cleanup);
 
@@ -80,5 +99,36 @@ describe("the pull step", () => {
 
     const select = screen.getByLabelText(/Model to download/i) as HTMLSelectElement;
     expect(select.value).toBe("qwen2.5-coder:7b");
+  });
+});
+
+describe("the model field", () => {
+  it("is editable, and the choice is what actually gets downloaded", async () => {
+    await renderPullStep();
+    const select = screen.getByLabelText(/Model to download/i) as HTMLSelectElement;
+
+    // A dropdown that cannot be changed has no business being one.
+    expect(select.disabled).toBe(false);
+    fireEvent.change(select, { target: { value: "llama3.2" } });
+    expect(select.value).toBe("llama3.2");
+
+    // And the change has to reach the action, not just the box.
+    const pullButton = screen.getByRole("button", { name: /Pull llama3\.2/ });
+    expect(pullButton).toBeTruthy();
+    pullButton.click();
+
+    await waitFor(() => expect(pull.asked).toEqual(["llama3.2"]));
+  });
+
+  it("locks only while a download is running", async () => {
+    await renderPullStep();
+    const select = screen.getByLabelText(/Model to download/i) as HTMLSelectElement;
+    expect(select.disabled).toBe(false);
+
+    pull.hold = true;
+    screen.getByRole("button", { name: /Pull qwen2\.5-coder:7b/ }).click();
+
+    await waitFor(() => expect(select.disabled).toBe(true));
+    pull.release?.();
   });
 });

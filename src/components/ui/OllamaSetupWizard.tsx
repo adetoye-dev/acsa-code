@@ -393,9 +393,10 @@ export function OllamaSetupWizard({ onClose, onComplete, asModal = true }: Ollam
               {status && status.totalRamGb > 0 ? (
                 <>
                   We detected{" "}
-                  <span className="text-zinc-200 font-mono font-medium">{status.totalRamGb} GB</span> of RAM.{" "}
-                  <span className="text-purple-400 font-mono font-semibold">{status.recommendedModel}</span> is
-                  the best balance of capability and speed at that size — it runs fully offline and leaves the
+                  <span className="text-zinc-200 font-mono font-medium">{status.totalRamGb} GB</span> of RAM,
+                  so we recommend{" "}
+                  <span className="text-purple-400 font-mono font-semibold">{status.recommendedModel}</span> —
+                  the best balance of capability and speed at that size. It runs fully offline and leaves the
                   machine responsive.
                 </>
               ) : (
