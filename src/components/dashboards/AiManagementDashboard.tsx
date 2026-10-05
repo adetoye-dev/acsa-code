@@ -139,9 +139,28 @@ export function AiManagementDashboard({
     setIsStartingOllama(false);
   };
 
+  /**
+   * Local models can only be installed while the daemon is actually answering.
+   * `installed` is not enough: a stopped daemon fails every pull *after* the click,
+   * which is how a user ends up reading "Ollama is not running" one step too late —
+   * after they asked for a download.
+   */
+  const ollamaReady = ollamaStatus?.running === true;
+
   const handlePullModel = async (tag: string) => {
     const trimmed = tag.trim();
     if (!trimmed || pullingModelTag) return;
+
+    // Refuse before starting, and say which of the two situations this is: nothing
+    // to download into, or something to start first.
+    if (!ollamaReady) {
+      setPullErrorMsg(
+        ollamaStatus?.installed
+          ? "Ollama is installed but not running. Start it above, then download a model — a download has nowhere to go until the daemon answers."
+          : "Ollama is not set up on this machine yet. Run the setup wizard first; a model needs somewhere to download to.",
+      );
+      return;
+    }
 
     setPullingModelTag(trimmed);
     setPullPercent(0);
