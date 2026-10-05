@@ -31,6 +31,7 @@ import {
 import {
   checkOllamaStatus,
   startOllamaServer,
+  installOllama,
   pullOllamaModel,
   deleteOllamaModel,
   CURATED_OLLAMA_MODELS,
@@ -69,6 +70,9 @@ export function AiManagementDashboard({
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
   const [isStartingOllama, setIsStartingOllama] = useState(false);
   const [showOllamaWizard, setShowOllamaWizard] = useState(false);
+  const [isInstallingOllama, setIsInstallingOllama] = useState(false);
+  const [installPercent, setInstallPercent] = useState(0);
+  const [installStatus, setInstallStatus] = useState("");
   const [openSpecsModelTag, setOpenSpecsModelTag] = useState<string | null>(null);
   const [savedFlash, setSavedFlash] = useState(false);
 
@@ -146,6 +150,38 @@ export function AiManagementDashboard({
    * after they asked for a download.
    */
   const ollamaReady = ollamaStatus?.running === true;
+
+  /**
+   * Fetch Ollama and get it running, without sending the user anywhere.
+   *
+   * Asking a developer to leave the app, pick the right build for their chip and
+   * drag it somewhere is a support ticket dressed up as a setup step. The engine
+   * downloads Ollama's own published release into the app's data folder, and then
+   * we start it — which is the same path as the Start button, so the two cannot
+   * drift.
+   */
+  const handleInstallOllama = async () => {
+    setIsInstallingOllama(true);
+    setPullErrorMsg(null);
+    setInstallPercent(0);
+    setInstallStatus("Starting the Ollama download…");
+    try {
+      await installOllama((evt) => {
+        setInstallPercent(evt.percent);
+        setInstallStatus(evt.status);
+      });
+      setInstallStatus("Installed. Starting the local engine…");
+      await handleStartOllama();
+    } catch (err: any) {
+      setPullErrorMsg(
+        err?.message ||
+          "Ollama could not be set up automatically. You can install it from ollama.com and choose Start.",
+      );
+    } finally {
+      setIsInstallingOllama(false);
+      setInstallStatus("");
+    }
+  };
 
   const handlePullModel = async (tag: string) => {
     const trimmed = tag.trim();
@@ -625,6 +661,24 @@ export function AiManagementDashboard({
                     ) : null}
                   </div>
 
+                  {/* One place for the outcome of an install or a download.
+                      Deliberately outside the readiness gate below: a failure
+                      has to be readable from the state it left the page in, and
+                      "the install failed" is exactly when the models region is
+                      not on screen. */}
+                  {pullSuccessMsg && (
+                    <div className="p-3 rounded-xl bg-emerald-950/50 border border-emerald-500/40 text-emerald-300 text-xs font-mono flex items-center gap-2">
+                      <Icon icon={CheckCircle2} className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span>{pullSuccessMsg}</span>
+                    </div>
+                  )}
+                  {pullErrorMsg && (
+                    <div className="p-3 rounded-xl bg-red-950/50 border border-red-500/40 text-red-300 text-xs font-mono flex items-start gap-2">
+                      <Icon icon={AlertCircle} className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                      <span>{pullErrorMsg}</span>
+                    </div>
+                  )}
+
                   {/* Readiness gate. Nothing about local models is offered until the
                       daemon actually answers: a stopped engine cannot list what it
                       has, and a download has nowhere to land. Showing the catalogue
@@ -672,6 +726,23 @@ export function AiManagementDashboard({
                             Something not working? Run the setup wizard
                           </button>
                         </>
+                      ) : isInstallingOllama ? (
+                        <div className="space-y-2.5">
+                          <div className="flex items-start gap-3">
+                            <Icon icon={Download} className="w-4 h-4 text-purple-400 shrink-0 mt-0.5" />
+                            <div>
+                              <p className="text-xs font-semibold text-white">Setting up Ollama…</p>
+                              <p className="text-2xs text-zinc-400 mt-0.5">
+                                Downloading Ollama for this machine. Nothing outside the app&apos;s own
+                                folder is touched, so there is no password prompt.
+                              </p>
+                            </div>
+                          </div>
+                          <HashProgressBar
+                            percent={installPercent}
+                            statusText={installStatus || "Downloading Ollama…"}
+                          />
+                        </div>
                       ) : (
                         <>
                           <div className="flex items-start gap-3">
@@ -679,7 +750,8 @@ export function AiManagementDashboard({
                             <div>
                               <p className="text-xs font-semibold text-white">Ollama is not set up on this machine yet.</p>
                               <p className="text-2xs text-zinc-400 mt-0.5">
-                                Local models need the Ollama engine. Set it up once, then download and run models fully offline.
+                                Local models need the Ollama engine. Let ACSA Code download and set it
+                                up for you — about 190 MB, then models run fully offline.
                               </p>
                               {ollamaStatus.error && (
                                 <p className="text-3xs text-amber-300/80 font-mono mt-1.5">Detection: {ollamaStatus.error}</p>
@@ -688,11 +760,18 @@ export function AiManagementDashboard({
                           </div>
                           <button
                             type="button"
-                            onClick={() => setShowOllamaWizard(true)}
+                            onClick={() => void handleInstallOllama()}
                             className="flex items-center gap-2 w-full justify-center px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-xs font-bold text-white transition-colors shadow-sm"
                           >
-                            <Icon icon={RefreshCw} className="w-3.5 h-3.5" />
-                            <span>Run Setup Wizard</span>
+                            <Icon icon={Download} className="w-3.5 h-3.5" />
+                            <span>Install Ollama</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setShowOllamaWizard(true)}
+                            className="w-full text-2xs text-zinc-400 hover:text-zinc-200 py-1 transition-colors text-center"
+                          >
+                            Walk me through it instead
                           </button>
                         </>
                       )}
@@ -922,20 +1001,6 @@ export function AiManagementDashboard({
                         </div>
                       </div>
                       <HashProgressBar percent={pullPercent} statusText={pullStatusText} />
-                    </div>
-                  )}
-
-                  {/* Success & Error Banners */}
-                  {pullSuccessMsg && (
-                    <div className="p-3 rounded-xl bg-emerald-950/50 border border-emerald-500/40 text-emerald-300 text-xs font-mono flex items-center gap-2">
-                      <Icon icon={CheckCircle2} className="w-4 h-4 text-emerald-400 shrink-0" />
-                      <span>{pullSuccessMsg}</span>
-                    </div>
-                  )}
-                  {pullErrorMsg && (
-                    <div className="p-3 rounded-xl bg-red-950/50 border border-red-500/40 text-red-300 text-xs font-mono flex items-center gap-2">
-                      <Icon icon={AlertCircle} className="w-4 h-4 text-red-400 shrink-0" />
-                      <span>{pullErrorMsg}</span>
                     </div>
                   )}
 

@@ -18,6 +18,7 @@ const state = vi.hoisted(() => ({
   running: false,
   models: [] as string[],
   startCalls: 0,
+  installCalls: 0,
 }));
 
 const providers = vi.hoisted(() => {
@@ -84,6 +85,12 @@ vi.mock("../../services/ollamaSetup", () => ({
     state.running = true;
     return true;
   },
+  installOllama: async (onProgress: (evt: { percent: number; status: string }) => void) => {
+    state.installCalls += 1;
+    onProgress({ percent: 40, status: "Downloading Ollama… 76 MB of 189 MB" });
+    state.installed = true;
+    return "/tmp/ollama";
+  },
   pullOllamaModel: async () => "qwen2.5-coder:7b",
   deleteOllamaModel: async () => undefined,
   CURATED_OLLAMA_MODELS: [
@@ -102,7 +109,7 @@ vi.mock("../../services/ollamaSetup", () => ({
 const { AiManagementDashboard } = await import("./AiManagementDashboard");
 
 const MODEL_CATALOGUE = /Download Additional Models/i;
-const RUN_WIZARD = /Run Setup Wizard/i;
+const INSTALL_OLLAMA = /^Install Ollama$/i;
 
 async function renderDashboard() {
   render(<AiManagementDashboard />);
@@ -115,17 +122,29 @@ beforeEach(() => {
   state.running = false;
   state.models = [];
   state.startCalls = 0;
+  state.installCalls = 0;
 });
 
 afterEach(cleanup);
 
 describe("local model gate", () => {
-  it("hides the download catalogue and routes to the wizard when Ollama is absent", async () => {
+  it("hides the download catalogue and offers to install the engine when Ollama is absent", async () => {
     await renderDashboard();
 
     expect(screen.queryByText(MODEL_CATALOGUE)).toBeNull();
     expect(screen.getByText(/Ollama is not set up on this machine yet/i)).toBeTruthy();
-    expect(screen.getByRole("button", { name: RUN_WIZARD })).toBeTruthy();
+    expect(screen.getByRole("button", { name: INSTALL_OLLAMA })).toBeTruthy();
+  });
+
+  it("installs Ollama itself, then reveals the catalogue without a second click", async () => {
+    await renderDashboard();
+
+    screen.getByRole("button", { name: INSTALL_OLLAMA }).click();
+
+    await waitFor(() => expect(state.installCalls).toBe(1));
+    // The user never leaves the page: install → start → models are ready.
+    await waitFor(() => expect(screen.getByText(MODEL_CATALOGUE)).toBeTruthy());
+    expect(state.startCalls).toBe(1);
   });
 
   it("offers a start button, not downloads, when Ollama is installed but stopped", async () => {

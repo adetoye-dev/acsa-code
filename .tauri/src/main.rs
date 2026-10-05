@@ -2442,16 +2442,19 @@ impl OllamaState {
     }
 }
 
-/// Download a model, streaming progress as `ollama:frame` events.
+/// Run an engine `ollama` subcommand and forward its NDJSON frames as
+/// `ollama:frame` events.
 ///
-/// A download is the one Ollama action that takes minutes and can fail halfway,
-/// so it needs the same streaming treatment as chat. The engine talks to
-/// Ollama's own `/api/pull`; this only forwards its frames.
-#[tauri::command]
-async fn ollama_pull(
-    app_handle: tauri::AppHandle,
-    state: State<'_, OllamaState>,
-    model: String,
+/// One helper for both heavy local-engine jobs — pulling a model and installing
+/// the engine — because a download that takes minutes and can fail halfway
+/// needs the same streaming treatment either way, and they report the same
+/// frame shape. They also share the one cancellation slot: an install and a pull
+/// are both multi-hundred-megabyte transfers, and running two at once is not
+/// something a user wants to discover.
+fn spawn_ollama_stream(
+    app_handle: &tauri::AppHandle,
+    state: &OllamaState,
+    args: &[String],
 ) -> Result<(), String> {
     if let Some(mut previous) = state.child.lock().map_err(|e| e.to_string())?.take() {
         let _ = previous.kill();
@@ -2459,8 +2462,7 @@ async fn ollama_pull(
 
     let resource_dir = app_handle.path().resource_dir().ok();
     let (program, mut argv) = engine_invocation(resource_dir.as_deref(), "ollama");
-    argv.push("pull".to_string());
-    argv.push(format!("{{\"model\":\"{}\"}}", model));
+    argv.extend(args.iter().cloned());
 
     let mut child = Command::new(&program)
         .args(&argv)
@@ -2468,16 +2470,16 @@ async fn ollama_pull(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("could not start the download ({}): {}", program.display(), e))?;
+        .map_err(|e| format!("could not start {} ({}): {}", argv.join(" "), program.display(), e))?;
 
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| "could not capture download output".to_string())?;
+        .ok_or_else(|| "could not capture engine output".to_string())?;
     let mut stderr = child
         .stderr
         .take()
-        .ok_or_else(|| "could not capture download errors".to_string())?;
+        .ok_or_else(|| "could not capture engine errors".to_string())?;
     *state.child.lock().map_err(|e| e.to_string())? = Some(child);
 
     let app_for_reader = app_handle.clone();
@@ -2500,6 +2502,37 @@ async fn ollama_pull(
     });
 
     Ok(())
+}
+
+/// Download a model, streaming progress as `ollama:frame` events.
+///
+/// The engine talks to Ollama's own `/api/pull`; this only forwards its frames.
+#[tauri::command]
+async fn ollama_pull(
+    app_handle: tauri::AppHandle,
+    state: State<'_, OllamaState>,
+    model: String,
+) -> Result<(), String> {
+    spawn_ollama_stream(
+        &app_handle,
+        &state,
+        &["pull".to_string(), format!("{{\"model\":\"{}\"}}", model)],
+    )
+}
+
+/// Fetch Ollama itself and unpack it into the app's own data directory.
+///
+/// The user should never have to leave the app, find the right build for their
+/// chip and drag it somewhere — that was the old behaviour, and it read as the
+/// app refusing to do its job. The engine downloads Ollama's own published
+/// release and unpacks it; no administrator password, nothing written outside
+/// the app's folder.
+#[tauri::command]
+async fn ollama_install(
+    app_handle: tauri::AppHandle,
+    state: State<'_, OllamaState>,
+) -> Result<(), String> {
+    spawn_ollama_stream(&app_handle, &state, &["install".to_string(), "{}".to_string()])
 }
 
 #[tauri::command]
@@ -4081,6 +4114,7 @@ fn main() {
             chat_stream,
             chat_cancel,
             ollama_pull,
+            ollama_install,
             ollama_cancel,
             codex_exec,
             agent_start,

@@ -18,6 +18,7 @@ import { Bot, CheckCircle2, ChevronRight, Lightbulb, Download, Loader2, ChevronD
 import { Icon } from "../ui/Icon";
 import {
   checkOllamaStatus,
+  installOllama,
   pullOllamaModel,
   startOllamaServer,
   markSetupComplete,
@@ -101,21 +102,28 @@ export function OllamaSetupWizard({ onClose, onComplete, asModal = true }: Ollam
   }
 
   async function runInstall() {
-    // Ollama is installed by Ollama's own signed, notarised installer — not by
-    // us. Downloading and unpacking a copy here produced a build we could never
-    // keep current, so this step hands the user to the source and then re-checks.
-    // (The button used to throw unconditionally, which read as a dead end.)
+    // Downloading Ollama is this app's job, not the user's. The engine fetches
+    // Ollama's own published release and unpacks it into the app's data folder —
+    // no administrator password, nothing written outside our own directory.
     setLogs([]);
-    setProgressStatus("Opening the Ollama download page…");
-    const opened = await openExternal("https://ollama.com/download");
-    if (opened) {
-      addLog("Opened https://ollama.com/download in your browser.");
-      addLog("Install Ollama, then choose “I've installed it — Check again”.");
-    } else {
-      setErrorMsg(
-        "Could not open a browser. Visit https://ollama.com/download, install Ollama, then choose Retry Detection.",
-      );
+    setErrorMsg("");
+    setIsBusy(true);
+    setProgressPercent(0);
+    setProgressStatus("Starting the Ollama download…");
+    try {
+      await installOllama((evt: OllamaProgressEvent) => {
+        setProgressPercent(evt.percent);
+        setProgressStatus(evt.status);
+        if (evt.log) addLog(evt.log);
+      });
+      addLog("✓ Ollama is installed.");
+      // Installed now — re-detect, which advances to starting the server.
+      await runDetect();
+    } catch (err: any) {
+      setErrorMsg(err.message || "Setup failed.");
       setStep("error");
+    } finally {
+      setIsBusy(false);
     }
   }
 
@@ -238,9 +246,9 @@ export function OllamaSetupWizard({ onClose, onComplete, asModal = true }: Ollam
             <div className="text-xs text-amber-200/90 leading-relaxed">
               <span className="font-semibold text-white">Ollama is not yet installed.</span>
               <p className="mt-0.5 text-zinc-300">
-                Ollama is installed from its own official installer — a one-time step, no terminal
-                required. Open the download page, run the installer, then come back here: ACSA Code
-                takes it from there, starting the server and downloading a model for you.
+                ACSA Code will download Ollama and set it up for you — about 190 MB, no password
+                prompt, and nothing written outside the app&apos;s own folder. Then it starts the
+                server and downloads a model for you.
               </p>
               {status && status.totalRamGb > 0 && (
                 <div className="mt-1 text-2xs text-amber-300/80 font-mono">
@@ -249,6 +257,14 @@ export function OllamaSetupWizard({ onClose, onComplete, asModal = true }: Ollam
               )}
             </div>
           </div>
+
+          {/* One-line loading hash bar */}
+          {isBusy && (
+            <HashProgressBar
+              percent={progressPercent}
+              statusText={progressStatus || "Downloading Ollama…"}
+            />
+          )}
 
           {/* Technical log disclosure */}
           {logs.length > 0 && (
@@ -273,14 +289,14 @@ export function OllamaSetupWizard({ onClose, onComplete, asModal = true }: Ollam
                 className="flex items-center gap-2 w-full justify-center px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-xs font-bold text-white transition-colors shadow-sm"
               >
                 <Icon icon={Download} className="w-3.5 h-3.5" />
-                Open Ollama Download Page
+                Install Ollama
               </button>
               <button
                 type="button"
-                onClick={() => void runDetect()}
+                onClick={() => void openExternal("https://ollama.com/download")}
                 className="w-full text-2xs text-zinc-400 hover:text-zinc-200 py-1.5 transition-colors text-center"
               >
-                I&apos;ve installed it — Check again
+                Already have it, or prefer to install it yourself? Open the download page
               </button>
             </div>
           )}

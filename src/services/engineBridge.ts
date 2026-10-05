@@ -53,8 +53,19 @@ export const DESKTOP_REQUIRED_MESSAGE =
   "This needs the ACSA Code desktop app. Run `npm run dev:app` (or launch the app) — " +
   "the browser preview has no backend.";
 
+/**
+ * The same guidance without the leading sentence.
+ *
+ * `desktopRequired` names the feature first, so prefixing it with the whole
+ * constant said "Setting up Ollama needs the desktop app. This needs the desktop
+ * app." — the same sentence twice, in the one message a user sees when a
+ * desktop-only action fails.
+ */
+const DESKTOP_REQUIRED_GUIDANCE =
+  "Run `npm run dev:app` (or launch the app) — the browser preview has no backend.";
+
 export function desktopRequired(feature: string): Error {
-  return new Error(`${feature} needs the ACSA Code desktop app. ${DESKTOP_REQUIRED_MESSAGE}`);
+  return new Error(`${feature} needs the ACSA Code desktop app. ${DESKTOP_REQUIRED_GUIDANCE}`);
 }
 
 /** Same message, shaped as the JSON `Response` the client helpers return. */
