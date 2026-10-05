@@ -17,6 +17,63 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.26] - 2026-10-06
+
+### Added
+
+- **ACSA Code installs Ollama for you.** Setting up a local model used to send you
+  to a website: the wizard's install step told you to go and get Ollama yourself,
+  and the only way to continue was to come back once you had. It now fetches
+  Ollama's own release — about 190 MB on macOS — unpacks it into the app's own data
+  folder and starts it. No administrator password, nothing written outside that
+  folder, no installer to click through and no `curl | sh`.
+- **A run going in circles is stopped, and told which way.** Beyond the clock, an
+  agent turn is now bounded by repetition — the same action five times is a loop —
+  and by a 60-step backstop, about double the longest legitimate run measured here.
+  Whichever fires, the turn stops through the same path as the Stop button, and
+  OUTPUT names the repeated action or the count instead of saying only that we
+  intervened. A turn waiting on your approval counts against neither.
+
+### Changed
+
+- **The interface type is larger.** The scale started at 9px and the app leaned on
+  the bottom of it: badges, metadata and status lines were set at 9–11px, below the
+  12px most interfaces start at. Nothing renders below 11px now. This is the
+  interface around your code, not your code — the editor and terminal keep their own
+  font settings.
+- **The setup wizard explains the model it has already chosen.** Its last step said
+  "Select Local Model to Download" above a dropdown that arrived filled in. It now
+  names the memory it measured, the model that follows from it and why, and it
+  disappears once the download starts, with the download named in its place.
+
+### Fixed
+
+- **The local-model page no longer offers downloads there is nowhere to put.** With
+  Ollama absent or stopped the page showed the whole catalogue, and clicking Pull
+  was how you found out. The catalogue and the installed-models list now appear only
+  once the daemon answers; before that the page offers to install it, or to start it.
+- **A model whose allowance cannot fit one turn is no longer offered for agent
+  runs.** Groq's free tier answers a real run with 413 — 8,000 tokens per minute
+  against an 18,000-token request — which trimming cannot fix, because every run
+  fails the same way. The refusal is remembered for the session, so the model drops
+  out of the agent and plan lists with the picker's existing hidden count, while chat
+  still offers it.
+- **A per-minute token cap no longer reads like a context window.** The two look
+  alike and are opposites: one means the conversation is too long, the other that a
+  single request exceeds the tier's entire allowance and no retry will help. The
+  message says which, and points at what does.
+- **The plan note is on the reply it belongs to.** It was written into the message
+  once, at finalisation, so it depended on the plan file's write having finished and
+  could be missing altogether. It renders from the same state as the Implement
+  button beside it now.
+- **A failed usage write says why.** Metering is best-effort and must never fail a
+  run, which it does not — but it was also silent, and a missing usage row with no
+  reason is undiagnosable. The reason reaches the OUTPUT panel.
+- **Marketplace item names are no longer crushed to a single letter.** A
+  fixed-width trust badge shared a row with the name, and the name — the only
+  shrinkable child — absorbed the whole squeeze once the assistant was docked. The
+  badge wraps to its own line instead.
+
 ## [0.2.25] - 2026-09-29
 
 ### Fixed
@@ -402,7 +459,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.25...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.26...dev
+[0.2.26]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.25...v0.2.26
 [0.2.25]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.24...v0.2.25
 [0.2.24]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.23...v0.2.24
 [0.2.23]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.22...v0.2.23
