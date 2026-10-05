@@ -362,6 +362,16 @@ export function OllamaSetupWizard({ onClose, onComplete, asModal = true }: Ollam
 
       return (
         <div className="space-y-4">
+          {isBusy ? (
+            /* The field goes away rather than greying out. A disabled control
+               invites the user to try it; naming the download in plain words is
+               the honest thing to show, especially since the bar beneath it
+               reports Ollama's own status ("pulling 60e05f21…"), which does not
+               name the model at all. */
+            <p className="text-xs font-semibold text-zinc-300">
+              Downloading <span className="font-mono text-purple-300">{selectedModel}</span>
+            </p>
+          ) : (
           <div className="space-y-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <label htmlFor="ollamasetupwizard-select-local-model-to-download-1" className="text-xs font-semibold text-zinc-300">
@@ -405,9 +415,11 @@ export function OllamaSetupWizard({ onClose, onComplete, asModal = true }: Ollam
                   and leaves the machine responsive.
                 </>
               )}
-              {!isBusy && " Prefer another? Change it above."}
+              {" "}
+              Prefer another? Change it above.
             </p>
           </div>
+          )}
 
           {/* One-line loading hash bar during model pull */}
           {isBusy && (

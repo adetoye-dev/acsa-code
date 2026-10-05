@@ -120,15 +120,19 @@ describe("the model field", () => {
     await waitFor(() => expect(pull.asked).toEqual(["llama3.2"]));
   });
 
-  it("locks only while a download is running", async () => {
+  it("replaces the field with the download itself while a transfer runs", async () => {
     await renderPullStep();
-    const select = screen.getByLabelText(/Model to download/i) as HTMLSelectElement;
-    expect(select.disabled).toBe(false);
+    expect(screen.getByLabelText(/Model to download/i)).toBeTruthy();
 
     pull.hold = true;
     screen.getByRole("button", { name: /Pull qwen2\.5-coder:7b/ }).click();
 
-    await waitFor(() => expect(select.disabled).toBe(true));
+    // Removed, not greyed out: a disabled control invites the user to try it.
+    await waitFor(() => expect(screen.queryByLabelText(/Model to download/i)).toBeNull());
+    expect(screen.queryByRole("button", { name: /Pull / })).toBeNull();
+    // And the model is still named in plain words, because the progress bar
+    // beneath reports Ollama's own digest ("pulling 60e05f21…"), not the model.
+    expect(screen.getByText(/^Downloading$/).textContent).toContain("qwen2.5-coder:7b");
     pull.release?.();
   });
 });
