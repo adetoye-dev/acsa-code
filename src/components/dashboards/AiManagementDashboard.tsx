@@ -151,11 +151,16 @@ export function AiManagementDashboard({
     const trimmed = tag.trim();
     if (!trimmed || pullingModelTag) return;
 
-    // Refuse before starting, and say which of the two situations this is: nothing
-    // to download into, or something to start first.
-    if (!ollamaReady) {
+    // Ask the daemon again, live, instead of trusting the snapshot this page was
+    // built from. Ollama can stop between render and click; a pull that starts
+    // against a dead port fails after the click with the page still reading
+    // "Running". Re-checking here is what makes the refusal honest, and it also
+    // refreshes the gate so the page catches up with reality in one step.
+    const live = await checkOllamaStatus();
+    setOllamaStatus(live);
+    if (!live.running) {
       setPullErrorMsg(
-        ollamaStatus?.installed
+        live.installed
           ? "Ollama is installed but not running. Start it above, then download a model — a download has nowhere to go until the daemon answers."
           : "Ollama is not set up on this machine yet. Run the setup wizard first; a model needs somewhere to download to.",
       );
@@ -618,32 +623,84 @@ export function AiManagementDashboard({
                         <span>Recommended Default: <strong className="text-purple-300 font-semibold">{ollamaStatus.recommendedModel}</strong></span>
                       </div>
                     ) : null}
-
-                    {/* Action buttons if not running or need wizard */}
-                    <div className="flex flex-wrap items-center gap-2 pt-1">
-                      {!ollamaStatus?.running && ollamaStatus?.installed && (
-                        <button
-                          type="button"
-                          disabled={isStartingOllama}
-                          onClick={handleStartOllama}
-                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-950/40 hover:bg-purple-900/40 border border-purple-500/40 text-xs font-semibold text-purple-200 transition-colors disabled:opacity-50"
-                        >
-                          {isStartingOllama ? <Icon icon={Loader2} className="w-3.5 h-3.5 animate-spin" /> : <Icon icon={Play} className="w-3.5 h-3.5" />}
-                          <span>{isStartingOllama ? "Starting Daemon…" : "Start Ollama Server"}</span>
-                        </button>
-                      )}
-
-                      <button
-                        type="button"
-                        onClick={() => setShowOllamaWizard(true)}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white border border-zinc-700/60 text-xs font-semibold transition-colors"
-                      >
-                        <Icon icon={RefreshCw} className="w-3.5 h-3.5 text-zinc-400" />
-                        <span>Run Setup Wizard</span>
-                      </button>
-                    </div>
                   </div>
 
+                  {/* Readiness gate. Nothing about local models is offered until the
+                      daemon actually answers: a stopped engine cannot list what it
+                      has, and a download has nowhere to land. Showing the catalogue
+                      anyway is how a user clicks "Pull" and learns one step too late
+                      that there is nothing to pull *into*. */}
+                  {!ollamaReady && (
+                    <div className="rounded-xl border border-zinc-800/80 bg-zinc-900/40 p-4 space-y-3.5">
+                      {ollamaStatus === null ? (
+                        <div className="flex items-center gap-3 py-1">
+                          <Icon icon={Loader2} className="w-4 h-4 text-purple-400 animate-spin shrink-0" />
+                          <div>
+                            <p className="text-xs font-semibold text-zinc-200">Checking the local engine…</p>
+                            <p className="text-2xs text-zinc-500">Asking Ollama whether it is installed and running.</p>
+                          </div>
+                        </div>
+                      ) : ollamaStatus.installed && !ollamaStatus.running ? (
+                        <>
+                          <div className="flex items-start gap-3">
+                            <Icon icon={Play} className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                            <div>
+                              <p className="text-xs font-semibold text-white">Ollama is installed, but not running.</p>
+                              <p className="text-2xs text-zinc-400 mt-0.5">
+                                Start the daemon and this page fills with the models you already have, plus the download options.
+                              </p>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={isStartingOllama}
+                            onClick={handleStartOllama}
+                            className="flex items-center gap-2 w-full justify-center px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-xs font-bold text-white transition-colors shadow-sm disabled:opacity-50"
+                          >
+                            {isStartingOllama ? (
+                              <Icon icon={Loader2} className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <Icon icon={Play} className="w-3.5 h-3.5" />
+                            )}
+                            <span>{isStartingOllama ? "Starting Ollama…" : "Start Ollama Server"}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setShowOllamaWizard(true)}
+                            className="w-full text-2xs text-zinc-400 hover:text-zinc-200 py-1 transition-colors text-center"
+                          >
+                            Something not working? Run the setup wizard
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <div className="flex items-start gap-3">
+                            <Icon icon={Download} className="w-4 h-4 text-purple-400 shrink-0 mt-0.5" />
+                            <div>
+                              <p className="text-xs font-semibold text-white">Ollama is not set up on this machine yet.</p>
+                              <p className="text-2xs text-zinc-400 mt-0.5">
+                                Local models need the Ollama engine. Set it up once, then download and run models fully offline.
+                              </p>
+                              {ollamaStatus.error && (
+                                <p className="text-3xs text-amber-300/80 font-mono mt-1.5">Detection: {ollamaStatus.error}</p>
+                              )}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setShowOllamaWizard(true)}
+                            className="flex items-center gap-2 w-full justify-center px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-xs font-bold text-white transition-colors shadow-sm"
+                          >
+                            <Icon icon={RefreshCw} className="w-3.5 h-3.5" />
+                            <span>Run Setup Wizard</span>
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
+
+                  {ollamaReady && (
+                  <>
                   {/* 2. Installed Local Models Panel */}
                   <div className="rounded-xl border border-zinc-800/80 bg-zinc-900/40 p-4 space-y-3">
                     <div className="flex items-center justify-between">
@@ -1014,6 +1071,8 @@ export function AiManagementDashboard({
                       </div>
                     );
                   })()}
+                  </>
+                  )}
                 </div>
               ) : (
                 /* ── Standard Provider Configuration ─── */

@@ -68,24 +68,6 @@ export async function checkOllamaStatus(): Promise<OllamaStatus> {
 }
 
 /**
- * Ollama's own installer is the way in.
- *
- * This used to download and unpack the macOS package itself, streaming progress
- * from a dev-server route that only existed while a browser was open. Downloading
- * an installer and running it is the vendor's job: theirs is signed, notarised
- * and kept current, and a copy we fetch can be neither. So the wizard sends the
- * user to the source and keeps everything after that in the app — starting the
- * server, pulling models, wiring the provider.
- */
-export async function installOllama(onProgress: (evt: OllamaProgressEvent) => void): Promise<void> {
-  onProgress({ percent: 0, status: "Ollama is installed from ollama.com" });
-  throw new Error(
-    "Install Ollama from https://ollama.com/download, then choose Retry. Everything after " +
-      "that — starting it, downloading models, using it as a provider — happens here.",
-  );
-}
-
-/**
  * Stream model pull progress.
  * Resolves with the pulled model name when complete.
  */
