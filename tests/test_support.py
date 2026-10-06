@@ -10,6 +10,7 @@ import importlib
 import io
 import json
 import os
+import platform
 import shutil
 import sys
 import tempfile
@@ -150,3 +151,41 @@ class CliTests(SupportTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class VersionsTests(unittest.TestCase):
+    """What the Performance panel's runtime line reads.
+
+    It used to read three fields nothing supplied, so the line said
+    "Node unknown · Vite unknown · Python unknown" on every machine. The Python
+    version in particular cannot come from the shell: a packaged build carries an
+    embedded interpreter, so asking the *machine* would answer with one this app
+    does not use — or with nothing.
+    """
+
+    def test_versions_reports_the_interpreter_it_is_running_in(self):
+        data = support.versions()
+        self.assertEqual(data["python"], platform.python_version())
+        self.assertIn("platform", data)
+        self.assertIn("machine", data)
+
+    def test_node_is_probed_and_absence_is_not_an_error(self):
+        # The app does not run on Node; an npx-based MCP server would. A machine
+        # without it gets "", which the panel renders as a dash rather than as a
+        # version that is not there.
+        data = support.versions()
+        self.assertIsInstance(data["node"], str)
+
+    def test_the_command_prints_an_envelope_the_ipc_path_can_unwrap(self):
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = support.main(["versions"])
+        self.assertEqual(code, 0)
+        payload = json.loads(buffer.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["data"]["python"], platform.python_version())
+

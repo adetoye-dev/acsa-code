@@ -308,18 +308,18 @@ export function PerformanceDashboard({
   }, []);
 
   const [storage, setStorage] = useState<StorageMetrics>({
-    totalGb: 926.4,
-    freeGb: 361.4,
-    usedGb: 565.0,
-    usedPercent: 61.0,
-    buildArtifactsMb: 221.3,
-    cacheReclaimableMb: 341.4,
-    categories: [
-      { id: "build", name: "Build Artifacts (dist/)", objects: 14, sizeMb: 221.3, reclaimableMb: 221.3 },
-      { id: "vite", name: "Vite Cache & Transpiler", objects: 42, sizeMb: 120.1, reclaimableMb: 120.1 },
-      { id: "pycache", name: "Python Bytecode (__pycache__)", objects: 18, sizeMb: 14.8, reclaimableMb: 14.8 },
-      { id: "logs", name: "System Logs & Buffers", objects: 9, sizeMb: 35.2, reclaimableMb: 35.2 },
-    ],
+    // Zeros, not example readings. These used to be plausible numbers for a real
+    // machine — 926 GB total, 341 MB reclaimable — and when the shell's field names
+    // drifted, the merge below kept the "previous" value, which was this. A page
+    // that invents a disk is worse than a page that admits it has not read one, and
+    // `hasStorageMetrics` is what says which of the two it is doing.
+    totalGb: 0,
+    freeGb: 0,
+    usedGb: 0,
+    usedPercent: 0,
+    buildArtifactsMb: 0,
+    cacheReclaimableMb: 0,
+    categories: [],
   });
 
   const [processes, setProcesses] = useState<RunningProcessItem[]>([]);
@@ -434,31 +434,43 @@ export function PerformanceDashboard({
   };
 
   const activeMetrics = metrics;
-  const cpuPercent = activeMetrics ? Math.round(activeMetrics.cpu_usage_percent) : 15;
-  const memUsedGb = activeMetrics
-    ? (activeMetrics.memory_used_mb / 1024).toFixed(1)
-    : "14.2";
-  const memTotalGb = activeMetrics
-    ? (activeMetrics.memory_total_mb / 1024).toFixed(0)
-    : "16";
-  const memPercent = activeMetrics
-    ? Math.round(activeMetrics.memory_usage_percent)
-    : 88;
+  // Nothing here is a placeholder. Every one of these fallbacks was a literal — 15%,
+  // 88%, 14.2 GB, 926.4 GB, "unknown" — so with telemetry offline the panel drew a
+  // full, plausible machine that was not the reader's. `null` is "not measured" and
+  // renders as a dash; the strip already says STATUS: OFFLINE beside it.
+  const NOT_MEASURED = "—";
+  const cpuPercent = activeMetrics ? Math.round(activeMetrics.cpu_usage_percent) : null;
+  const memUsedGb = activeMetrics ? activeMetrics.memory_used_mb / 1024 : null;
+  const memTotalGb = activeMetrics ? activeMetrics.memory_total_mb / 1024 : null;
+  const memPercent = activeMetrics ? Math.round(activeMetrics.memory_usage_percent) : null;
 
-  const diskPercent = activeMetrics?.disk_usage_percent ?? (hasStorageMetrics && Number.isFinite(storage.usedPercent) ? Math.round(storage.usedPercent) : 61);
-  const diskTotalGb = activeMetrics?.disk_total_gb ?? (hasStorageMetrics ? storage.totalGb : 926.4);
-  const diskUsedGb = activeMetrics?.disk_used_gb ?? (hasStorageMetrics ? storage.usedGb : 565);
-  const formatGb = (value: number) => Number.isFinite(value) ? value.toFixed(1) : "unknown";
-  const hostPlatform = activeMetrics?.platform ?? "unknown";
-  const hostArchitecture = activeMetrics?.architecture ?? "unknown";
-  const nodeVersion = activeMetrics?.node_version ?? "unknown";
-  const viteVersion = activeMetrics?.vite_version ?? "unknown";
-  const pythonVersion = activeMetrics?.python_version ?? "unknown";
+  const diskPercent = activeMetrics?.disk_usage_percent ?? (hasStorageMetrics ? Math.round(storage.usedPercent) : null);
+  const diskTotalGb = activeMetrics?.disk_total_gb ?? (hasStorageMetrics ? storage.totalGb : null);
+  const diskUsedGb = activeMetrics?.disk_used_gb ?? (hasStorageMetrics ? storage.usedGb : null);
+  const formatGb = (value: number | null) =>
+    typeof value === "number" && Number.isFinite(value) ? value.toFixed(1) : NOT_MEASURED;
+  const hostPlatform = activeMetrics?.platform ?? NOT_MEASURED;
+  const hostArchitecture = activeMetrics?.architecture ?? NOT_MEASURED;
+  const nodeVersion = activeMetrics?.node_version || NOT_MEASURED;
+  const viteVersion = activeMetrics?.vite_version || NOT_MEASURED;
+  const pythonVersion = activeMetrics?.python_version || NOT_MEASURED;
 
-  const totalCachesMb = storage.buildArtifactsMb + storage.cacheReclaimableMb;
-  const cachePercent = totalCachesMb > 0 ? Math.round((storage.cacheReclaimableMb / totalCachesMb) * 100) : 60;
+  const totalCachesMb = hasStorageMetrics
+    ? storage.buildArtifactsMb + storage.cacheReclaimableMb
+    : null;
+  const cachePercent =
+    totalCachesMb && totalCachesMb > 0
+      ? Math.round((storage.cacheReclaimableMb / totalCachesMb) * 100)
+      : 0;
 
-  const isSystemHealthy = cpuPercent < 85 && memPercent < 95;
+  // Three states, because two cannot say "we have not looked": a reading of 15% and
+  // a reading of nothing both used to render as a healthy-looking badge.
+  const health: "unknown" | "ok" | "high" =
+    cpuPercent === null || memPercent === null
+      ? "unknown"
+      : cpuPercent < 85 && memPercent < 95
+        ? "ok"
+        : "high";
 
   const getCategoryIcon = (id: string) => {
     switch (id) {
@@ -524,7 +536,11 @@ export function PerformanceDashboard({
 
           <div className="flex items-center gap-3">
             <span className="px-3.5 py-1 rounded-full text-xs font-semibold font-mono tracking-wider bg-zinc-800 text-zinc-200 border border-zinc-700/60">
-              {isSystemHealthy ? "Optimal Health" : "High Resource Load"}
+              {health === "unknown"
+                ? "No Reading"
+                : health === "ok"
+                  ? "Optimal Health"
+                  : "High Resource Load"}
             </span>
           </div>
         </div>
@@ -540,11 +556,11 @@ export function PerformanceDashboard({
               </div>
               <div className="flex items-baseline gap-1.5">
                 <span className="text-2xl sm:text-3xl font-mono font-extrabold text-white tracking-tight">
-                  {cpuPercent.toFixed(1)}%
+                  {cpuPercent === null ? NOT_MEASURED : `${cpuPercent.toFixed(1)}%`}
                 </span>
                 <span className="text-xs font-mono text-zinc-500">/ 100%</span>
               </div>
-              <HatchedBarGauge percent={cpuPercent} variant="purple" slashes={30} />
+              <HatchedBarGauge percent={cpuPercent ?? 0} variant="purple" slashes={30} />
             </div>
 
             {/* 2. MEMORY ALLOCATION (Cyan Hatch) */}
@@ -554,11 +570,13 @@ export function PerformanceDashboard({
               </div>
               <div className="flex items-baseline gap-1.5">
                 <span className="text-2xl sm:text-3xl font-mono font-extrabold text-white tracking-tight">
-                  {memUsedGb}
+                  {memUsedGb === null ? NOT_MEASURED : memUsedGb.toFixed(1)}
                 </span>
-                <span className="text-xs font-mono text-zinc-500">/ {memTotalGb} GB</span>
+                <span className="text-xs font-mono text-zinc-500">
+                  / {memTotalGb === null ? NOT_MEASURED : memTotalGb.toFixed(0)} GB
+                </span>
               </div>
-              <HatchedBarGauge percent={memPercent} variant="cyan" slashes={30} />
+              <HatchedBarGauge percent={memPercent ?? 0} variant="cyan" slashes={30} />
             </div>
 
             {/* 3. ROOT STORAGE OCCUPANCY (Purple Hatch) */}
@@ -572,7 +590,7 @@ export function PerformanceDashboard({
                 </span>
                 <span className="text-xs font-mono text-zinc-500">/ {formatGb(diskTotalGb)} GB</span>
               </div>
-              <HatchedBarGauge percent={diskPercent} variant="purple" slashes={30} />
+              <HatchedBarGauge percent={diskPercent ?? 0} variant="purple" slashes={30} />
             </div>
 
             {/* 4. RECLAIMABLE CACHE BUFFERS (Cyan Hatch) */}
@@ -591,9 +609,11 @@ export function PerformanceDashboard({
                 </div>
                 <div className="flex items-baseline gap-1.5 mt-0.5">
                   <span className="text-2xl sm:text-3xl font-mono font-extrabold text-white tracking-tight">
-                    {storage.cacheReclaimableMb.toFixed(0)}
+                    {hasStorageMetrics ? storage.cacheReclaimableMb.toFixed(0) : NOT_MEASURED}
                   </span>
-                  <span className="text-xs font-mono text-zinc-500">/ {totalCachesMb.toFixed(0)} MB</span>
+                  <span className="text-xs font-mono text-zinc-500">
+                    / {totalCachesMb === null ? NOT_MEASURED : totalCachesMb.toFixed(0)} MB
+                  </span>
                 </div>
               </div>
               <HatchedBarGauge percent={cachePercent} variant="cyan" slashes={30} />
@@ -661,7 +681,9 @@ export function PerformanceDashboard({
                 Workspace Maintenance
               </h3>
               <span className="text-3xs font-mono text-zinc-500">
-                {storage.cacheReclaimableMb.toFixed(0)} MB reclaimable
+                {hasStorageMetrics
+                  ? `${storage.cacheReclaimableMb.toFixed(0)} MB reclaimable`
+                  : "not measured"}
               </span>
             </div>
 
@@ -706,6 +728,15 @@ export function PerformanceDashboard({
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-zinc-800/40 text-xs font-mono">
+                        {storage.categories.length === 0 && (
+                          <tr>
+                            <td colSpan={4} className="py-3 font-sans text-zinc-500">
+                              {hasStorageMetrics
+                                ? "No cache categories reported for this project."
+                                : "Nothing read yet — disk and cache figures come from the desktop app."}
+                            </td>
+                          </tr>
+                        )}
                         {storage.categories.map((cat) => (
                           <tr key={cat.id} className="hover:bg-white/[0.02]">
                             <td className="py-2.5 font-sans font-medium text-zinc-200 flex items-center gap-2">

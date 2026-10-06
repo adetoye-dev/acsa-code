@@ -17,6 +17,18 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+- **The Performance panel no longer draws a machine it has not measured.** With
+  telemetry offline it showed a full, plausible host — 15% CPU, 88% memory, 926.4 GB of
+  disk, "341 MB reclaimable", and a badge reading "Optimal Health" — all of it literals
+  in the component. An unmeasured value is a dash now, the badge says "No Reading", and
+  the workspace panel says it has measured nothing. Those fabricated storage numbers
+  were also what hid the wire mismatch above for as long as it lasted: a missing field
+  fell back to the previous value, and the previous value was an example.
+- **The runtime line has a supplier.** `Node · Vite · Python` read three fields nothing
+  produced, so it said `unknown` on every machine. The engine now reports its own
+  interpreter and the host's Node — a packaged build carries an embedded Python, so the
+  engine is the only honest source — and the bundler version is captured at build time,
+  where it is a fact rather than a guess.
 ### Changed
 
 - **The file tree shows the dotfiles you actually work in.** The rule was "skip
