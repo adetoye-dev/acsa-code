@@ -26,6 +26,7 @@ import "dockview/dist/styles/dockview.css";
 import { Activity, Save, Folder, Search, GitPullRequest, GitFork, Download, PanelBottom, PanelLeft, FolderPlus, Settings, PanelRight, Cpu, MessageSquare, Palette, Package, Bot, GitCompare, X, Network } from "lucide-react";
 import { Icon } from "../ui/Icon";
 import { hasIpc } from "../../services/engineBridge";
+import { relayoutDockview } from "../../services/dockviewLayout";
 import { FileIcon } from "../ui/FileIcon";
 
 import { StatusBar, blockedLabel } from "./StatusBar";
@@ -326,6 +327,8 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
   } | null>(null);
   const [selectedCode, setSelectedCode] = useState("");
   const dockviewApiRef = useRef<DockviewApi | null>(null);
+  /** The element Dockview is drawn in — what "the editor's space" actually is. */
+  const dockviewHostRef = useRef<HTMLDivElement | null>(null);
 
   /** Something asked for a file: the editor screen is where files are looked at. */
   const revealEditorForFile = useCallback(() => {
@@ -1048,6 +1051,21 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
   // every render re-registered the factory — which re-runs updateOptions and a
   // full layout pass on each keystroke. WORKBENCH_PANELS is a module constant.
 
+  /**
+   * Tell Dockview when the space it lives in changed.
+   *
+   * The discrete changes are the ones that matter — the chat dock opening, the
+   * bottom panel closing, leaving the editor for a page — because the container
+   * shrinks in one commit and the grid can be left at the old size. With a dozen
+   * tabs open the group has a floor it will not go under, so nothing re-measures
+   * it, and the reader sees the editor's right edge in the wrong place: the tab
+   * strip without its overflow control, review controls under the chat dock, long
+   * lines cut short. See services/dockviewLayout.ts.
+   */
+  useEffect(() => {
+    relayoutDockview(dockviewHostRef.current, dockviewApiRef.current);
+  }, [isRightPanelOpen, isBottomPanelOpen, screen]);
+
   // ── Initialize Default Dockview Layout ────────────────────────────────────
   const onReady = useCallback((event: DockviewReadyEvent) => {
     dockviewApiRef.current = event.api;
@@ -1447,7 +1465,7 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
 
               {/* Dockview Editors & Diff Surface, with the terminal beneath */}
               <div className="flex-1 min-w-0 flex flex-col h-full overflow-hidden bg-[var(--vscode-editor-bg)]">
-                <div className="flex-1 w-full overflow-hidden relative">
+                <div ref={dockviewHostRef} className="flex-1 w-full overflow-hidden relative">
             <TabChromeContext.Provider value={tabChrome}>
             {/* Panels read current state through this: dockview froze the
                 component it was handed at panel creation, so a closure would
