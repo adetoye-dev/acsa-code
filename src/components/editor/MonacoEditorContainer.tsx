@@ -22,6 +22,7 @@ import {
 } from "../../services/aiAutocomplete";
 import { reviewFile, isReviewableFile, type ReviewIssue } from "../../services/aiReview";
 import { configureMonacoTypeScript } from "../../services/monacoTsConfig";
+import { useRemeasureOnLayout } from "../../hooks/useRemeasureOnLayout";
 import { syncProjectFiles } from "../../services/monacoProjectFiles";
 import { applyMonacoTheme } from "../../services/themeManager";
 import { getAutoSelectedLocalWorker, resolveEditorAiConfig } from "../../services/aiModelManager";
@@ -271,6 +272,15 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
 
   // ── ACSA file review ──────────────────────────────────────────────────
   const [reviewIssues, setReviewIssues] = useState<ReviewIssue[]>([]);
+  /**
+   * The editor instance, as state rather than only a ref.
+   *
+   * A ref does not re-render, so an effect that reads one on mount sees `null` and
+   * never runs again: the re-measure-on-scroll below was wired that way, and only
+   * worked once something else happened to re-render first. Anything that has to
+   * subscribe to the editor can key off this.
+   */
+  const [editorInstance, setEditorInstance] = useState<MonacoType.editor.IStandaloneCodeEditor | null>(null);
   const [isReviewing, setIsReviewing] = useState(false);
   const [reviewError, setReviewError] = useState("");
   const [reviewNote, setReviewNote] = useState("");
@@ -759,7 +769,7 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
 
   // Zones scrolled into view were never measurable while hidden; size them now.
   useEffect(() => {
-    const editor = editorRef.current;
+    const editor = editorInstance;
     if (!editor) return;
     let timer: number | undefined;
     const subscription = editor.onDidScrollChange(() => {
@@ -772,7 +782,16 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
       if (timer) window.clearTimeout(timer);
       subscription.dispose();
     };
-  }, [measureVisibleZones, threadIsCollapsed]);
+  }, [editorInstance, measureVisibleZones, threadIsCollapsed]);
+
+  // …and, for the same reason, when the editor's *width* changes: a card's zone
+  // is applied with a height that is only right for the width it was measured at,
+  // so narrowing the editor clips the last line of any card that wrapped.
+  useRemeasureOnLayout(
+    editorInstance,
+    measureVisibleZones,
+    () => setZoneEpoch((epoch) => epoch + 1),
+  );
 
   // Highlight each finding's line and let the gutter glyph toggle its thread.
   const decorationIdsRef = useRef<string[]>([]);
@@ -845,6 +864,7 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
 
     editorRef.current = editor;
     monacoRef.current = monaco;
+    setEditorInstance(editor);
 
     selectionDisposableRef.current = editor.onDidChangeCursorSelection(() => {
       const selection = editor.getSelection();
@@ -910,13 +930,7 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
   return (
     <div className="relative h-full w-full bg-workbench overflow-hidden">
       {/* ── AI Review Controls ──────────────────────────────────────── */}
-      {/* Wraps rather than squeezes.
-          The row is right-anchored and sized to its content, so in a narrow editor
-          — the chat dock open, the explorer dragged wide — the only way it can fit
-          is by squashing its own labels, and the last one ends up cut. Wrapping
-          keeps every control whole and legible on a second line instead, and the
-          width cap keeps the row inside the pane it is anchored to. */}
-      <div className="absolute top-2 right-3 z-raised flex flex-wrap items-center justify-end gap-2 max-w-[calc(100%-1.5rem)]">
+      <div className="absolute top-2 right-3 z-raised flex items-center gap-2">
         <button
           type="button"
           onClick={handleReviewFile}

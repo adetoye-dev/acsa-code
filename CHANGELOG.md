@@ -80,11 +80,13 @@ for them, not which file moved.
   frontend declares without a `?` has to be one the shell actually sends.
 ### Fixed
 
-- **The editor's review controls wrap instead of being cut.** They are a row of
-  chips anchored to the editor's right edge and sized to their content, so in a narrow
-  editor — the chat dock open, the explorer dragged wide — the only way to fit was to
-  squeeze their own labels, and the last one ended up sliced. They wrap onto a second
-  line now, and the row is capped to the pane it is drawn in.
+- **A review card keeps all of its text when the editor gets narrower.** The cards
+  live in Monaco view zones, and a zone is applied with a height that is only right
+  for the width it was measured at. Opening the chat dock narrows the editor, a card
+  whose text needs another line becomes taller than its zone, and its last line was
+  clipped — the sentence stopping mid-way, which stayed that way through window
+  resizes because nothing asked for a new measurement. The heights are re-measured on
+  Monaco's layout change now, the same way they already were on scroll.
 
 - **TypeScript files stop reporting errors that are not there.** Monaco 0.57 moved
   its TypeScript API, and the configuration that sets the compiler options and
