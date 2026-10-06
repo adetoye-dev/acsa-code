@@ -17,20 +17,31 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+### Added
+
+- **The File menu has the operations a Mac app is expected to have in it.** File
+  offered "Close Window" and nothing else — Tauri's default — so opening a file or a
+  folder meant finding the button for it somewhere in the workbench. It now opens with
+  **Open File… (⌘O)**, **Open Folder… (⇧⌘O)**, **Save (⌘S)** and **Save All (⌥⌘S)**,
+  and each of them runs the same function the command palette calls rather than a
+  second implementation of it. Open File… starts its panel in the project — where the
+  file is, and the only place the reader is allowed to read from. The standard menus
+  are untouched: the default menu is kept, and these items are inserted into it.
+
+### Changed
+
 - **The Performance panel no longer draws a machine it has not measured.** With
   telemetry offline it showed a full, plausible host — 15% CPU, 88% memory, 926.4 GB of
   disk, "341 MB reclaimable", and a badge reading "Optimal Health" — all of it literals
   in the component. An unmeasured value is a dash now, the badge says "No Reading", and
   the workspace panel says it has measured nothing. Those fabricated storage numbers
-  were also what hid the wire mismatch above for as long as it lasted: a missing field
+  were also what hid the wire mismatch in the CPU and RAM columns: a missing field
   fell back to the previous value, and the previous value was an example.
 - **The runtime line has a supplier.** `Node · Vite · Python` read three fields nothing
   produced, so it said `unknown` on every machine. The engine now reports its own
   interpreter and the host's Node — a packaged build carries an embedded Python, so the
   engine is the only honest source — and the bundler version is captured at build time,
   where it is a fact rather than a guess.
-### Changed
-
 - **The file tree shows the dotfiles you actually work in.** The rule was "skip
   anything starting with a dot", which hid `.env`, `.gitignore`, `.github/` and
   `.vscode/` — files a developer opens constantly — in order to avoid walking caches.

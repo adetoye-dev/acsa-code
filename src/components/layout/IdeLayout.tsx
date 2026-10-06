@@ -25,6 +25,7 @@ import {
 import "dockview/dist/styles/dockview.css";
 import { Activity, Save, Folder, Search, GitPullRequest, GitFork, Download, PanelBottom, PanelLeft, FolderPlus, Settings, PanelRight, Cpu, MessageSquare, Palette, Package, Bot, GitCompare, X, Network } from "lucide-react";
 import { Icon } from "../ui/Icon";
+import { hasIpc } from "../../services/engineBridge";
 import { FileIcon } from "../ui/FileIcon";
 
 import { StatusBar, blockedLabel } from "./StatusBar";
@@ -425,6 +426,34 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
   };
 
   /**
+   * Open a file from the native picker into a tab.
+   *
+   * The panel opens in the project rather than at the Desktop, because that is
+   * where the file the reader wants is — and because the reader only reads inside
+   * the project root, so a choice made anywhere else comes back as a refusal in a
+   * tab rather than as the file.
+   */
+  const handleOpenFile = async () => {
+    if (!hasIpc()) return;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const picked = await invoke<string | null>("pick_open_file", {
+        prompt: "Open File:",
+        defaultDir: activeProject.path || null,
+      });
+      if (!picked) return;
+      await openFile({
+        name: picked.split("/").pop() || picked,
+        path: picked,
+        is_dir: false,
+        size_bytes: 0,
+      });
+    } catch (err) {
+      console.error("pick_open_file failed:", err);
+    }
+  };
+
+  /**
    * Show a screen.
    *
    * A page wants the canvas, so the terminal and the chat dock step aside — and
@@ -489,6 +518,45 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
   }, []);
 
   // ── Listen for Watermark / Global Quick Action Requests ───────────────────
+  /**
+   * The application menu's actions, which live in Rust and arrive as one event.
+   *
+   * Read through a ref so the subscription is made once: `activeTabPath` and the
+   * callbacks change on every keystroke, and resubscribing per render would be
+   * listener churn the menu has no use for.
+   */
+  const menuActionsRef = useRef<Record<string, () => void>>({});
+  useEffect(() => {
+    menuActionsRef.current = {
+      "open-file": () => void handleOpenFile(),
+      "open-folder": () => void handleOpenFolder(),
+      save: () => {
+        if (activeTabPath) void saveFile(activeTabPath);
+      },
+      "save-all": () => {
+        for (const tab of openTabs.filter((entry) => entry.isDirty)) void saveFile(tab.path);
+      },
+    };
+  });
+
+  useEffect(() => {
+    if (!hasIpc()) return;
+    let off: (() => void) | undefined;
+    let cancelled = false;
+    void (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      const stop = await listen<string>("acsa:menu", (event) => {
+        menuActionsRef.current[event.payload]?.();
+      });
+      if (cancelled) stop();
+      else off = stop;
+    })();
+    return () => {
+      cancelled = true;
+      off?.();
+    };
+  }, []);
+
   useEffect(() => {
     const handleOpenFileSearch = () => {
       setPaletteMode("file");
@@ -725,6 +793,15 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
       category: "File",
       icon: Folder,
       action: handleOpenFolder,
+    },
+    {
+      // The menu bar's File ▸ Open File…, offered here too so the two ways in are
+      // the same command rather than neighbours that drifted apart.
+      id: "file.openFile",
+      title: "Open File...",
+      category: "File",
+      icon: Folder,
+      action: handleOpenFile,
     },
     {
       id: "file.newProject",

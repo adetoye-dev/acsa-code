@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { UsePipelineReturn } from "../../hooks/usePipeline";
 
 // jsdom has neither of these; the shell's grid and its scroll containers want them.
@@ -22,6 +22,18 @@ vi.mock("../sidebar/MarketplaceSidebar", () => ({
   MarketplaceSidebar: () => <div data-testid="marketplace-page" />,
 }));
 vi.mock("./UpdateButton", () => ({ UpdateButton: () => null }));
+/**
+ * The macOS application menu arrives as one event carrying an id. Captured here so
+ * a test can raise the ids the Rust side raises.
+ */
+const menu = vi.hoisted(() => ({ listener: null as null | ((event: { payload: string }) => void) }));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: async (_name: string, handler: (event: { payload: string }) => void) => {
+    menu.listener = handler;
+    return () => undefined;
+  },
+}));
+
 vi.mock("../../services/engineBridge", () => ({
   DESKTOP_REQUIRED_MESSAGE: "the desktop app is required",
   hasIpc: () => true,
@@ -125,6 +137,66 @@ function pipeline(): UsePipelineReturn {
 afterEach(cleanup);
 
 const renderShell = () => render(<IdeLayout {...pipeline()} />);
+
+/**
+ * The macOS application menu lives in Rust and arrives here as one event with an
+ * id. The menu is a second way into the same actions the command palette calls, so
+ * this pins that the ids reach those actions — an id nobody handles is a menu item
+ * that does nothing, which is the state File was in before it existed.
+ */
+describe("the application menu", () => {
+  const saved = { paths: [] as string[], folders: 0 };
+  beforeEach(() => {
+    saved.paths = [];
+    saved.folders = 0;
+  });
+
+  const withMenu = () => ({
+    ...pipeline(),
+    activeTabPath: "/work/acsa-code/src/app.ts",
+    openTabs: [
+      { path: "/work/acsa-code/src/app.ts", name: "app.ts", content: "", originalContent: "", isDirty: true },
+    ],
+    pickFolder: async () => "/picked/folder",
+    openFolder: async () => {
+      saved.folders += 1;
+    },
+    saveFile: async (path: string) => {
+      saved.paths.push(path);
+    },
+  });
+
+  const fireMenu = async (id: string) => {
+    await waitFor(() => expect(menu.listener).not.toBeNull());
+    await act(async () => {
+      menu.listener?.({ payload: id });
+    });
+  };
+
+  it("saves the file in front of the reader when Save is chosen", async () => {
+    render(<IdeLayout {...(withMenu() as unknown as UsePipelineReturn)} />);
+    await fireMenu("save");
+    expect(saved.paths).toEqual(["/work/acsa-code/src/app.ts"]);
+  });
+
+  it("saves every unsaved tab when Save All is chosen", async () => {
+    render(<IdeLayout {...(withMenu() as unknown as UsePipelineReturn)} />);
+    await fireMenu("save-all");
+    expect(saved.paths).toEqual(["/work/acsa-code/src/app.ts"]);
+  });
+
+  it("opens a folder when Open Folder is chosen", async () => {
+    render(<IdeLayout {...(withMenu() as unknown as UsePipelineReturn)} />);
+    await fireMenu("open-folder");
+    await waitFor(() => expect(saved.folders).toBe(1));
+  });
+
+  it("ignores an id it does not know, rather than throwing", async () => {
+    render(<IdeLayout {...(withMenu() as unknown as UsePipelineReturn)} />);
+    await fireMenu("menu.something-new");
+    expect(saved.paths).toEqual([]);
+  });
+});
 
 describe("the workbench shell", () => {
   it("paints the sidebar, the editor with its tree, and the chat — not the terminal", async () => {

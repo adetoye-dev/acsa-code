@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex};
 use sysinfo::System;
+use tauri::menu::{Menu, MenuItemBuilder, MenuItemKind, PredefinedMenuItem};
 use tauri::{Emitter, Manager, State};
 
 // ── Data Structures ─────────────────────────────────────────────────────────
@@ -610,17 +611,37 @@ fn pick_save_file(default_name: String, prompt: String) -> Result<Option<String>
     }
 }
 
-/// Ask the user for an existing file to read — the import half of a backup.
+/// The AppleScript that asks for a file, and where its panel opens.
+///
+/// Its own function because both halves come from the page: an unescaped quote in
+/// either turns the script into a different script, which is the same reason
+/// `applescript_literal` exists. Testable here, unlike the call itself, because the
+/// call opens a window on someone's screen.
+fn open_file_panel_script(prompt: &str, default_dir: Option<&str>) -> String {
+    // Where the panel opens depends on what is being opened. A backup import
+    // starts at the Desktop, because a bundle exported there is where the next
+    // import should look. Opening a file in the editor starts in the project — a
+    // panel that opens at the Desktop for that is a dozen clicks away from the
+    // file the reader wants, and anything picked outside the project root comes
+    // back as a refusal rather than as a tab.
+    let location = match default_dir.map(str::trim).filter(|dir| !dir.is_empty()) {
+        Some(dir) => format!(" default location (POSIX file \"{}\")", applescript_literal(dir)),
+        None => " default location (path to desktop folder)".to_string(),
+    };
+    format!(
+        "POSIX path of (choose file with prompt \"{}\"{})",
+        applescript_literal(prompt),
+        location,
+    )
+}
+
+/// Ask the user for an existing file to read — the import half of a backup, and
+/// the editor's File ▸ Open File….
 #[tauri::command]
-fn pick_open_file(prompt: String) -> Result<Option<String>, String> {
+fn pick_open_file(prompt: String, default_dir: Option<String>) -> Result<Option<String>, String> {
     #[cfg(target_os = "macos")]
     {
-        // Same starting point as the save panel, so a backup exported to the
-        // Desktop is where the next import looks for it.
-        let script = format!(
-            "POSIX path of (choose file with prompt \"{}\" default location (path to desktop folder))",
-            applescript_literal(&prompt)
-        );
+        let script = open_file_panel_script(&prompt, default_dir.as_deref());
         let output = std::process::Command::new("osascript")
             .arg("-e")
             .arg(&script)
@@ -635,7 +656,7 @@ fn pick_open_file(prompt: String) -> Result<Option<String>, String> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = prompt;
+        let _ = (prompt, default_dir);
         Ok(None)
     }
 }
@@ -4187,6 +4208,65 @@ async fn codex_exec(
 /// the same number.
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Give the File menu the operations a Mac app is expected to have in it.
+///
+/// Tauri's default menu is the platform one — the app menu, Edit with its
+/// clipboard items, Window, Help — and this app added nothing to it, so File
+/// offered "Close Window" and nothing else. Opening a file or a folder from the
+/// menu bar is not a nicety on macOS; it is where a reader looks first.
+///
+/// The default menu is *kept* and these items are inserted at the top of File,
+/// rather than a menu being built from scratch: the standard items are not ours to
+/// drop, and rebuilding them would be a second place for them to be wrong.
+///
+/// Each item raises an id the frontend already knows how to act on. That is the
+/// point — the menu is a second way into the same functions the command palette
+/// calls, not a second implementation of them.
+fn install_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
+    let menu = Menu::default(app)?;
+
+    let open_file = MenuItemBuilder::with_id("menu.open-file", "Open File…")
+        .accelerator("CmdOrCtrl+O")
+        .build(app)?;
+    let open_folder = MenuItemBuilder::with_id("menu.open-folder", "Open Folder…")
+        .accelerator("CmdOrCtrl+Shift+O")
+        .build(app)?;
+    let save = MenuItemBuilder::with_id("menu.save", "Save")
+        .accelerator("CmdOrCtrl+S")
+        .build(app)?;
+    // Option+Cmd+S, matching the editor convention: Shift+Cmd+S is "Save As"
+    // everywhere else, and this app has no Save As.
+    let save_all = MenuItemBuilder::with_id("menu.save-all", "Save All")
+        .accelerator("CmdOrCtrl+Alt+S")
+        .build(app)?;
+    let after_open = PredefinedMenuItem::separator(app)?;
+    let before_close = PredefinedMenuItem::separator(app)?;
+
+    let file = menu.items()?.into_iter().find_map(|item| match item {
+        MenuItemKind::Submenu(submenu) if submenu.text().ok().as_deref() == Some("File") => {
+            Some(submenu)
+        }
+        _ => None,
+    });
+
+    if let Some(file) = file {
+        file.insert_items(
+            &[
+                &open_file,
+                &open_folder,
+                &after_open,
+                &save,
+                &save_all,
+                &before_close,
+            ],
+            0,
+        )?;
+    }
+
+    app.set_menu(menu)?;
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(AppState {
@@ -4262,6 +4342,27 @@ fn main() {
                 "[ACSA Code] started. Engine dir: {:?}",
                 resolve_engine_dir(app.path().resource_dir().ok().as_deref())
             );
+
+            if let Err(error) = install_menu(app.handle()) {
+                // A menu that cannot be built is not a reason to refuse to start,
+                // but it is a reason to say so rather than to look like this app
+                // simply has no menu items.
+                eprintln!("[ACSA Code] could not install the application menu: {error}");
+            }
+
+            let menu_handle = app.handle().clone();
+            app.on_menu_event(move |_app, event| {
+                let action = match event.id().as_ref() {
+                    "menu.open-file" => "open-file",
+                    "menu.open-folder" => "open-folder",
+                    "menu.save" => "save",
+                    "menu.save-all" => "save-all",
+                    // Predefined items (Quit, Copy, Close Window) are handled by
+                    // the platform and arrive here too; they are not ours to act on.
+                    _ => return,
+                };
+                let _ = menu_handle.emit("acsa:menu", action);
+            });
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -4306,6 +4407,27 @@ mod tests {
             visited.insert(real);
         }
         build_file_tree(root, MAX_TREE_DEPTH, &mut visited)
+    }
+
+    /// File ▸ Open File… opens its panel in the project, and a backup import still
+    /// opens at the Desktop. The difference is the whole point of the argument, so
+    /// both are pinned — along with the escaping, because a quote in either string
+    /// would end the AppleScript literal and start another one.
+    #[test]
+    fn the_open_panel_starts_where_the_thing_being_opened_is() {
+        let in_project = open_file_panel_script("Open File:", Some("/Users/me/proj"));
+        assert!(in_project.contains("default location (POSIX file \"/Users/me/proj\")"));
+
+        let from_desktop = open_file_panel_script("Import backup:", None);
+        assert!(from_desktop.contains("default location (path to desktop folder)"));
+
+        // An empty or whitespace directory is the same as none: a panel told to
+        // open at "" would fail rather than fall back.
+        assert!(open_file_panel_script("p", Some("  ")).contains("path to desktop folder"));
+
+        let quoted = open_file_panel_script("He said \"hi\"", Some("/tmp/a \"b\""));
+        assert!(quoted.contains("prompt \"He said \\\"hi\\\"\""));
+        assert!(quoted.contains("POSIX file \"/tmp/a \\\"b\\\"\""));
     }
 
     /// The editor hands the reader two shapes and both have to work: absolute
