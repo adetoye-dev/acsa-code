@@ -194,6 +194,57 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$APP"
           spctl --assess --type execute --verbose=2 "$APP"
 
+      # Built here, from the *stapled* app, and by hand.
+      #
+      # Tauri's own DMG bundler cannot be used: it rebuilds the app and then
+      # consumes it, which throws away `sign_bundle.sh`'s nested signing (see the
+      # Bundle step) and ships an image Apple rejects. Making the image from the
+      # app that was just verified keeps the copy inside it identical to the one
+      # that was notarised.
+      #
+      # Why an image at all: a zip invites "unzip into Downloads and double-click",
+      # and macOS then runs the app from a read-only translocated copy that cannot
+      # replace itself. That is the read-only update failure users reported. A
+      # volume with an Applications alias puts the drag-to-Applications step in
+      # front of them, which is the layout an app that updates itself expects to
+      # live in.
+      - name: Build the disk image
+        run: |
+          set -euo pipefail
+          APP=".tauri/target/release/bundle/macos/ACSA Code.app"
+          DMG=".tauri/target/release/bundle/macos/ACSA-Code.dmg"
+          STAGE="$RUNNER_TEMP/dmg"
+          rm -rf "$STAGE" "$DMG"
+          mkdir -p "$STAGE"
+          # `ditto`, not `cp -R`: it carries the extended attributes and resource
+          # forks, and the stapled ticket is one of them.
+          ditto "$APP" "$STAGE/ACSA Code.app"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create -volname "ACSA Code" -srcfolder "$STAGE" -ov -format UDZO -quiet "$DMG"
+          hdiutil verify "$DMG"
+          ls -lh "$DMG"
+
+      # The image is signed and notarised in its own right. The app inside carries
+      # its own ticket, but an image that has never been through the service still
+      # trips the first-open prompt — and this one is the thing people download.
+      - name: Sign, notarise and staple the disk image
+        if: env.APPLE_CERTIFICATE != ''
+        timeout-minutes: 25
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          DMG=".tauri/target/release/bundle/macos/ACSA-Code.dmg"
+          codesign --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$DMG"
+          codesign --verify --verbose=2 "$DMG"
+          xcrun notarytool submit "$DMG" \
+            --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+
       # A tag push publishes; a manual run has to leave something behind, or the
       # only proof it worked is a green tick and the notarised build dies with the
       # runner. `if-no-files-found: warn` keeps an unsigned dry run from failing.
@@ -201,7 +252,12 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ACSA-Code-macos-notarised
-          path: .tauri/target/release/bundle/macos/ACSA-Code.app.zip
+          # The image too, so a manual run produces the thing people download
+          # rather than only the zip — it is the only way to inspect a signed
+          # image without publishing a release.
+          path: |
+            .tauri/target/release/bundle/macos/ACSA-Code.dmg
+            .tauri/target/release/bundle/macos/ACSA-Code.app.zip
           if-no-files-found: warn
           retention-days: 14
 
@@ -272,15 +328,21 @@ jobs:
 
           ---
 
-          **Download:** `ACSA-Code.app.zip` — signed with a Developer ID,
-          notarised and stapled, so it opens without the Gatekeeper prompt.
-          Unzip and drag `ACSA Code.app` to Applications.
+          **Download:** `ACSA-Code.dmg` — open it and drag `ACSA Code` onto the
+          Applications alias. The app and the disk image are each signed with a
+          Developer ID and notarised, so neither prompts Gatekeeper, and installing
+          it to Applications is what lets it update itself. Running it from the
+          Downloads folder or straight out of the image leaves it in a read-only
+          copy, where no update can be installed.
+
+          `ACSA-Code.app.zip` carries the same app for anyone who would rather have
+          the bundle directly.
 
           **Already installed?** The app checks `latest.json` on launch and
-          offers an update in the title bar, and the zip above can simply be
-          replaced. The updater's own artifacts (`ACSA-Code.app.tar.gz` and its
-          `.sig`) and the manifest are attached for that check; the `.sig` is
-          minisign, verified against the public key compiled into the app.
+          offers an update in the title bar. The updater's own artifacts
+          (`ACSA-Code.app.tar.gz` and its `.sig`) and the manifest are attached for
+          that check; the `.sig` is minisign, verified against the public key
+          compiled into the app.
           EOF
           echo "Built from ${{ github.sha }}." >> "$NOTES"
           cat "$NOTES"
@@ -292,9 +354,10 @@ jobs:
           draft: true
           body_path: ${{ runner.temp }}/release-notes.md
           # The signed, notarised, stapled app. The disk image is deliberately
-          # not built here: it has to be made *from* the stapled app, and Tauri's
-          # bundler cannot do that (see the Bundle step).
+          # built by hand above, from the stapled app, rather than by Tauri's
+          # bundler (see "Build the disk image").
           files: |
+            .tauri/target/release/bundle/macos/ACSA-Code.dmg
             .tauri/target/release/bundle/macos/ACSA-Code.app.zip
             .tauri/target/release/bundle/macos/ACSA-Code.app.tar.gz
             .tauri/target/release/bundle/macos/ACSA-Code.app.tar.gz.sig
