@@ -19,6 +19,20 @@ for them, not which file moved.
 
 ### Changed
 
+- **The file tree shows the dotfiles you actually work in.** The rule was "skip
+  anything starting with a dot", which hid `.env`, `.gitignore`, `.github/` and
+  `.vscode/` — files a developer opens constantly — in order to avoid walking caches.
+  The caches are named now (`.git`, `.next`, `.turbo`, `.pnpm-store` and the like), so
+  `.env` is visible while a tree of generated files still is not.
+- **TypeScript files are given the project, so an import resolves rather than being
+  hidden.** The editor's TypeScript worker is a Web Worker with no filesystem, so an
+  import could only resolve to a file it had been handed — which is why the two "cannot
+  find module" diagnostics were suppressed, and why a misspelled import was as invisible
+  as a correct relative path. The worker is now handed the project's own source files,
+  the type entry of every package the project declares, and the project's own tsconfig:
+  `./pagination.js` finds `pagination.ts`, `expo-router` resolves, and `paths` aliases
+  work. With that in place the suppression is gone, so an import that really cannot be
+  resolved is reported again.
 - **Choosing a model that can only chat turns ask mode on, and says why.** Agent and
   plan runs need a model that calls tools, so a local model the daemon reports as
   having no tool support could only read files and answer without changing anything.

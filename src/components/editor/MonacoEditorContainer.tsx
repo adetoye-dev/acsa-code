@@ -22,6 +22,7 @@ import {
 } from "../../services/aiAutocomplete";
 import { reviewFile, isReviewableFile, type ReviewIssue } from "../../services/aiReview";
 import { configureMonacoTypeScript } from "../../services/monacoTsConfig";
+import { syncProjectFiles } from "../../services/monacoProjectFiles";
 import { applyMonacoTheme } from "../../services/themeManager";
 import { getAutoSelectedLocalWorker, resolveEditorAiConfig } from "../../services/aiModelManager";
 import type { AISettings } from "../SettingsModal";
@@ -837,6 +838,10 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
     // The TypeScript contribution (and its worker) only exists once a JS/TS
     // model has been created, so configure it here rather than in beforeMount.
     configureMonacoTypeScript(monaco, projectRoot);
+    // Then give the worker the project, so an import resolves to a real file
+    // instead of being reported as missing. Deliberately not awaited: the editor
+    // is usable while it lands, and it is cached per project.
+    void syncProjectFiles(monaco, projectRoot);
 
     editorRef.current = editor;
     monacoRef.current = monaco;

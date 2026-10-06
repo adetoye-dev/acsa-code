@@ -38,7 +38,16 @@ const EXTRA_LIBS = [
   "node_modules/@types/node/index.d.ts",
 ];
 
-/** 2307 = cannot find module; 2792 = cannot find module (did you mean ...). */
+/**
+ * 2307 = cannot find module; 2792 = cannot find module (did you mean ...).
+ *
+ * A fallback, not a policy. Once `monacoProjectFiles` has mirrored the project
+ * into the worker these are cleared, because resolution works and an unresolved
+ * import is then a real finding — the whole point of building the filesystem
+ * rather than hiding the two codes that report it. They stay here for the case
+ * where there is nothing to mirror: the browser preview has no filesystem behind
+ * it at all, and a wall of unfixable red is not a useful way to say so.
+ */
 const DIAGNOSTIC_CODES_TO_IGNORE = [2307, 2792];
 
 /** The project the current configuration was built for. */
@@ -62,7 +71,7 @@ let warnedMissingFeature = false;
  * Both shapes are accepted so a version bump in either direction cannot disable
  * this again, and a missing one is loud rather than silent.
  */
-function typescriptFeature(monaco: unknown): any | null {
+export function typescriptFeature(monaco: unknown): any | null {
   const candidate = monaco as
     | { typescript?: unknown; languages?: { typescript?: unknown } }
     | null

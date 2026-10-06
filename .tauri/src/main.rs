@@ -67,6 +67,13 @@ pub struct FileNode {
     pub path: String,
     pub is_dir: bool,
     pub size_bytes: u64,
+    /// Last write time, ms since the epoch.
+    ///
+    /// The editor mirrors project files into Monaco's TypeScript worker and skips
+    /// the ones it already has. Size alone cannot see an edit that kept the same
+    /// length — a rename to an equal-length identifier — so a stale copy of a file
+    /// would go on answering imports. Zero when the platform cannot say.
+    pub modified_ms: u64,
     pub children: Option<Vec<FileNode>>,
 }
 
@@ -84,6 +91,38 @@ pub struct FileNode {
 /// new paths forever. What actually bounds the walk is the ignore list.
 const MAX_TREE_DEPTH: usize = 64;
 
+/// Directories the explorer never walks into.
+///
+/// This used to be "anything whose name starts with a dot", which is how `.env`,
+/// `.gitignore`, `.github/` and `.vscode/` became invisible — files a developer
+/// opens and edits constantly, hidden to avoid descending into caches. Naming the
+/// caches keeps what the rule was for (never walking thousands of generated files)
+/// without hiding the dotfiles people actually work in.
+///
+/// Deliberately not here: `build`, `coverage`, `out`. Every one of those is a
+/// plausible *source* directory in some project, and the whole complaint this
+/// replaces was a tree that hid things the user could see elsewhere.
+const IGNORED_DIRS: [&str; 16] = [
+    // Dependencies and build output.
+    "node_modules",
+    "__pycache__",
+    "target",
+    "dist",
+    "venv",
+    ".venv",
+    // Version control, package stores and tool caches.
+    ".git",
+    ".pnpm-store",
+    ".cache",
+    ".turbo",
+    ".next",
+    ".nuxt",
+    ".svelte-kit",
+    ".gradle",
+    ".dart_tool",
+    ".pytest_cache",
+];
+
 fn build_file_tree(
     dir: &std::path::Path,
     depth: usize,
@@ -99,24 +138,26 @@ fn build_file_tree(
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
 
-            // Ignore hidden and heavy build dirs
-            if name.starts_with('.')
-                || name == "node_modules"
-                || name == "__pycache__"
-                || name == "target"
-                || name == "dist"
-                || name == ".venv"
-                || name == "venv"
-            {
+            let is_dir = path.is_dir();
+            // Directories only, and by name. A *file* called `dist` or a directory
+            // called `.config` is something the user put there; hiding entries by
+            // name is how `.env` came to be invisible.
+            if is_dir && IGNORED_DIRS.contains(&name.as_str()) {
                 continue;
             }
 
-            let is_dir = path.is_dir();
+            let metadata = entry.metadata().ok();
             let size_bytes = if is_dir {
                 0
             } else {
-                entry.metadata().map(|m| m.len()).unwrap_or(0)
+                metadata.as_ref().map(|m| m.len()).unwrap_or(0)
             };
+            let modified_ms = metadata
+                .as_ref()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
 
             let children = if is_dir {
                 // A symlink pointing at one of its own ancestors is a cycle. Without
@@ -139,6 +180,7 @@ fn build_file_tree(
                 path: path.to_string_lossy().to_string(),
                 is_dir,
                 size_bytes,
+                modified_ms,
                 children,
             });
         }
@@ -4226,6 +4268,27 @@ mod tests {
         build_file_tree(root, MAX_TREE_DEPTH, &mut visited)
     }
 
+    /// The editor hands the reader two shapes and both have to work: absolute
+    /// paths straight from the file tree, and `node_modules/...` relative to the
+    /// project for a dependency's types. What must not change is the boundary —
+    /// `resolve_project_path` is what stops the page reading the rest of the disk,
+    /// so widening it for either shape would be a hole, not a fix.
+    #[test]
+    fn the_file_reader_accepts_both_path_shapes_and_still_refuses_to_escape() {
+        let root = scratch("resolve-shapes");
+        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        std::fs::write(root.join("src.ts"), "export const x = 1;").unwrap();
+        std::fs::write(root.join("node_modules/pkg/index.d.ts"), "export {};").unwrap();
+        let root_arg = root.to_string_lossy().to_string();
+
+        let absolute = root.join("src.ts").to_string_lossy().to_string();
+        assert!(resolve_project_path(&root_arg, &absolute).is_ok());
+        assert!(resolve_project_path(&root_arg, "node_modules/pkg/index.d.ts").is_ok());
+        assert!(resolve_project_path(&root_arg, "../outside.ts").is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The cap was 5, which is under `apps/api/migrations/app/<migration>/`. A
     /// project laid out like that showed "(empty folder)" for folders every other
     /// editor listed, which is what a user reported — the tree simply stopped.
@@ -4273,7 +4336,9 @@ mod tests {
         let root = scratch("tree-ignore");
         std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
         std::fs::write(root.join("node_modules/pkg/index.js"), "module.exports = {}").unwrap();
-        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(root.join(".git/objects")).unwrap();
+        std::fs::write(root.join(".git/objects/ab12"), "binary").unwrap();
+        std::fs::create_dir_all(root.join(".next/server")).unwrap();
         std::fs::write(root.join("visible.ts"), "export const x = 1;").unwrap();
 
         let tree = walk(&root);
@@ -4281,6 +4346,26 @@ mod tests {
         assert!(find_by_name(&tree, "visible.ts").is_some());
         assert!(find_by_name(&tree, "node_modules").is_none());
         assert!(find_by_name(&tree, "index.js").is_none());
+        assert!(find_by_name(&tree, ".git").is_none());
+        assert!(find_by_name(&tree, ".next").is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The rule was "skip anything starting with a dot", which hid the files a
+    /// developer opens most — `.env` above all. Only *named* caches are skipped.
+    #[test]
+    fn dotfiles_a_user_edits_are_listed() {
+        let root = scratch("tree-dotfiles");
+        std::fs::write(root.join(".env"), "API_KEY=1").unwrap();
+        std::fs::write(root.join(".gitignore"), "node_modules").unwrap();
+        std::fs::create_dir_all(root.join(".github/workflows")).unwrap();
+        std::fs::write(root.join(".github/workflows/ci.yml"), "on: push").unwrap();
+
+        let tree = walk(&root);
+
+        assert!(find_by_name(&tree, ".env").is_some(), "a project's .env must be visible");
+        assert!(find_by_name(&tree, ".gitignore").is_some());
+        assert!(find_by_name(&tree, "ci.yml").is_some(), "nested dot-directories are walked");
         let _ = std::fs::remove_dir_all(&root);
     }
 

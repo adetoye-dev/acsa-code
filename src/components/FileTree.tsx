@@ -18,6 +18,8 @@ export interface FileNode {
   path: string;
   is_dir: boolean;
   size_bytes: number;
+  /** Last write time, ms since the epoch. 0 when the platform cannot say. */
+  modified_ms?: number;
   children?: FileNode[];
 }
 
