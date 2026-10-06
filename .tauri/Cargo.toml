@@ -1,6 +1,6 @@
 [package]
 name = "acsa-code"
-version = "0.2.26"
+version = "0.2.27"
 edition = "2021"
 description = "ACSA Code — local-first AI engineering workbench with deterministic verification"
 license = "MIT"

@@ -17,6 +17,8 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.27] - 2026-10-06
+
 ### Added
 
 - **The File menu has the operations a Mac app is expected to have in it.** File
@@ -550,7 +552,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.26...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.27...dev
+[0.2.27]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.26...v0.2.27
 [0.2.26]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.25...v0.2.26
 [0.2.25]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.24...v0.2.25
 [0.2.24]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.23...v0.2.24
