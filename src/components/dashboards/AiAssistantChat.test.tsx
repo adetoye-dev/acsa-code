@@ -50,7 +50,12 @@ vi.mock("../../services/aiChatPersistence", () => ({
 
 /** The model in effect, and whether it is allowed to drive a tool-using run. */
 const model = vi.hoisted(() => ({
-  canRunAgent: true,
+  /**
+   * Model name -> whether it can drive a run, defaulting to yes. Per model rather
+   * than one flag, because the capability is a property of the model: a test that
+   * switches from a chat-only model to a capable one needs both answers at once.
+   */
+  canRun: {} as Record<string, boolean>,
   /**
    * The configured model list. It has to hold the model: the component re-resolves
    * the selection on mount and drops anything the list does not contain, so an
@@ -76,8 +81,17 @@ const LOCAL_CHAT_MODEL = {
   category: "local" as const,
 };
 
+const CLOUD_AGENT_MODEL = {
+  providerId: "openai",
+  providerName: "OpenAI",
+  model: "gpt-5.3-codex",
+  speedBadge: "Thinking",
+  isDefault: false,
+  category: "cloud" as const,
+};
+
 vi.mock("../../services/aiModelManager", () => ({
-  canRunAgent: () => model.canRunAgent,
+  canRunAgent: (_providerId: string, name: string) => model.canRun[name] ?? true,
   getConfiguredModelsList: () => model.list,
   ensureProvidersHydrated: async () => undefined,
   resolveInitialSelectedModel: () => model.initial,
@@ -112,7 +126,7 @@ afterEach(() => {
   cleanup();
   counted.byProvider = {};
   chatDraft.clear();
-  model.canRunAgent = true;
+  model.canRun = {};
   model.initial = null;
   model.list = [];
 });
@@ -512,7 +526,7 @@ describe("a model that can only chat", () => {
     // reads files and answers without changing anything, so the mode has to move —
     // and the user, who chose this model because it is local and free, should be
     // told that is what happened rather than left to notice a chip appear.
-    model.canRunAgent = false;
+    model.canRun = { [LOCAL_CHAT_MODEL.model]: false };
     model.initial = LOCAL_CHAT_MODEL;
     model.list = [LOCAL_CHAT_MODEL];
     render(<AiAssistantChat {...baseProps} />);
@@ -525,12 +539,62 @@ describe("a model that can only chat", () => {
   it("leaves the mode alone when the model can call tools", () => {
     // The control. Without it the test above would pass for an app that simply
     // always starts in ask mode.
-    model.canRunAgent = true;
+    model.canRun = {};
     model.initial = LOCAL_CHAT_MODEL;
     model.list = [LOCAL_CHAT_MODEL];
     render(<AiAssistantChat {...baseProps} />);
 
     expect(screen.queryByTitle(/does not call tools/)).toBeNull();
+    expect(screen.getByTitle("Run Agent (Enter)")).toBeTruthy();
+  });
+
+  it("hands the mode back when a model that can run it is chosen", async () => {
+    // Ask mode here is the app's doing, so it does not get to be permanent: picking
+    // a capable model has to give back what the switch took, or the next message
+    // quietly does less than the user asked for.
+    model.canRun = { [LOCAL_CHAT_MODEL.model]: false };
+    model.initial = LOCAL_CHAT_MODEL;
+    model.list = [LOCAL_CHAT_MODEL, CLOUD_AGENT_MODEL];
+    render(<AiAssistantChat {...baseProps} />);
+
+    await waitFor(() => expect(screen.getByTitle(/does not call tools/)).toBeTruthy());
+
+    // Choosing a model goes through the same event the "Start coding" handoff uses.
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent("acsa:focus-ai-chat-input", {
+          detail: { model: CLOUD_AGENT_MODEL.model },
+        })
+      );
+    });
+
+    await waitFor(() => expect(screen.getByTitle("Run Agent (Enter)")).toBeTruthy());
+    expect(screen.queryByTitle(/does not call tools/)).toBeNull();
+  });
+
+  it("does not overrule a mode the user set by hand", async () => {
+    // The other half of the pair above: once the user has set a mode themselves,
+    // nothing is owed back, and choosing a capable model leaves their choice alone.
+    model.canRun = { [LOCAL_CHAT_MODEL.model]: false };
+    model.initial = LOCAL_CHAT_MODEL;
+    model.list = [LOCAL_CHAT_MODEL, CLOUD_AGENT_MODEL];
+    render(<AiAssistantChat {...baseProps} />);
+    await waitFor(() => expect(screen.getByTitle(/does not call tools/)).toBeTruthy());
+
+    // Turn ask mode off by hand, then pick the capable model.
+    await act(async () => {
+      screen.getByTitle(/does not call tools/).click();
+    });
+    expect(screen.getByTitle("Run Agent (Enter)")).toBeTruthy();
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent("acsa:focus-ai-chat-input", {
+          detail: { model: CLOUD_AGENT_MODEL.model },
+        })
+      );
+    });
+
     expect(screen.getByTitle("Run Agent (Enter)")).toBeTruthy();
   });
 });

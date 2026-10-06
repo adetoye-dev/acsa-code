@@ -26,6 +26,9 @@ for them, not which file moved.
   round, since the model is the thing you chose, often because it is free and stays
   on your machine. The mode moves instead, the chip that appears explains itself on
   hover, and turning agent back on afterwards is left alone rather than undone.
+- **…and it is handed back when you pick a model that can run it.** Ask mode in that
+  case is the app's doing, so choosing a capable model restores the mode the switch
+  took. A mode you set yourself is never overruled.
 
 ## [0.2.26] - 2026-10-06
 

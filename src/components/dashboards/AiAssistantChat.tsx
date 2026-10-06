@@ -722,6 +722,12 @@ export function AiAssistantChat({
   // kept current by their own effects.
   const workflowModeRef = useRef(workflowMode);
   const planFileRef = useRef(planFile);
+  /**
+   * The mode the app moved away from because the chosen model could not run it, or
+   * null when no mode is owed back. A ref, not state: nothing renders from it, and
+   * it must not be a reason to re-render.
+   */
+  const autoSwitchedFromRef = useRef<WorkflowMode | null>(null);
   useEffect(() => {
     workflowModeRef.current = workflowMode;
   }, [workflowMode]);
@@ -754,13 +760,52 @@ export function AiAssistantChat({
    */
   useEffect(() => {
     if (!selectedModelItem) return;
-    if (workflowModeRef.current === "chat") return;
     if (selectedModelCanRunAgent) return;
+    if (workflowModeRef.current === "chat") return;
+    // Remembered so the mode can be handed back if a model that runs it is chosen
+    // later. Ask mode here is the app's doing; leaving the user in it after they
+    // pick a capable model silently downgrades what their next message does.
+    autoSwitchedFromRef.current = workflowModeRef.current;
     setWorkflowMode("chat");
     // Keyed on the model on purpose: the mode is an output here, not an input, and
     // listing it would make turning agent back on re-run this and undo the choice.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedModelKey]);
+
+  /**
+   * Hand the mode back when a model that can run it is chosen.
+   *
+   * Only for a switch the app made: `autoSwitchedFromRef` is cleared the moment
+   * the user sets a mode themselves, so a deliberate "ask me about this one" is
+   * never overruled.
+   */
+  useEffect(() => {
+    if (!selectedModelItem) return;
+    if (!selectedModelCanRunAgent) return;
+    const restore = autoSwitchedFromRef.current;
+    if (!restore) return;
+    autoSwitchedFromRef.current = null;
+    setWorkflowMode(restore);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedModelKey]);
+
+  /**
+   * A mode set by hand is the user's; stop owing them one.
+   *
+   * Compared against the previous pass rather than simply testing for "not chat".
+   * On the mount pass this runs in the same commit as the switch above, where the
+   * state variable still holds its *old* value — so a plain "not chat" test wipes
+   * the debt the switch had only just recorded, and picking a capable model later
+   * then has nothing to hand back. Declaration order is not something to depend on.
+   */
+  const modeBeforeRef = useRef(workflowMode);
+  useEffect(() => {
+    const before = modeBeforeRef.current;
+    modeBeforeRef.current = workflowMode;
+    if (workflowMode === "chat") return;
+    if (before === workflowMode) return;
+    autoSwitchedFromRef.current = null;
+  }, [workflowMode]);
 
   /**
    * What the mode chip's tooltip says.
