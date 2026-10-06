@@ -32,6 +32,18 @@ for them, not which file moved.
 
 ### Fixed
 
+- **TypeScript files stop reporting errors that are not there.** Monaco 0.57 moved
+  its TypeScript API, and the configuration that sets the compiler options and
+  suppresses module-resolution diagnostics was reading the old location — so it
+  silently did nothing and the worker fell back to its own defaults. Every `.ts`
+  file showed `Cannot find module … (2792)` and a `.tsx` file was underlined end to
+  end for want of a `--jsx` flag, while the same files were clean in other editors.
+  It now applies, and says so out loud if the API moves again.
+- **The file tree no longer stops five folders down.** Projects laid out like
+  `apps/api/migrations/app/<migration>/` showed `(empty folder)` for folders that
+  had files, because the walk had a hard depth cap of 5. The cap is a backstop now
+  rather than a limit, and a symlink pointing back up the tree is recognised
+  instead of being walked into.
 - **An update that cannot install says why, and offers a way through.** Opened from
   the Downloads folder or straight out of the disk image, macOS runs ACSA Code from
   a read-only copy — and an app in a read-only place cannot replace itself, so the

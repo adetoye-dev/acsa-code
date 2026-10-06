@@ -70,8 +70,26 @@ pub struct FileNode {
     pub children: Option<Vec<FileNode>>,
 }
 
-fn build_file_tree(dir: &std::path::Path, max_depth: usize) -> Vec<FileNode> {
-    if max_depth == 0 || !dir.is_dir() {
+/// How deep the tree walk goes.
+///
+/// It was 5, which is under `apps/api/migrations/app/<migration>/` — so a real
+/// project's migration folders rendered as "(empty folder)" while every other
+/// editor listed their contents, and the user's report was exactly that: "we stop
+/// reading into those multi-level folders".
+///
+/// A depth cap cannot be picked well here. Anything shallow enough to bound a
+/// pathological tree is shallow enough to hide an ordinary path in a monorepo, and
+/// the number says nothing about why it was chosen. 64 is not a policy, it is a
+/// backstop for the one case a cycle check cannot see — a filesystem that invents
+/// new paths forever. What actually bounds the walk is the ignore list.
+const MAX_TREE_DEPTH: usize = 64;
+
+fn build_file_tree(
+    dir: &std::path::Path,
+    depth: usize,
+    visited: &mut std::collections::HashSet<PathBuf>,
+) -> Vec<FileNode> {
+    if depth == 0 || !dir.is_dir() {
         return Vec::new();
     }
 
@@ -101,7 +119,17 @@ fn build_file_tree(dir: &std::path::Path, max_depth: usize) -> Vec<FileNode> {
             };
 
             let children = if is_dir {
-                Some(build_file_tree(&path, max_depth - 1))
+                // A symlink pointing at one of its own ancestors is a cycle. Without
+                // this the walk either recurses forever or — with a cap — fills the
+                // tree with copies of the same folder. Canonicalising is the only
+                // way to see that two paths are one directory; a failure to resolve
+                // falls back to the path itself, which is the old behaviour.
+                let real = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                if visited.insert(real) {
+                    Some(build_file_tree(&path, depth - 1, visited))
+                } else {
+                    Some(Vec::new())
+                }
             } else {
                 None
             };
@@ -200,7 +228,13 @@ fn list_project_files(project_path: String) -> Result<Vec<FileNode>, String> {
     if !path.exists() {
         return Err(format!("Directory does not exist: {}", project_path));
     }
-    Ok(build_file_tree(&path, 5))
+    // The root goes in first, so a link anywhere below that points back at it is
+    // recognised rather than walked again.
+    let mut visited = std::collections::HashSet::new();
+    if let Ok(real) = std::fs::canonicalize(&path) {
+        visited.insert(real);
+    }
+    Ok(build_file_tree(&path, MAX_TREE_DEPTH, &mut visited))
 }
 
 #[tauri::command]
@@ -4168,6 +4202,86 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn find_by_name<'a>(nodes: &'a [FileNode], name: &str) -> Option<&'a FileNode> {
+        for node in nodes {
+            if node.name == name {
+                return Some(node);
+            }
+            if let Some(children) = &node.children {
+                if let Some(found) = find_by_name(children, name) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+
+    fn walk(root: &std::path::Path) -> Vec<FileNode> {
+        let mut visited = std::collections::HashSet::new();
+        if let Ok(real) = std::fs::canonicalize(root) {
+            visited.insert(real);
+        }
+        build_file_tree(root, MAX_TREE_DEPTH, &mut visited)
+    }
+
+    /// The cap was 5, which is under `apps/api/migrations/app/<migration>/`. A
+    /// project laid out like that showed "(empty folder)" for folders every other
+    /// editor listed, which is what a user reported — the tree simply stopped.
+    #[test]
+    fn a_file_below_the_old_depth_cap_is_reached() {
+        let root = scratch("tree-depth");
+        let mut deep = root.clone();
+        for level in 0..8 {
+            deep = deep.join(format!("level{level}"));
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("buried.ts"), "export const x = 1;").unwrap();
+
+        let tree = walk(&root);
+        assert!(
+            find_by_name(&tree, "buried.ts").is_some(),
+            "the walk stopped before the file: {tree:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A link back up the tree is a cycle. Without the visited set the walk either
+    /// recurses until the stack goes, or fills the tree with copies of itself.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_back_up_the_tree_terminates() {
+        let root = scratch("tree-cycle");
+        let inner = root.join("a").join("b");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(inner.join("real.ts"), "export const x = 1;").unwrap();
+        std::os::unix::fs::symlink(&root, inner.join("back")).unwrap();
+
+        let tree = walk(&root);
+
+        assert!(find_by_name(&tree, "real.ts").is_some());
+        // The link is still listed — it is a real entry — but it is not walked into.
+        let back = find_by_name(&tree, "back").expect("the link should still be listed");
+        assert_eq!(back.children.as_ref().map(|c| c.len()), Some(0));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// What actually bounds the walk, now that depth no longer does.
+    #[test]
+    fn heavy_and_hidden_directories_are_not_walked() {
+        let root = scratch("tree-ignore");
+        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        std::fs::write(root.join("node_modules/pkg/index.js"), "module.exports = {}").unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join("visible.ts"), "export const x = 1;").unwrap();
+
+        let tree = walk(&root);
+
+        assert!(find_by_name(&tree, "visible.ts").is_some());
+        assert!(find_by_name(&tree, "node_modules").is_none());
+        assert!(find_by_name(&tree, "index.js").is_none());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The relaunch derives the bundle from the resource directory, and a wrong
