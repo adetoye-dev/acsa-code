@@ -80,13 +80,11 @@ for them, not which file moved.
   frontend declares without a `?` has to be one the shell actually sends.
 ### Fixed
 
-- **The editor's right edge stays where it belongs when the chat dock opens.** With a
-  dozen tabs open, opening the dock could leave the editor's grid at its old width, so
-  the tab strip lost its overflow control, the review controls sat under the chat
-  instead of beside it, and long lines were cut at an edge that was not the pane's. A
-  group with that many tabs has a minimum it will not go under, and a grid that is never
-  asked to re-measure keeps it. The shell now tells Dockview its space changed on the
-  commit that changed it, instead of waiting for it to notice.
+- **The editor's review controls wrap instead of being cut.** They are a row of
+  chips anchored to the editor's right edge and sized to their content, so in a narrow
+  editor — the chat dock open, the explorer dragged wide — the only way to fit was to
+  squeeze their own labels, and the last one ended up sliced. They wrap onto a second
+  line now, and the row is capped to the pane it is drawn in.
 
 - **TypeScript files stop reporting errors that are not there.** Monaco 0.57 moved
   its TypeScript API, and the configuration that sets the compiler options and

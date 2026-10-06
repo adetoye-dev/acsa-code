@@ -910,7 +910,13 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
   return (
     <div className="relative h-full w-full bg-workbench overflow-hidden">
       {/* ── AI Review Controls ──────────────────────────────────────── */}
-      <div className="absolute top-2 right-3 z-raised flex items-center gap-2">
+      {/* Wraps rather than squeezes.
+          The row is right-anchored and sized to its content, so in a narrow editor
+          — the chat dock open, the explorer dragged wide — the only way it can fit
+          is by squashing its own labels, and the last one ends up cut. Wrapping
+          keeps every control whole and legible on a second line instead, and the
+          width cap keeps the row inside the pane it is anchored to. */}
+      <div className="absolute top-2 right-3 z-raised flex flex-wrap items-center justify-end gap-2 max-w-[calc(100%-1.5rem)]">
         <button
           type="button"
           onClick={handleReviewFile}
