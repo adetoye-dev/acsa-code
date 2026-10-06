@@ -96,11 +96,26 @@ export type UpdateAnnouncement =
  */
 export type InstallPhase = "downloading" | "installing" | "ready" | "failed";
 
+/**
+ * Where a human gets a build by hand.
+ *
+ * The updater is the normal path, but it can only replace an app it is able to
+ * write to, and the one case where it cannot is also the one where the user has
+ * no other way forward. That case needs somewhere to go that does not depend on
+ * this copy being writable.
+ */
+export const RELEASE_PAGE_URL = "https://github.com/adetoye-dev/acsa-code/releases/latest";
+
 export interface InstallProgress {
   version: string;
   phase: InstallPhase;
   percent: number;
   detail?: string;
+  /**
+   * Set when the failure has a way out that is not "try again": the copy running
+   * cannot be replaced, so the user has to fetch the build themselves.
+   */
+  remedy?: "manual";
 }
 
 export const UPDATE_ANNOUNCEMENT = "acsa:update";
@@ -156,6 +171,34 @@ export type CheckOutcome =
 function describe(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+/**
+ * Turn an install failure into something a person can act on.
+ *
+ * The updater replaces the running bundle in place, so it needs that bundle to be
+ * writable — and macOS gives a quarantined app a read-only translocated copy when
+ * it is opened from where it was downloaded, and a disk image is read-only by
+ * definition. Either way the errno arrives as "Read-only file system (os error
+ * 30)", which says nothing about the copy the user is running or what to do about
+ * it. This is the one failure with a specific remedy, so it is named; anything
+ * else keeps its own words, and cases get added as they are seen rather than
+ * guessed at.
+ */
+function describeInstallFailure(error: unknown): { detail: string; remedy?: "manual" } {
+  const raw = describe(error);
+  if (/read-only file system|os error 30|EROFS/i.test(raw)) {
+    return {
+      detail:
+        "ACSA Code is running from a read-only location, so it cannot replace itself — " +
+        "that normally means it was opened from the Downloads folder or straight out of " +
+        "the disk image rather than from the Applications folder. Move ACSA Code into " +
+        "Applications, open it from there, and update again — or download the new build " +
+        "from the release page.",
+      remedy: "manual",
+    };
+  }
+  return { detail: raw };
 }
 
 /** The detailed answer, for a surface that has room to explain itself. */
@@ -245,7 +288,7 @@ export async function installUpdate(onProgress?: (percent: number) => void): Pro
   } catch (error) {
     // Reported, not swallowed: a failed install has to be visible wherever the
     // user is standing, which is the point of holding this here.
-    setProgress({ version, phase: "failed", percent: 0, detail: describe(error) });
+    setProgress({ version, phase: "failed", percent: 0, ...describeInstallFailure(error) });
     throw error;
   }
 

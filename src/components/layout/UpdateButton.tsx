@@ -20,10 +20,12 @@ import {
   autoCheckEnabled,
   installProgress,
   UPDATE_ANNOUNCEMENT,
+  RELEASE_PAGE_URL,
   type AvailableUpdate,
   type InstallProgress,
   type UpdateAnnouncement,
 } from "../../services/appUpdater";
+import { openExternal } from "../../services/openExternal";
 
 /** Long enough that it never competes with the first paint. */
 const STARTUP_DELAY_MS = 2500;
@@ -190,10 +192,24 @@ export function UpdateButton() {
           )}
 
           {phase === "failed" && (
-            <p className="text-2xs text-red-300 flex items-start gap-1.5">
-              <Icon icon={AlertCircle} className="w-3 h-3 mt-0.5 shrink-0" />
-              <span>{detail || "The update could not be installed."}</span>
-            </p>
+            <div className="space-y-1.5">
+              <p className="text-2xs text-red-300 flex items-start gap-1.5">
+                <Icon icon={AlertCircle} className="w-3 h-3 mt-0.5 shrink-0" />
+                <span>{detail || "The update could not be installed."}</span>
+              </p>
+              {/* When the running copy cannot be replaced, "Retry" is not the way
+                  out — a fresh download is, so the banner offers that instead of
+                  leaving the user to work it out from an errno. */}
+              {install?.remedy === "manual" && (
+                <button
+                  type="button"
+                  onClick={() => void openExternal(RELEASE_PAGE_URL)}
+                  className="text-2xs font-medium text-purple-300 hover:text-purple-200 underline underline-offset-2 transition-colors cursor-pointer"
+                >
+                  Open the download page
+                </button>
+              )}
+            </div>
           )}
 
           <div className="flex items-center justify-end gap-2">

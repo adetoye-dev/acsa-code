@@ -30,6 +30,16 @@ for them, not which file moved.
   case is the app's doing, so choosing a capable model restores the mode the switch
   took. A mode you set yourself is never overruled.
 
+### Fixed
+
+- **An update that cannot install says why, and offers a way through.** Opened from
+  the Downloads folder or straight out of the disk image, macOS runs ACSA Code from
+  a read-only copy — and an app in a read-only place cannot replace itself, so the
+  update died with `Read-only file system (os error 30)`. That names no cause and
+  offers no next step, which is where the reports came from. It now explains which
+  copy you are running, tells you to move it into Applications, and links the
+  release page so there is a way forward either way.
+
 ## [0.2.26] - 2026-10-06
 
 ### Added

@@ -19,9 +19,11 @@ import {
   restartApp,
   installProgress,
   UPDATE_ANNOUNCEMENT,
+  RELEASE_PAGE_URL,
   type InstallProgress,
   type UpdateAnnouncement,
 } from "../../services/appUpdater";
+import { openExternal } from "../../services/openExternal";
 
 type CheckState = { kind: "idle" | "checking" | "current" | "available" | "failed"; detail?: string };
 // The install state is the service's, not this pane's — see `installProgress`.
@@ -195,10 +197,24 @@ export function AboutPane() {
             </>
           )}
           {install?.phase === "failed" && (
-            <span className="ml-auto text-2xs text-red-300 flex items-center gap-1.5">
-              <Icon icon={AlertCircle} className="w-3 h-3" />
-              {install?.detail || "The update could not be installed."}
-            </span>
+            // Its own column, not a trailing label: when the copy running cannot be
+            // replaced the explanation is a couple of sentences, and it comes with
+            // the only action that still works.
+            <div className="ml-auto max-w-[34rem] flex flex-col items-end gap-1 text-right">
+              <span className="text-2xs text-red-300 flex items-start gap-1.5">
+                <Icon icon={AlertCircle} className="w-3 h-3 mt-0.5 shrink-0" />
+                <span>{install?.detail || "The update could not be installed."}</span>
+              </span>
+              {install?.remedy === "manual" && (
+                <button
+                  type="button"
+                  onClick={() => void openExternal(RELEASE_PAGE_URL)}
+                  className="text-2xs font-medium text-purple-300 hover:text-purple-200 underline underline-offset-2 transition-colors cursor-pointer"
+                >
+                  Open the download page
+                </button>
+              )}
+            </div>
           )}
         </div>
       </div>
