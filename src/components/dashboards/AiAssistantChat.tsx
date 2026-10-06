@@ -672,6 +672,32 @@ export function AiAssistantChat({
       ? `${selectedModelItem.model} — runs on this machine. Free, and nothing leaves it, but a local model is far less capable than a hosted one.`
       : `${selectedModelItem.model} — hosted by ${selectedModelItem.providerName}`
     : `Running on ${effectiveProvider}:${effectiveModel}`;
+
+  /**
+   * Whether the chosen model can drive agent or plan at all.
+   *
+   * Both go through the runtime, which needs a model that calls tools; a local
+   * model the daemon reports as having no tool support can only talk. Nothing
+   * selected reads as `true`: with no explicit choice the app falls back to a
+   * configured default, and guessing "cannot" there would switch a working setup
+   * into ask mode on first paint.
+   */
+  const selectedModelCanRunAgent = selectedModelItem
+    ? canRunAgent(selectedModelItem.providerId, selectedModelItem.model)
+    : true;
+
+  /**
+   * The chosen model's identity.
+   *
+   * The effect below keys on this rather than the object, because the object is
+   * replaced whenever the model list refreshes — the same model, a new reference.
+   * Keyed on the object, a background refresh would re-run the switch and undo a
+   * user who had turned agent mode back on; keyed on this, it only fires when the
+   * model actually changes.
+   */
+  const selectedModelKey = selectedModelItem
+    ? `${selectedModelItem.providerId}:${selectedModelItem.model}`
+    : "";
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
   const [modelSearchQuery, setModelSearchQuery] = useState("");
   // Persistent chat history across tab switches, panel open/close, and reloads
@@ -709,6 +735,46 @@ export function AiAssistantChat({
   useEffect(() => {
     planFileRef.current = planFile;
   }, [planFile]);
+
+  /**
+   * A mode the chosen model cannot run is not a mode.
+   *
+   * Agent and plan runs go through the runtime, which needs a model that calls
+   * tools; a local model the daemon reports as having no tool support can only
+   * talk, so agent mode on it reads files and answers without changing anything.
+   * The menu warns about that and offers a different model, which is the wrong
+   * direction — the user picked this model, often because it is free and stays on
+   * the machine. So the mode moves instead, and the chip that appears is the
+   * notice.
+   *
+   * Keyed on the model alone, deliberately. A standing invariant would bounce the
+   * user straight back to ask mode the moment they turned agent on to see what
+   * happened, and an explicit choice has to be allowed to win. This fires when the
+   * model is chosen — including the one restored on mount — and never again.
+   */
+  useEffect(() => {
+    if (!selectedModelItem) return;
+    if (workflowModeRef.current === "chat") return;
+    if (selectedModelCanRunAgent) return;
+    setWorkflowMode("chat");
+    // Keyed on the model on purpose: the mode is an output here, not an input, and
+    // listing it would make turning agent back on re-run this and undo the choice.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedModelKey]);
+
+  /**
+   * What the mode chip's tooltip says.
+   *
+   * Ask mode can be the app's doing rather than the user's, and a control that
+   * appeared on its own has to be able to say so. Both composers render this chip,
+   * so the sentence lives here rather than being written twice and drifting.
+   */
+  const modeChipTitle =
+    workflowMode === "plan"
+      ? "Turn plan mode off"
+      : selectedModelCanRunAgent
+      ? "Turn ask mode off"
+      : `${selectedModelItem?.model ?? "This model"} does not call tools, so ask mode is on. Turn it off to send a task to it anyway.`;
 
   /**
    * A plan run's answer *is* the plan, so it gets written down.
@@ -2105,7 +2171,7 @@ Click to re-index project.`}
                           <button
                             type="button"
                             onClick={() => setWorkflowMode("agent")}
-                            title={workflowMode === "plan" ? "Turn plan mode off" : "Turn ask mode off"}
+                            title={modeChipTitle}
                             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/40 text-amber-200 text-xs font-medium transition-all shadow-sm"
                           >
                             <Icon icon={X} className="w-3 h-3 shrink-0" />
@@ -2588,7 +2654,7 @@ Click to re-index project.`}
                     <button
                       type="button"
                       onClick={() => setWorkflowMode("agent")}
-                      title={workflowMode === "plan" ? "Turn plan mode off" : "Turn ask mode off"}
+                      title={modeChipTitle}
                       className="relative shrink-0 flex items-center gap-1 px-2 py-1 rounded-md bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/40 text-amber-200 text-xs font-medium transition-all"
                     >
                       <Icon icon={X} className="w-3 h-3 shrink-0" />

@@ -48,10 +48,39 @@ vi.mock("../../services/aiChatPersistence", () => ({
   subscribeChatHistory: () => () => undefined,
 }));
 
+/** The model in effect, and whether it is allowed to drive a tool-using run. */
+const model = vi.hoisted(() => ({
+  canRunAgent: true,
+  /**
+   * The configured model list. It has to hold the model: the component re-resolves
+   * the selection on mount and drops anything the list does not contain, so an
+   * empty list here would quietly test the "no model selected" path instead.
+   */
+  list: [] as Array<Record<string, unknown>>,
+  initial: null as null | {
+    providerId: string;
+    providerName: string;
+    model: string;
+    speedBadge: string;
+    isDefault: boolean;
+    category: "local" | "cloud";
+  },
+}));
+
+const LOCAL_CHAT_MODEL = {
+  providerId: "ollama",
+  providerName: "Ollama",
+  model: "qwen2.5-coder:7b",
+  speedBadge: "Offline",
+  isDefault: true,
+  category: "local" as const,
+};
+
 vi.mock("../../services/aiModelManager", () => ({
-  getConfiguredModelsList: () => [],
+  canRunAgent: () => model.canRunAgent,
+  getConfiguredModelsList: () => model.list,
   ensureProvidersHydrated: async () => undefined,
-  resolveInitialSelectedModel: () => null,
+  resolveInitialSelectedModel: () => model.initial,
   saveActiveSelectedModel: () => undefined,
   getActiveSelectedModel: () => null,
   loadAllProviders: () => ({}),
@@ -83,6 +112,9 @@ afterEach(() => {
   cleanup();
   counted.byProvider = {};
   chatDraft.clear();
+  model.canRunAgent = true;
+  model.initial = null;
+  model.list = [];
 });
 
 const transcriptRenders = () => counted.byProvider["deepseek"] ?? 0;
@@ -471,5 +503,34 @@ describe("where an opened chat starts", () => {
       Element.prototype.scrollIntoView = original;
       restore();
     }
+  });
+});
+
+describe("a model that can only chat", () => {
+  it("turns ask mode on, and the chip says why", () => {
+    // The model the daemon reports as having no tool support. Agent mode on it
+    // reads files and answers without changing anything, so the mode has to move —
+    // and the user, who chose this model because it is local and free, should be
+    // told that is what happened rather than left to notice a chip appear.
+    model.canRunAgent = false;
+    model.initial = LOCAL_CHAT_MODEL;
+    model.list = [LOCAL_CHAT_MODEL];
+    render(<AiAssistantChat {...baseProps} />);
+
+    expect(screen.getByTitle(/does not call tools/)).toBeTruthy();
+    // The send button is the mode in plain words: agent mode says "Run Agent".
+    expect(screen.getByTitle("Send (Enter)")).toBeTruthy();
+  });
+
+  it("leaves the mode alone when the model can call tools", () => {
+    // The control. Without it the test above would pass for an app that simply
+    // always starts in ask mode.
+    model.canRunAgent = true;
+    model.initial = LOCAL_CHAT_MODEL;
+    model.list = [LOCAL_CHAT_MODEL];
+    render(<AiAssistantChat {...baseProps} />);
+
+    expect(screen.queryByTitle(/does not call tools/)).toBeNull();
+    expect(screen.getByTitle("Run Agent (Enter)")).toBeTruthy();
   });
 });

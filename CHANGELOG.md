@@ -17,6 +17,16 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+### Changed
+
+- **Choosing a model that can only chat turns ask mode on, and says why.** Agent and
+  plan runs need a model that calls tools, so a local model the daemon reports as
+  having no tool support could only read files and answer without changing anything.
+  The model menu warned about that and offered a different model — the wrong way
+  round, since the model is the thing you chose, often because it is free and stays
+  on your machine. The mode moves instead, the chip that appears explains itself on
+  hover, and turning agent back on afterwards is left alone rather than undone.
+
 ## [0.2.26] - 2026-10-06
 
 ### Added
