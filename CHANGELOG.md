@@ -44,6 +44,17 @@ for them, not which file moved.
   case is the app's doing, so choosing a capable model restores the mode the switch
   took. A mode you set yourself is never overruled.
 
+- **The Performance page's CPU and RAM columns show numbers again, and its host line
+  names the host.** Three shell structs serialise their fields in `snake_case`
+  (`cpu_percent`, `size_mb`) while the page reads them in `camelCase`, so those fields
+  arrived `undefined`: the process table rendered `%` and `MB` with nothing in front of
+  them, and the host line read `ACSA Local Engine (unknown unknown)` on every machine.
+  The storage numbers had drifted the same way and were *hidden* rather than visible —
+  the page keeps the previous value when a field is missing, and the previous value was
+  a hardcoded example, so an invented "341 MB reclaimable" looked like a reading. All
+  three are aligned, the host line gets its real values, and
+  `tests/test_wire_contract.py` now compares the two sides of the boundary: a field the
+  frontend declares without a `?` has to be one the shell actually sends.
 ### Fixed
 
 - **TypeScript files stop reporting errors that are not there.** Monaco 0.57 moved

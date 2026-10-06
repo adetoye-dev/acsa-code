@@ -10,12 +10,23 @@
 
 /** Host metrics sampled by the Rust layer (`fetch_system_metrics`). */
 export interface SystemMetrics {
-  platform?: string;
-  architecture?: string;
+  /**
+   * Required rather than optional because the shell always sends them, and
+   * `tests/test_wire_contract.py` holds non-optional fields to that. They were
+   * optional while nothing sent them, so the panel read `(unknown unknown)` and
+   * the type made that look intentional.
+   */
+  platform: string;
+  architecture: string;
+  cpu_count: number;
+  /**
+   * The toolchain's versions. Nothing supplies these: the shell does not know
+   * them, and the page falls back to `unknown`. Optional is the honest shape for
+   * "may be absent" — what would not be honest is a number nobody measured.
+   */
   node_version?: string;
   vite_version?: string;
   python_version?: string;
-  cpu_count?: number;
   cpu_usage_percent: number;
   memory_used_mb: number;
   memory_total_mb: number;

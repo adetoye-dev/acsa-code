@@ -39,6 +39,16 @@ pub struct PipelineOutputLine {
 /// Host system metrics snapshot.
 #[derive(Debug, Clone, Serialize)]
 pub struct SystemMetrics {
+    /// The host, as the Performance panel names it: `ACSA Local Engine (macos
+    /// aarch64)`. The page has read `platform` and `architecture` since it was
+    /// written and this struct never sent them, so that line read
+    /// `(unknown unknown)` on every machine. Optional in the type, which is why
+    /// nothing failed — see `tests/test_wire_contract.py`.
+    pub platform: String,
+    pub architecture: String,
+    /// Logical cores. The page asks for `cpu_count`; this struct sent only
+    /// `cpu_count_physical` and `cpu_count_logical`.
+    pub cpu_count: usize,
     pub cpu_usage_percent: f32,
     pub cpu_count_physical: usize,
     pub cpu_count_logical: usize,
@@ -1756,6 +1766,9 @@ fn fetch_system_metrics(state: State<'_, AppState>) -> Result<SystemMetrics, Str
     };
 
     Ok(SystemMetrics {
+        platform: std::env::consts::OS.to_string(),
+        architecture: std::env::consts::ARCH.to_string(),
+        cpu_count: cpu_count_logical,
         cpu_usage_percent: (cpu_usage * 10.0).round() / 10.0,
         cpu_count_physical: physical_cores,
         cpu_count_logical,
@@ -1840,7 +1853,16 @@ fn round1(value: f64) -> f64 {
     (value * 10.0).round() / 10.0
 }
 
+/// Serialised as camelCase because the page reads `cpuPercent`/`memoryMb`: without
+/// it serde writes `cpu_percent`/`memory_mb`, the fields arrive `undefined`, and the
+/// row renders the unit with no number in front of it — which is how this was
+/// reported. These three are the structs whose frontend types are camelCase; the
+/// others across this boundary (`FileNode`, `SystemMetrics`, `PipelineOutputLine`)
+/// are snake_case on both sides and agree. `tests/test_wire_contract.py` compares
+/// all of them, because "the two sides agree" is not a thing to check by eye.
+
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StorageCategory {
     pub id: String,
     pub name: String,
@@ -1849,7 +1871,16 @@ pub struct StorageCategory {
     pub reclaimable_mb: f64,
 }
 
+/// Serialised as camelCase because the page reads `cpuPercent`/`memoryMb`: without
+/// it serde writes `cpu_percent`/`memory_mb`, the fields arrive `undefined`, and the
+/// row renders the unit with no number in front of it — which is how this was
+/// reported. These three are the structs whose frontend types are camelCase; the
+/// others across this boundary (`FileNode`, `SystemMetrics`, `PipelineOutputLine`)
+/// are snake_case on both sides and agree. `tests/test_wire_contract.py` compares
+/// all of them, because "the two sides agree" is not a thing to check by eye.
+
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StorageMetrics {
     pub total_gb: f64,
     pub free_gb: f64,
@@ -1860,7 +1891,16 @@ pub struct StorageMetrics {
     pub categories: Vec<StorageCategory>,
 }
 
+/// Serialised as camelCase because the page reads `cpuPercent`/`memoryMb`: without
+/// it serde writes `cpu_percent`/`memory_mb`, the fields arrive `undefined`, and the
+/// row renders the unit with no number in front of it — which is how this was
+/// reported. These three are the structs whose frontend types are camelCase; the
+/// others across this boundary (`FileNode`, `SystemMetrics`, `PipelineOutputLine`)
+/// are snake_case on both sides and agree. `tests/test_wire_contract.py` compares
+/// all of them, because "the two sides agree" is not a thing to check by eye.
+
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RunningProcessItem {
     pub pid: u32,
     pub name: String,
