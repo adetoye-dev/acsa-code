@@ -132,14 +132,14 @@ zip and staples the app.
 Unsigned builds are quarantined by Gatekeeper on other people's Macs, so this is
 the step between "it builds" and "someone else can install it".
 
-### The site download link flips with the first release that carries a disk image
+### The landing page's download link points at the disk image
 
-`site/index.html` links straight at an asset on `latest`, so it can only point at
-something that exists. It still points at `ACSA-Code.app.zip` because no published
-release has a `.dmg` yet, and a landing-page button that 404s is worse than a
-button that downloads the older packaging. Once a release carrying `ACSA-Code.dmg`
-is public, change the three links (they all match
-`releases/latest/download/ACSA-Code`) to the `.dmg` and nothing else needs to move.
+`site/index.html` links straight at an asset on `latest`, so it can only name
+something that exists — and Workers Builds deploys on every commit, which means a
+link ahead of its release is a 404 on the main call to action. It points at
+`ACSA-Code.dmg` now that a release carries one; before that it pointed at the zip,
+for exactly that reason. Three links, one string.
+
 
 Everything on our side is already wired: the hardened runtime and entitlements
 are set in `.tauri/tauri.conf.json`, and `.github/workflows/release.yml` imports
