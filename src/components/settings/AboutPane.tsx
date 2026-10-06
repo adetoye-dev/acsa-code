@@ -112,10 +112,6 @@ export function AboutPane() {
               association, and it is the more reliable one for screen readers. */}
           <label htmlFor="acsa-check-updates" className="cursor-pointer">
             <span className="text-xs text-zinc-200 block">Check for updates on launch</span>
-            <span className="text-2xs text-zinc-500 block mt-0.5 leading-relaxed">
-              One request to the release page. It reveals your version and IP to whoever hosts it, and
-              nothing else — no usage, no identifiers. An update is never installed without you asking.
-            </span>
           </label>
         </div>
 
