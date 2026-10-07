@@ -1676,6 +1676,11 @@ export function AiAssistantChat({
       messages: outgoingMessages,
       images: currentImages,
       projectRoot,
+      // What the reader is looking at. The engine reads these, plus whatever the
+      // index says matches the question, so a model that cannot call tools still
+      // answers about this project rather than about code in general.
+      activePath: selectedContext?.path ?? "",
+      selection: selectedContext?.code ?? "",
       baseUrl: activeProvider?.baseUrl,
       apiKey: activeProvider?.apiKey,
       signal: controller.signal,

@@ -21,6 +21,17 @@ for them, not which file moved.
 
 ### Added
 
+- **Ask mode reads your code now.** A chat turn used to carry a *map* of the
+  project — LOC, frameworks, the names of 35 symbols — and not one line of code. A
+  hosted frontier model can sometimes bluff past that; a small local model cannot,
+  so it answered generically about a repository it had never seen. That is what
+  "local models give generic answers" was. The turn now carries the file you have
+  open (or the part you have selected) and the files your question points at,
+  found by searching the project's contents and ranked so a rare word like `gh`
+  outweighs a common one like `path`. Snippets, not whole files, and inside a
+  budget — a local model's window cannot take a 60 KB dump. When nothing matched,
+  the model is told to say so rather than invent project detail.
+
 - **Files can be attached to a chat message, from the explorer or from a picker.**
   The **Mentions** entry in the composer's `+` menu typed an `@` that nothing
   handled, so the only way to point the assistant at a file was to describe it and
