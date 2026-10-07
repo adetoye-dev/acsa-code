@@ -31,6 +31,21 @@ for them, not which file moved.
   shortened and labelled, so a model is never quietly handed the start of a file and
   left to answer as though it had read the end.
 
+### Changed
+
+- **The dependency gate can fail for a reason again.** It was a bare
+  `npm audit --audit-level=high`, and it had been red on every push — not because
+  anything regressed, but because advisories published since have no fix at that
+  level: `braces`, a denial of service in a glob matcher reached only through
+  Tailwind 3's build-time file watcher, has no released version outside the
+  vulnerable range, so the only way to satisfy the old gate was to cross a breaking
+  Tailwind upgrade. A gate that can only be satisfied by breaking something gets
+  ignored, which is how it ends up unwired — so the level is unchanged, and the one
+  unfixable advisory is now named in `scripts/audit_gate.mjs` with the reason it is
+  safe to carry. A *new* high or critical still fails, a carried advisory that stops
+  being reported fails too, and the lockfile's `source-map-js` was moved to the
+  patched 1.2.2 on the way through.
+
 ## [0.2.27] - 2026-10-06
 
 ### Added

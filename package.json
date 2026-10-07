@@ -16,6 +16,7 @@
     "notices": "node scripts/generate_third_party_notices.mjs",
     "classes:check": "node scripts/remap-classes.mjs --check",
     "contrast:check": "node scripts/check_contrast.mjs",
+    "audit:check": "node scripts/audit_gate.mjs",
     "notices:check": "node scripts/generate_third_party_notices.mjs --check",
     "lint": "eslint src vite-api-guard.ts vite.config.ts --max-warnings=0",
     "test:ui": "vitest run",
