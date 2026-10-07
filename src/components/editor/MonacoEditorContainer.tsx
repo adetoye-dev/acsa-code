@@ -23,6 +23,7 @@ import {
 import { reviewFile, isReviewableFile, type ReviewIssue } from "../../services/aiReview";
 import { configureMonacoTypeScript } from "../../services/monacoTsConfig";
 import { useRemeasureOnLayout } from "../../hooks/useRemeasureOnLayout";
+import { PANE_EDITOR_OPTIONS } from "../../services/monacoPaneOptions";
 import { syncProjectFiles } from "../../services/monacoProjectFiles";
 import { applyMonacoTheme } from "../../services/themeManager";
 import { getAutoSelectedLocalWorker, resolveEditorAiConfig } from "../../services/aiModelManager";
@@ -102,7 +103,9 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
       tabSize: aiSettings?.tabSize ?? 4,
       insertSpaces: aiSettings?.insertSpaces ?? true,
       wordWrap: aiSettings?.wordWrap ? ("on" as const) : ("off" as const),
-      automaticLayout: true,
+      // `automaticLayout` (resize) and `fixedOverflowWidgets` (a hover at the
+      // pane's edge is clipped otherwise) — see services/monacoPaneOptions.ts.
+      ...PANE_EDITOR_OPTIONS,
       scrollBeyondLastLine: false,
       minimap: { enabled: true, maxColumn: 80 },
       bracketPairColorization: { enabled: true },

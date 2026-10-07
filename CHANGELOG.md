@@ -67,6 +67,15 @@ for them, not which file moved.
   tries PATH, then the install directories the common package managers use — and
   Ollama uses it too, where a copy in `~/.local/bin` had been invisible for the
   same reason.
+- **A tooltip in the editor is no longer cut off at the pane's edge.** Hover,
+  suggest and parameter-hint widgets are absolutely positioned inside Monaco, and
+  every editor pane carries `overflow: hidden` — so a widget reaching past the
+  pane's right edge was clipped exactly there and its text was cut mid-word
+  ("…: Reco"). It looks like the tooltip is running into the chat panel; it is
+  the editor's own boundary hiding it. The editors now render those widgets in a
+  viewport-anchored layer the pane cannot clip. Measured in a browser at this
+  app's pane width, the same hover went from 599px→1351px with the pane ending at
+  955px, to fully readable past that edge.
 
 ## [0.2.27] - 2026-10-06
 
