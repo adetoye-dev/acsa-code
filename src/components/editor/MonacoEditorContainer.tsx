@@ -102,7 +102,11 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
       renderLineHighlightOnlyWhenFocus: false,
       tabSize: aiSettings?.tabSize ?? 4,
       insertSpaces: aiSettings?.insertSpaces ?? true,
-      wordWrap: aiSettings?.wordWrap ? ("on" as const) : ("off" as const),
+      // Wrap unless the reader turned it off. The editor lives in a pane that the
+      // assistant dock narrows, so a line that runs past its edge is the common
+      // case rather than the exception — and a clipped line reads as the dock
+      // having eaten it. `undefined` means the setting has never been touched.
+      wordWrap: aiSettings?.wordWrap === false ? ("off" as const) : ("on" as const),
       // `automaticLayout` (resize) and `fixedOverflowWidgets` (a hover at the
       // pane's edge is clipped otherwise) — see services/monacoPaneOptions.ts.
       ...PANE_EDITOR_OPTIONS,
@@ -148,7 +152,7 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
       fontLigatures: aiSettings?.enableLigatures ?? true,
       tabSize: aiSettings?.tabSize ?? 4,
       insertSpaces: aiSettings?.insertSpaces ?? true,
-      wordWrap: aiSettings?.wordWrap ? "on" : "off",
+      wordWrap: aiSettings?.wordWrap === false ? "off" : "on",
     });
   }, [
     aiSettings?.fontSize,

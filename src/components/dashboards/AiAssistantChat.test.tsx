@@ -115,7 +115,7 @@ vi.mock("../../services/ollamaSetup", () => ({
   EVENT_START_CODING_WITH_OLLAMA: "acsa:start-coding-with-ollama",
 }));
 
-const { AiAssistantChat } = await import("./AiAssistantChat");
+const { AiAssistantChat, effectiveWorkflowMode } = await import("./AiAssistantChat");
 const { chatDraft } = await import("../../services/chatDraft");
 
 const baseProps = {
@@ -558,82 +558,70 @@ describe("where an opened chat starts", () => {
   });
 });
 
+/**
+ * The mode a run uses, when the model cannot do what the mode asks.
+ *
+ * This used to be handled by moving the reader's mode: picking a model the daemon
+ * reports as having no tool support switched the chip to ask mode. The reader
+ * could then switch that off — landing them back in a mode the model cannot run at
+ * all — and a control that appears on its own is one they will cancel. The
+ * downgrade is internal now, so the chip is only ever the reader's own choice.
+ */
+describe("the mode a run actually uses", () => {
+  it("is the reader's own when the model can run it", () => {
+    expect(effectiveWorkflowMode("agent", true)).toBe("agent");
+    expect(effectiveWorkflowMode("plan", true)).toBe("plan");
+    expect(effectiveWorkflowMode("chat", true)).toBe("chat");
+  });
+
+  it("is a chat when the model cannot call tools, whatever the chip says", () => {
+    // Agent and plan both go through the runtime, which needs a model that calls
+    // tools. Running them anyway is the failure this exists to prevent.
+    expect(effectiveWorkflowMode("agent", false)).toBe("chat");
+    expect(effectiveWorkflowMode("plan", false)).toBe("chat");
+    expect(effectiveWorkflowMode("chat", false)).toBe("chat");
+  });
+});
+
 describe("a model that can only chat", () => {
-  it("turns ask mode on, and the chip says why", () => {
-    // The model the daemon reports as having no tool support. Agent mode on it
-    // reads files and answers without changing anything, so the mode has to move —
-    // and the user, who chose this model because it is local and free, should be
-    // told that is what happened rather than left to notice a chip appear.
-    model.canRun = { [LOCAL_CHAT_MODEL.model]: false };
-    model.initial = LOCAL_CHAT_MODEL;
-    model.list = [LOCAL_CHAT_MODEL];
-    render(<AiAssistantChat {...baseProps} />);
-
-    expect(screen.getByTitle(/does not call tools/)).toBeTruthy();
-    // The send button is the mode in plain words: agent mode says "Run Agent".
-    expect(screen.getByTitle("Send (Enter)")).toBeTruthy();
-  });
-
-  it("leaves the mode alone when the model can call tools", () => {
-    // The control. Without it the test above would pass for an app that simply
-    // always starts in ask mode.
-    model.canRun = {};
-    model.initial = LOCAL_CHAT_MODEL;
-    model.list = [LOCAL_CHAT_MODEL];
-    render(<AiAssistantChat {...baseProps} />);
-
-    expect(screen.queryByTitle(/does not call tools/)).toBeNull();
-    expect(screen.getByTitle("Run Agent (Enter)")).toBeTruthy();
-  });
-
-  it("hands the mode back when a model that can run it is chosen", async () => {
-    // Ask mode here is the app's doing, so it does not get to be permanent: picking
-    // a capable model has to give back what the switch took, or the next message
-    // quietly does less than the user asked for.
+  const onlyChat = () => {
     model.canRun = { [LOCAL_CHAT_MODEL.model]: false };
     model.initial = LOCAL_CHAT_MODEL;
     model.list = [LOCAL_CHAT_MODEL, CLOUD_AGENT_MODEL];
     render(<AiAssistantChat {...baseProps} />);
+  };
+  const openModelMenu = () => fireEvent.click(screen.getByTitle(/runs on this machine/));
 
-    await waitFor(() => expect(screen.getByTitle(/does not call tools/)).toBeTruthy());
+  it("leaves the mode chip alone, because the reader never turned it on", () => {
+    onlyChat();
 
-    // Choosing a model goes through the same event the "Start coding" handoff uses.
-    await act(async () => {
-      window.dispatchEvent(
-        new CustomEvent("acsa:focus-ai-chat-input", {
-          detail: { model: CLOUD_AGENT_MODEL.model },
-        })
-      );
-    });
-
-    await waitFor(() => expect(screen.getByTitle("Run Agent (Enter)")).toBeTruthy());
+    expect(screen.queryByTitle("Turn ask mode off")).toBeNull();
     expect(screen.queryByTitle(/does not call tools/)).toBeNull();
+    // And the composer still says agent, because agent is what they picked.
+    expect(screen.getByTitle("Run Agent (Enter)")).toBeTruthy();
   });
 
-  it("does not overrule a mode the user set by hand", async () => {
-    // The other half of the pair above: once the user has set a mode themselves,
-    // nothing is owed back, and choosing a capable model leaves their choice alone.
-    model.canRun = { [LOCAL_CHAT_MODEL.model]: false };
-    model.initial = LOCAL_CHAT_MODEL;
-    model.list = [LOCAL_CHAT_MODEL, CLOUD_AGENT_MODEL];
-    render(<AiAssistantChat {...baseProps} />);
-    await waitFor(() => expect(screen.getByTitle(/does not call tools/)).toBeTruthy());
+  it("lists every model, with nothing hidden", async () => {
+    onlyChat();
 
-    // Turn ask mode off by hand, then pick the capable model.
-    await act(async () => {
-      screen.getByTitle(/does not call tools/).click();
-    });
-    expect(screen.getByTitle("Run Agent (Enter)")).toBeTruthy();
+    await waitFor(() => expect(screen.getByTitle(/runs on this machine/)).toBeTruthy());
+    openModelMenu();
 
-    await act(async () => {
-      window.dispatchEvent(
-        new CustomEvent("acsa:focus-ai-chat-input", {
-          detail: { model: CLOUD_AGENT_MODEL.model },
-        })
-      );
-    });
+    expect(await screen.findByText("2 models")).toBeTruthy();
+    expect(screen.queryByText(/hidden/)).toBeNull();
+    expect(screen.getByText(CLOUD_AGENT_MODEL.model)).toBeTruthy();
+  });
 
-    expect(screen.getByTitle("Run Agent (Enter)")).toBeTruthy();
+  it("says what the turn will do rather than asking them to pick another model", async () => {
+    onlyChat();
+
+    await waitFor(() => expect(screen.getByTitle(/runs on this machine/)).toBeTruthy());
+    openModelMenu();
+
+    expect(await screen.findByText(/answers in the chat instead of editing files/)).toBeTruthy();
+    // The old menu pushed them at a different model. Choosing is theirs; this only
+    // says what the turn will do.
+    expect(screen.queryByRole("button", { name: /Use .* instead/ })).toBeNull();
   });
 });
 

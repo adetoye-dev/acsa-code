@@ -33,6 +33,26 @@ for them, not which file moved.
 
 ### Changed
 
+- **The model picker lists every model, and a chat-only one still works.** It used
+  to filter out the models that cannot call tools and print "· 2 hidden" — hiding
+  exactly the models a reader might want, a local one or a free one, and saying
+  nothing about why. Every configured model is listed now. Pick one that cannot
+  call tools and the turn runs as a chat instead: agent and plan both need a model
+  that calls tools, so running them anyway read files and answered without
+  changing anything.
+- **A capability switch is the app's business, not the mode chip's.** That
+  downgrade used to *move the reader's mode* — the chip flipped to ask mode, which
+  is a control they can cancel, putting them back in a mode the model cannot run at
+  all. The chip now only ever shows a mode the reader chose; the downgrade happens
+  at the moment of sending and is not surfaced as something to undo. The model menu
+  says what the turn will do, in a sentence, instead of pushing them at a different
+  model.
+- **The editor wraps long lines by default instead of clipping them.** The editor
+  lives in a pane the assistant dock narrows, so a line that runs past its right
+  edge is the common case, not the exception — and a line cut off 15px from the dock
+  reads as the dock having eaten it. Anyone who prefers it clipped still has the
+  setting; the default only changes for a setting that has never been touched.
+
 - **The assistant dock can be dragged, and it remembers where you put it.** It was
   a `clamp()` — always 30% of the window, with no way to argue — so on a laptop the
   editor was left about 790px and a file with longer lines was clipped by the

@@ -133,6 +133,24 @@ interface AiAssistantChatProps {
 export type WorkflowMode = "agent" | "chat" | "plan";
 
 /**
+ * The mode a run will actually use, which is not always the one on the chip.
+ *
+ * Agent and plan runs go through the runtime, which needs a model that calls
+ * tools. A model that cannot — a local one the daemon reports as having no tool
+ * support, say — would read files and answer without changing anything, so the
+ * run becomes a chat instead of a failure.
+ *
+ * The user's own `workflowMode` is deliberately left alone. It is their
+ * selection, it is what the chip reports, and a mode the app moved behind their
+ * back is one they can cancel by accident — which lands them straight back in a
+ * mode the model cannot run. So the chip only ever shows a mode the reader chose,
+ * and the downgrade stays internal.
+ */
+export function effectiveWorkflowMode(mode: WorkflowMode, canRunAgent: boolean): WorkflowMode {
+  return canRunAgent ? mode : "chat";
+}
+
+/**
  * What "Implement plan" sends.
  *
  * Names the file rather than repeating the plan: the plan is in the project, in
@@ -709,18 +727,6 @@ export function AiAssistantChat({
     ? canRunAgent(selectedModelItem.providerId, selectedModelItem.model)
     : true;
 
-  /**
-   * The chosen model's identity.
-   *
-   * The effect below keys on this rather than the object, because the object is
-   * replaced whenever the model list refreshes — the same model, a new reference.
-   * Keyed on the object, a background refresh would re-run the switch and undo a
-   * user who had turned agent mode back on; keyed on this, it only fires when the
-   * model actually changes.
-   */
-  const selectedModelKey = selectedModelItem
-    ? `${selectedModelItem.providerId}:${selectedModelItem.model}`
-    : "";
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
   const [modelSearchQuery, setModelSearchQuery] = useState("");
   // Persistent chat history across tab switches, panel open/close, and reloads
@@ -739,21 +745,11 @@ export function AiAssistantChat({
   const [undoNotice, setUndoNotice] = useState<string | null>(null);
   const [workflowMode, setWorkflowMode] = useState<WorkflowMode>("agent");
 
-  // The finalisation effect below reads the mode and the plan-file result, but it
-  // must not *depend* on them: it appends the assistant reply, so re-running it
-  // when either changes would add the same message twice. Mirrored instead, and
-  // kept current by their own effects.
-  const workflowModeRef = useRef(workflowMode);
+  // The finalisation effect below reads the plan-file result, but must not
+  // *depend* on it: it appends the assistant reply, so re-running it when the
+  // value changes would add the same message twice. Mirrored instead, and kept
+  // current by its own effect.
   const planFileRef = useRef(planFile);
-  /**
-   * The mode the app moved away from because the chosen model could not run it, or
-   * null when no mode is owed back. A ref, not state: nothing renders from it, and
-   * it must not be a reason to re-render.
-   */
-  const autoSwitchedFromRef = useRef<WorkflowMode | null>(null);
-  useEffect(() => {
-    workflowModeRef.current = workflowMode;
-  }, [workflowMode]);
   // Entering or leaving a mode starts a new piece of work. Keeping the previous
   // plan-file result would leave `Implement plan` enabled for a plan that is no
   // longer on screen — the control has to mean "the plan you can see is written".
@@ -766,83 +762,22 @@ export function AiAssistantChat({
   }, [planFile]);
 
   /**
-   * A mode the chosen model cannot run is not a mode.
+   * What the next message will be sent as.
    *
-   * Agent and plan runs go through the runtime, which needs a model that calls
-   * tools; a local model the daemon reports as having no tool support can only
-   * talk, so agent mode on it reads files and answers without changing anything.
-   * The menu warns about that and offers a different model, which is the wrong
-   * direction — the user picked this model, often because it is free and stays on
-   * the machine. So the mode moves instead, and the chip that appears is the
-   * notice.
-   *
-   * Keyed on the model alone, deliberately. A standing invariant would bounce the
-   * user straight back to ask mode the moment they turned agent on to see what
-   * happened, and an explicit choice has to be allowed to win. This fires when the
-   * model is chosen — including the one restored on mount — and never again.
+   * The chip keeps showing the reader's own mode; this is what the run uses. See
+   * `effectiveWorkflowMode`.
    */
-  useEffect(() => {
-    if (!selectedModelItem) return;
-    if (selectedModelCanRunAgent) return;
-    if (workflowModeRef.current === "chat") return;
-    // Remembered so the mode can be handed back if a model that runs it is chosen
-    // later. Ask mode here is the app's doing; leaving the user in it after they
-    // pick a capable model silently downgrades what their next message does.
-    autoSwitchedFromRef.current = workflowModeRef.current;
-    setWorkflowMode("chat");
-    // Keyed on the model on purpose: the mode is an output here, not an input, and
-    // listing it would make turning agent back on re-run this and undo the choice.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedModelKey]);
-
-  /**
-   * Hand the mode back when a model that can run it is chosen.
-   *
-   * Only for a switch the app made: `autoSwitchedFromRef` is cleared the moment
-   * the user sets a mode themselves, so a deliberate "ask me about this one" is
-   * never overruled.
-   */
-  useEffect(() => {
-    if (!selectedModelItem) return;
-    if (!selectedModelCanRunAgent) return;
-    const restore = autoSwitchedFromRef.current;
-    if (!restore) return;
-    autoSwitchedFromRef.current = null;
-    setWorkflowMode(restore);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedModelKey]);
-
-  /**
-   * A mode set by hand is the user's; stop owing them one.
-   *
-   * Compared against the previous pass rather than simply testing for "not chat".
-   * On the mount pass this runs in the same commit as the switch above, where the
-   * state variable still holds its *old* value — so a plain "not chat" test wipes
-   * the debt the switch had only just recorded, and picking a capable model later
-   * then has nothing to hand back. Declaration order is not something to depend on.
-   */
-  const modeBeforeRef = useRef(workflowMode);
-  useEffect(() => {
-    const before = modeBeforeRef.current;
-    modeBeforeRef.current = workflowMode;
-    if (workflowMode === "chat") return;
-    if (before === workflowMode) return;
-    autoSwitchedFromRef.current = null;
-  }, [workflowMode]);
+  const effectiveMode = effectiveWorkflowMode(workflowMode, selectedModelCanRunAgent);
 
   /**
    * What the mode chip's tooltip says.
    *
-   * Ask mode can be the app's doing rather than the user's, and a control that
-   * appeared on its own has to be able to say so. Both composers render this chip,
-   * so the sentence lives here rather than being written twice and drifting.
+   * The chip is only ever the reader's own choice — the app's capability
+   * downgrade is internal (see `effectiveWorkflowMode`) — so this is simply the
+   * way back out. Both composers render it, hence one sentence rather than two
+   * that drift.
    */
-  const modeChipTitle =
-    workflowMode === "plan"
-      ? "Turn plan mode off"
-      : selectedModelCanRunAgent
-      ? "Turn ask mode off"
-      : `${selectedModelItem?.model ?? "This model"} does not call tools, so ask mode is on. Turn it off to send a task to it anyway.`;
+  const modeChipTitle = workflowMode === "plan" ? "Turn plan mode off" : "Turn ask mode off";
 
   /**
    * A plan run's answer *is* the plan, so it gets written down.
@@ -1563,9 +1498,13 @@ export function AiAssistantChat({
   // ── Handle Send ─────────────────────────────────────────────────────────
   const handleSend = async (textToSend = draft, forcedMode?: WorkflowMode) => {
     // The caller may be switching mode and sending in one click (Implement plan).
-    // Reading `workflowMode` here would use the value from before the update, and
-    // the run would take the wrong branch — planning when it was asked to build.
-    const mode = forcedMode ?? workflowMode;
+    // Reading the state variable here would use the value from before the update,
+    // and the run would take the wrong branch — planning when asked to build.
+    //
+    // `effectiveMode` is the reader's mode *unless* the chosen model cannot run
+    // it, in which case the run is a chat. The chip is untouched by that: see
+    // `effectiveWorkflowMode`.
+    const mode = forcedMode ?? effectiveMode;
     const trimmed = textToSend.trim();
     if (!trimmed && attachedImages.length === 0 && attachedFiles.length === 0) return;
 
@@ -1886,31 +1825,21 @@ export function AiAssistantChat({
   );
 
   const renderModelMenu = (isCenterHero: boolean) => {
-    // A run that goes through the runtime needs a model that can call tools —
-    // agent mode and plan mode both do. Chat mode does not: it streams a
-    // completion, so a model that can only talk is exactly the right model there.
-    //
-    // Which models qualify is not a guess. `canRunAgent` asks the provider sets
-    // whether the runtime can reach it at all, and — for a local model, where the
-    // daemon reports facts — whether the model itself supports tools.
-    const needsToolCalling = workflowMode === "agent" || workflowMode === "plan";
-    const eligibleModels = needsToolCalling
-      ? configuredModels.filter((m) => canRunAgent(m.providerId, m.model))
-      : configuredModels;
-    const hiddenCount = configuredModels.length - eligibleModels.length;
-    const selectedIsIneligible =
-      needsToolCalling &&
-      Boolean(selectedModelItem) &&
-      !canRunAgent(selectedModelItem!.providerId, selectedModelItem!.model);
+    // Every configured model, in every mode. The list used to drop the ones that
+    // cannot call tools and print "· 2 hidden", which removed exactly the models a
+    // reader might want — a local one, a free one — and left them wondering what
+    // was missing. `canRunAgent` is still asked; it just decides how the turn runs
+    // (see `effectiveWorkflowMode`) rather than what the reader is allowed to pick.
+    const selectedIsChatOnly = Boolean(selectedModelItem) && !selectedModelCanRunAgent;
 
     const cleanSearch = modelSearchQuery.trim().toLowerCase();
     const filteredModels = cleanSearch
-      ? eligibleModels.filter(
+      ? configuredModels.filter(
           (m) =>
             m.model.toLowerCase().includes(cleanSearch) ||
             m.providerName.toLowerCase().includes(cleanSearch)
         )
-      : eligibleModels;
+      : configuredModels;
 
     return (
       <div
@@ -1924,31 +1853,17 @@ export function AiAssistantChat({
             {workflowMode === "plan" ? "Plan Model" : workflowMode === "chat" ? "Chat Model" : "Agent Model"}
           </span>
           <span className="text-3xs text-zinc-500 font-mono">
-            {eligibleModels.length} models
-            {hiddenCount > 0 ? ` · ${hiddenCount} hidden` : ""}
+            {configuredModels.length} models
           </span>
         </div>
 
-        {selectedIsIneligible && (
-          <div className="mb-2 shrink-0 rounded-lg border border-amber-500/40 bg-amber-950/40 p-2 space-y-1.5">
-            <p className="text-3xs text-amber-200 font-sans leading-relaxed">
-              <span className="font-mono">{selectedModelItem!.model}</span> cannot drive a{" "}
-              {workflowMode} run — it does not call tools, so a turn would read files and
-              reply without changing anything.
-            </p>
-            {eligibleModels[0] && (
-              <button
-                type="button"
-                onClick={() => {
-                  handleSelectModel(eligibleModels[0]);
-                  setIsModelMenuOpen(false);
-                }}
-                className="w-full px-2 py-1 rounded-md bg-amber-500/90 hover:bg-amber-400 text-amber-950 text-3xs font-semibold font-sans transition-colors"
-              >
-                Use {eligibleModels[0].model} instead
-              </button>
-            )}
-          </div>
+        {/* A note, not a warning: the turn will run, as a chat. Nothing here asks
+            the reader to change their mind about the model they picked. */}
+        {selectedIsChatOnly && (
+          <p className="mb-2 shrink-0 rounded-lg border border-zinc-700/70 bg-zinc-900/60 p-2 text-3xs text-zinc-400 font-sans leading-relaxed">
+            <span className="font-mono text-zinc-300">{selectedModelItem!.model}</span> does not call
+            tools, so a turn answers in the chat instead of editing files.
+          </p>
         )}
 
         {configuredModels.length > 5 && (
@@ -1965,26 +1880,7 @@ export function AiAssistantChat({
         )}
 
         <div className="flex-1 overflow-y-auto space-y-0.5 min-h-0 pr-0.5">
-          {configuredModels.length > 0 && eligibleModels.length === 0 ? (
-            <div className="px-2.5 py-3 text-center space-y-2">
-              <div className="text-xs text-amber-300 font-sans">None of these can run {workflowMode} mode</div>
-              <p className="text-3xs text-zinc-500 font-sans">
-                {hiddenCount === configuredModels.length
-                  ? "Every model you have configured chats only. Agent and plan runs need one that can call tools."
-                  : "The models that can call tools are filtered out by your search."}
-              </p>
-              <button
-                type="button"
-                onClick={() => {
-                  setIsModelMenuOpen(false);
-                  openAiManagementDashboard();
-                }}
-                className="w-full px-2.5 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold font-sans transition-colors shadow-sm"
-              >
-                ⚙️ Add a model that can run the agent
-              </button>
-            </div>
-          ) : configuredModels.length === 0 ? (
+          {configuredModels.length === 0 ? (
             <div className="px-2.5 py-3 text-center space-y-2">
               <div className="text-xs text-zinc-400 font-sans">No model available</div>
               <p className="text-3xs text-zinc-500 font-sans">
