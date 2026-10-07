@@ -17,6 +17,8 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.28] - 2026-10-07
+
 ### Added
 
 - **Files can be attached to a chat message, from the explorer or from a picker.**
@@ -641,7 +643,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.27...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.28...dev
+[0.2.28]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.27...v0.2.28
 [0.2.27]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.26...v0.2.27
 [0.2.26]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.25...v0.2.26
 [0.2.25]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.24...v0.2.25
