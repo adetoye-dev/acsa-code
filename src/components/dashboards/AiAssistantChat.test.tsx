@@ -442,6 +442,39 @@ describe("dropping an image on the composer", () => {
 });
 
 /**
+ * Dragging a file out of the explorer and onto the composer.
+ *
+ * A drop from inside the app carries no `File` — a webview cannot hand one a
+ * path — so the row puts its path on the clipboard instead. What attaches is
+ * the file the reader was pointing at, and anything that is not a path (text
+ * they happened to have selected) is left alone rather than folded into the
+ * prompt.
+ */
+describe("dropping a file from the explorer onto the composer", () => {
+  const dragPath = (path: string) => ({ types: ["text/plain"], files: [], getData: () => path });
+
+  it("attaches the file the dragged row was pointing at", async () => {
+    render(<AiAssistantChat {...baseProps} />);
+    const box = screen.getByRole("textbox");
+
+    fireEvent.drop(box, { dataTransfer: dragPath("/work/acsa-code/src/index.tsx") });
+
+    const chip = await screen.findByTestId("attached-file");
+    expect(chip.getAttribute("title")).toBe("/work/acsa-code/src/index.tsx");
+  });
+
+  it("ignores dragged text that is not an absolute path", async () => {
+    render(<AiAssistantChat {...baseProps} />);
+    const box = screen.getByRole("textbox");
+
+    fireEvent.drop(box, { dataTransfer: dragPath("just some selected words") });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(screen.queryByTestId("attached-file")).toBeNull();
+  });
+});
+
+/**
  * Opening a chat lands on the newest message.
  *
  * The follow-tail effect deliberately refuses to scroll when the reader is not at
