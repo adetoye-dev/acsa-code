@@ -17,6 +17,8 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.30] - 2026-10-07
+
 ### Fixed
 
 - **A file dragged into the composer reaches the model in ask mode.** It showed as
@@ -668,7 +670,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.29...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.30...dev
+[0.2.30]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.29...v0.2.30
 [0.2.29]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.28...v0.2.29
 [0.2.28]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.27...v0.2.28
 [0.2.27]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.26...v0.2.27
