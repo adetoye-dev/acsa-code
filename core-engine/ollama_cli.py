@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tool_paths
 import urllib.error
 import urllib.request
 import zipfile
@@ -31,26 +32,22 @@ from pathlib import Path
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
 
-# Where the macOS app and the common package managers put the binary.
-BINARY_CANDIDATES = (
-    "/opt/homebrew/bin/ollama",
-    "/usr/local/bin/ollama",
-    "/usr/bin/ollama",
-    "/Applications/Ollama.app/Contents/Resources/ollama",
-)
+# Ollama's own macOS installer leaves the engine inside the app bundle. The other
+# places it can live — Homebrew, `/usr/local/bin` — are in `tool_paths`, which also
+# knows why a window launched from the Dock cannot see them on PATH.
+OLLAMA_APP_BINARY = "/Applications/Ollama.app/Contents/Resources/ollama"
 
 
 def _binary() -> str | None:
-    found = shutil.which("ollama")
-    if found:
-        return found
+    """The Ollama binary, wherever it is.
+
+    In order: one already on PATH, then the copy this app installed itself, then
+    the bundle Ollama's installer left, then the usual install directories.
+    """
     ours = _installed_binary()
-    if ours is not None:
-        return str(ours)
-    for candidate in BINARY_CANDIDATES:
-        if Path(candidate).is_file():
-            return candidate
-    return None
+    extra = [str(ours)] if ours is not None else []
+    extra.append(OLLAMA_APP_BINARY)
+    return tool_paths.find("ollama", extra_paths=extra)
 
 
 def _install_root() -> Path:

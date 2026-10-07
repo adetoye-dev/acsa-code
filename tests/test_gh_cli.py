@@ -12,7 +12,9 @@ ones that decide whether the panel tells the truth.
 
 from __future__ import annotations
 
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -20,6 +22,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core-engine"))
 
 import gh_cli  # noqa: E402
+import tool_paths  # noqa: E402
 
 # `gh run list -L 2 --json …` against adetoye-dev/acsa-code.
 REAL_RUNS = [
@@ -542,6 +545,64 @@ class RunShaTests(unittest.TestCase):
         runs = gh_cli.parse_runs(REAL_RUNS)
         self.assertEqual(runs[0]["sha"], "913d48b1473857d8f3e09176479d1417b3ad9562")
         self.assertEqual(runs[1]["sha"], "913d48b1473857d8f3e09176479d1417b3ad9562")
+
+
+class GhOffPathTests(unittest.TestCase):
+    """`gh` where PATH cannot see it.
+
+    This app tells the user to `brew install gh`, and Homebrew installs into
+    `/opt/homebrew/bin` — which is not on the PATH a window launched from the Dock
+    is given. `shutil.which` therefore answered "not installed" for a `gh` the user
+    was running in a terminal, and the panel said so back to them. The states are
+    driven by patching, as the rest of this file does: a developer's machine either
+    has the tool or has not, so it cannot reproduce the other case on demand.
+    """
+
+    def _fake_homebrew(self) -> Path:
+        """A directory holding an executable `gh`, standing in for Homebrew's bin."""
+        tmp = tempfile.mkdtemp(prefix="acsa-gh-offpath-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        binary = Path(tmp) / "gh"
+        binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        binary.chmod(0o755)
+        return binary
+
+    def _blind_to_path(self, directory: str):
+        return (
+            mock.patch.object(tool_paths.shutil, "which", return_value=None),
+            mock.patch.object(tool_paths, "install_dirs", return_value=(directory,)),
+        )
+
+    def test_the_lookup_finds_it_anyway(self):
+        binary = self._fake_homebrew()
+        which_patch, dirs_patch = self._blind_to_path(str(binary.parent))
+        with which_patch, dirs_patch:
+            self.assertEqual(gh_cli._gh_path(), str(binary))
+
+    def test_the_panel_is_not_told_it_is_missing(self):
+        binary = self._fake_homebrew()
+        which_patch, dirs_patch = self._blind_to_path(str(binary.parent))
+        with which_patch, dirs_patch, mock.patch.object(
+            gh_cli, "_remote_url", lambda cwd: "https://github.com/acme/api.git"
+        ), mock.patch.object(gh_cli, "_run", lambda *a, **k: (True, "[]", "")):
+            result = gh_cli.overview({"cwd": "."})
+        self.assertNotEqual(result.get("reason"), "not-installed")
+
+    def test_the_call_runs_the_path_that_was_found(self):
+        # `which` resolving a name against a PATH this process may not have is not
+        # the same as running that path; the command has to name the absolute one.
+        asked: list[list[str]] = []
+
+        def run(args, *rest, **kwargs):
+            asked.append(args)
+            return True, "[]", ""
+
+        with mock.patch.object(gh_cli, "_gh_path", lambda: "/opt/homebrew/bin/gh"), mock.patch.object(
+            gh_cli, "_run", run
+        ):
+            gh_cli._gh_json("acme/api", ["run", "list"])
+        self.assertTrue(asked, "no command was run")
+        self.assertEqual(asked[0][0], "/opt/homebrew/bin/gh")
 
 
 if __name__ == "__main__":

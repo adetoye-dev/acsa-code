@@ -56,6 +56,17 @@ for them, not which file moved.
   test everywhere. CI had not seen it because the dependency gate above failed
   first and the job stopped before the Rust step ran; narrowing that gate is what
   surfaced this.
+- **The repository page finds `gh` where the app actually put it.** It read "The
+  GitHub CLI (gh) is not installed" on machines where `gh` was installed and signed
+  in — every client's, and this one — because the check was `shutil.which`, which
+  reads PATH, and a window launched from the Dock is given launchd's PATH rather
+  than the one from the user's shell profile. Homebrew's `/opt/homebrew/bin` is not
+  in it, and that is exactly where this app's own advice (`brew install gh`) puts
+  the binary. The command was also run by the bare name and re-resolved against the
+  same PATH, so the second half of the mistake hid the first. A shared lookup now
+  tries PATH, then the install directories the common package managers use — and
+  Ollama uses it too, where a copy in `~/.local/bin` had been invisible for the
+  same reason.
 
 ## [0.2.27] - 2026-10-06
 
