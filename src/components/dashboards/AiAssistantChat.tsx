@@ -8,9 +8,9 @@
  *    streamed into the transcript step by step.
  */
 
-import { useState, useRef, useEffect, useCallback, memo } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo, memo } from "react";
 import { Icon } from "../ui/Icon";
-import { RotateCcw, Trash2, Copy, GitCommit, Maximize2, Minimize2, RefreshCw, Square, User, Check, ChevronDown, ChevronRight, Code, Code2, MessageSquare, ListTodo, X, Bot, CheckCircle2, Plus, Folder, GitBranch, ArrowUp, Image as ImageIcon, Database, AlertCircle, AtSign, Sparkles, Shield, Terminal, Search, Wrench, Users, HelpCircle } from "lucide-react";
+import { RotateCcw, Trash2, Copy, GitCommit, Maximize2, Minimize2, RefreshCw, Square, User, Check, ChevronDown, ChevronRight, Code, Code2, MessageSquare, ListTodo, X, Bot, CheckCircle2, Plus, Folder, GitBranch, ArrowUp, Image as ImageIcon, Database, AlertCircle, AtSign, FileCode, Sparkles, Shield, Terminal, Search, Wrench, Users, HelpCircle } from "lucide-react";
 import type { PipelineStatus, PipelineOutputLine } from "../../types/telemetry";
 import { FOLLOW_THRESHOLD_PX, isFollowingBottom } from "../../services/scrollAnchor";
 import {
@@ -51,7 +51,10 @@ import type { AgentQuestion, PendingFileChange, ProjectIndexState } from "../../
 import { approvalSummary, countDiffLines } from "../../hooks/usePipeline";
 import { localProviderFor, type ApprovalDecision } from "../../services/agentApproval";
 import { canRunAgent, rememberTierTooSmall } from "../../services/aiModelManager";
-import { writeTextFile } from "../../services/fileAccess";
+import { attachmentBlock, readAttachments, type AttachedFile } from "../../services/chatAttachments";
+import { filterFiles, flattenFiles } from "../../services/fileSearch";
+import type { FileNode } from "../FileTree";
+import { readTextFile, writeTextFile } from "../../services/fileAccess";
 import { formatDuration } from "../../services/agentTurnLimit";
 import { summarizeFailure } from "../../services/providerErrors";
 
@@ -86,6 +89,8 @@ interface AiAssistantChatProps {
   onPopOutWide?: () => void;
   isWide?: boolean;
   selectedContext?: { path: string; code: string } | null;
+  /** The project's files, for "Add Context → Files…". Absent means no picker. */
+  projectFiles?: FileNode[];
   failureDetail?: string;
   /** A finished run that left every file's path and size untouched. */
   noFileChanges?: boolean;
@@ -290,6 +295,23 @@ const ChatTranscript = memo(function ChatTranscript({
                   : "bg-zinc-900/90 border border-zinc-800/90 text-zinc-100 rounded-tl-sm w-full"
               }`}
             >
+              {/* Attached files, as the chips they were when they were sent. */}
+              {msg.attachedPaths && msg.attachedPaths.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {msg.attachedPaths.map((path) => (
+                    <span
+                      key={path}
+                      data-testid="message-attachment"
+                      title={path}
+                      className="flex items-center gap-1.5 px-1.5 py-1 rounded-md bg-zinc-900/70 border border-zinc-700/70 text-2xs text-zinc-300 max-w-[14rem]"
+                    >
+                      <Icon icon={FileCode} className="w-3 h-3 text-zinc-500 shrink-0" />
+                      <span className="truncate font-mono">{path.split("/").pop() || path}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+
               {/* User Attached Images */}
               {msg.images && msg.images.length > 0 && (
                 <div className="flex flex-wrap gap-2 mb-2">
@@ -593,6 +615,7 @@ export function AiAssistantChat({
   onPopOutWide,
   isWide = false,
   selectedContext = null,
+  projectFiles = [],
   failureDetail = "",
   noFileChanges = false,
   waitingForUser = "",
@@ -854,6 +877,15 @@ export function AiAssistantChat({
 
   // Multimodal image attachment state
   const [attachedImages, setAttachedImages] = useState<string[]>([]);
+  /**
+   * Files folded into the next message. Chips above the input, text in the prompt —
+   * see services/chatAttachments.ts for what a large file does to the budget.
+   */
+  const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
+  const [isFilePickerOpen, setIsFilePickerOpen] = useState(false);
+  const [fileQuery, setFileQuery] = useState("");
+  const fileQueryInputRef = useRef<HTMLInputElement | null>(null);
+  const filePickerRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleImageFiles = (files: FileList | File[]) => {
@@ -884,6 +916,54 @@ export function AiAssistantChat({
   };
 
   const handleImageDragLeave = () => setIsImageDragOver(false);
+
+  const projectFileList = useMemo(() => flattenFiles(projectFiles), [projectFiles]);
+
+  const attachFile = (path: string) => {
+    const clean = path.trim();
+    if (!clean) return;
+    setAttachedFiles((prev) =>
+      prev.some((file) => file.path === clean)
+        ? prev
+        : [...prev, { path: clean, name: clean.split("/").pop() || clean }],
+    );
+    setIsFilePickerOpen(false);
+    setFileQuery("");
+  };
+
+  const removeFile = (path: string) => {
+    setAttachedFiles((prev) => prev.filter((file) => file.path !== path));
+  };
+
+  /**
+   * A drop carries either an image or a path. Images were the only kind this
+   * understood; a row dragged out of the explorer carries its path as text, which
+   * is the same file the reader was pointing at.
+   */
+  useEffect(() => {
+    if (isFilePickerOpen) fileQueryInputRef.current?.focus();
+  }, [isFilePickerOpen]);
+
+  const handleComposerDrop = (e: React.DragEvent) => {
+    // Only when the drop carries no file objects — a dropped file has no path in a
+    // webview, and the existing rule that a stray text file is not an attachment
+    // stays exactly as it was. `getData` is also absent from a synthetic
+    // DataTransfer, so reading it has to be the thing that can fail without
+    // taking the image path down with it.
+    const droppedFiles = e.dataTransfer?.files?.length ?? 0;
+    if (droppedFiles === 0) {
+      let asText = "";
+      try {
+        asText = e.dataTransfer?.getData?.("text/plain")?.trim() ?? "";
+      } catch {
+        asText = "";
+      }
+      // An absolute path is what an explorer row carries; dragged text is not a
+      // file and attaching it would put whatever was selected into the prompt.
+      if (asText.startsWith("/")) attachFile(asText);
+    }
+    handleImageDrop(e);
+  };
 
   const handleImageDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -1326,6 +1406,12 @@ export function AiAssistantChat({
       ) {
         setIsContextMenuOpen(false);
       }
+      if (
+        filePickerRef.current &&
+        !filePickerRef.current.contains(e.target as Node)
+      ) {
+        setIsFilePickerOpen(false);
+      }
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
@@ -1481,10 +1567,24 @@ export function AiAssistantChat({
     // the run would take the wrong branch — planning when it was asked to build.
     const mode = forcedMode ?? workflowMode;
     const trimmed = textToSend.trim();
-    if (!trimmed && attachedImages.length === 0) return;
+    if (!trimmed && attachedImages.length === 0 && attachedFiles.length === 0) return;
 
     const currentImages = attachedImages.length > 0 ? [...attachedImages] : undefined;
-    const promptToSend = trimmed || (currentImages ? "Please analyze the attached image(s)." : "");
+    const currentFiles = attachedFiles.length > 0 ? [...attachedFiles] : [];
+    const basePrompt =
+      trimmed ||
+      (currentFiles.length > 0
+        ? "Please look at the attached file(s)."
+        : currentImages
+          ? "Please analyze the attached image(s)."
+          : "");
+    // Read at send time rather than at attach time: the reader may have edited the
+    // file since, and the message should carry what is on disk when it is sent.
+    const attachmentText =
+      currentFiles.length > 0
+        ? attachmentBlock(await readAttachments(currentFiles, (path) => readTextFile(path, projectRoot)))
+        : "";
+    const promptToSend = `${basePrompt}${attachmentText}`;
 
     if (mode === "agent" || mode === "plan") {
       if (status === "running") {
@@ -1553,8 +1653,9 @@ export function AiAssistantChat({
       const userMsg: ChatMessage = {
         id: `user-${Date.now()}`,
         role: "user",
-        content: promptToSend,
+        content: basePrompt,
         images: currentImages,
+        attachedPaths: currentFiles.map((file) => file.path),
         timestamp: Date.now(),
       };
       setChatMessages((prev) => {
@@ -1564,6 +1665,7 @@ export function AiAssistantChat({
       });
       chatDraft.set("");
       setAttachedImages([]);
+      setAttachedFiles([]);
       return;
     }
 
@@ -1589,10 +1691,12 @@ export function AiAssistantChat({
     const userMsg: ChatMessage = {
       id: `user-${Date.now()}`,
       role: "user",
-      content: promptToSend,
+      content: basePrompt,
       images: currentImages,
+      attachedPaths: currentFiles.map((file) => file.path),
       timestamp: Date.now(),
     };
+    setAttachedFiles([]);
 
     const assistantMsgId = `assistant-${Date.now()}`;
     const assistantPlaceholder: ChatMessage = {
@@ -1703,6 +1807,83 @@ export function AiAssistantChat({
     chatDraft.set(text);
     void handleSend(text);
   };
+
+  /**
+   * The files attached to the next message, and the picker that adds them.
+   *
+   * One block for both composers — the centered hero and the docked one — so the
+   * two cannot end up with different ideas about what is attached.
+   */
+  const renderFileContext = () => (
+    <>
+      {attachedFiles.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 pb-1">
+          {attachedFiles.map((file) => (
+            <span
+              key={file.path}
+              data-testid="attached-file"
+              title={file.path}
+              className="flex items-center gap-1.5 pl-1.5 pr-1 py-1 rounded-md bg-zinc-800/80 border border-zinc-700/70 text-2xs text-zinc-200 max-w-[16rem]"
+            >
+              <Icon icon={FileCode} className="w-3 h-3 text-zinc-400 shrink-0" />
+              <span className="truncate font-mono">{file.name}</span>
+              <button
+                type="button"
+                onClick={() => removeFile(file.path)}
+                title={`Remove ${file.name}`}
+                className="p-0.5 rounded text-zinc-500 hover:text-white hover:bg-zinc-700/70 transition-colors cursor-pointer shrink-0"
+              >
+                <Icon icon={X} className="w-2.5 h-2.5" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {isFilePickerOpen && (
+        <div
+          ref={filePickerRef}
+          className="absolute bottom-full mb-2 left-0 w-72 max-h-64 bg-[#18181b]/95 backdrop-blur-xl border border-zinc-700/60 rounded-xl shadow-2xl p-1.5 z-popover flex flex-col"
+        >
+          <input
+            ref={fileQueryInputRef}
+            value={fileQuery}
+            onChange={(e) => setFileQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setIsFilePickerOpen(false);
+              if (e.key === "Enter") {
+                const first = filterFiles(projectFileList, fileQuery, 1)[0];
+                if (first) attachFile(first.path);
+              }
+            }}
+            placeholder="Filter project files…"
+            className="mb-1.5 w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-purple-500/60"
+          />
+          <div className="overflow-y-auto">
+            {filterFiles(projectFileList, fileQuery).map((file) => (
+              <button
+                key={file.path}
+                type="button"
+                data-testid="file-option"
+                onClick={() => attachFile(file.path)}
+                title={file.path}
+                className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left text-2xs text-zinc-300 hover:bg-zinc-800/80 hover:text-white transition-colors cursor-pointer"
+              >
+                <Icon icon={FileCode} className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
+                <span className="truncate font-mono">{file.name}</span>
+                <span className="ml-auto truncate text-3xs text-zinc-500 max-w-[8rem]">
+                  {file.path.replace(/\/[^/]+$/, "")}
+                </span>
+              </button>
+            ))}
+            {projectFileList.length === 0 && (
+              <p className="px-2 py-3 text-2xs text-zinc-500">No files in this project yet.</p>
+            )}
+          </div>
+        </div>
+      )}
+    </>
+  );
 
   const renderModelMenu = (isCenterHero: boolean) => {
     // A run that goes through the runtime needs a model that can call tools —
@@ -1903,19 +2084,20 @@ export function AiAssistantChat({
         <span className="font-medium">Media</span>
       </button>
 
-      {/* 2: Mentions */}
+      {/* 2: Files — this replaced a "Mentions" entry that typed an `@` no one
+             handled. A mention is a file reference, so it opens the picker. */}
       <button
         type="button"
+        data-testid="add-context-files"
         onClick={() => {
           setIsContextMenuOpen(false);
-          const nextPrompt = draft && !draft.endsWith(" ") ? `${draft} @` : `${draft}@`;
-          chatDraft.set(nextPrompt);
-          setTimeout(() => textareaRef.current?.focus(), 50);
+          setFileQuery("");
+          setIsFilePickerOpen(true);
         }}
         className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs text-zinc-200 hover:bg-zinc-800/80 hover:text-white transition-all group"
       >
         <Icon icon={AtSign} className="w-4 h-4 text-zinc-400 group-hover:text-zinc-200 shrink-0" />
-        <span className="font-medium">Mentions</span>
+        <span className="font-medium">Files</span>
       </button>
 
       {/* 3: Actions */}
@@ -2112,6 +2294,7 @@ Click to re-index project.`}
 
                   {/* Centered Floating Hero Omnibar Card */}
                   <div className="relative rounded-2xl bg-[#1c1c24]/95 backdrop-blur-xl border border-zinc-700/60 shadow-2xl p-4 space-y-3">
+                    {renderFileContext()}
                     {/* Attached Image Previews */}
                     {attachedImages.length > 0 && (
                       <div className="space-y-2 pb-1">
@@ -2160,11 +2343,15 @@ Click to re-index project.`}
                     <textarea
                       ref={textareaRef}
                       value={draft}
-                      onChange={(e) => chatDraft.set(e.target.value)}
+                      onChange={(e) => {
+                        chatDraft.set(e.target.value);
+                        // "@" is how every other editor starts a file reference.
+                        if (e.target.value.endsWith("@")) setIsFilePickerOpen(true);
+                      }}
                       onPaste={handlePaste}
                       onDragOver={handleImageDragOver}
                       onDragLeave={handleImageDragLeave}
-                      onDrop={handleImageDrop}
+                      onDrop={handleComposerDrop}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && !e.shiftKey) {
                           e.preventDefault();
@@ -2202,7 +2389,7 @@ Click to re-index project.`}
                                 ? "bg-zinc-800 text-zinc-100 border-zinc-700"
                                 : "bg-zinc-800/40 hover:bg-zinc-800/80 border-zinc-800/80 text-zinc-400 hover:text-zinc-200"
                             }`}
-                            title="Add Context (Media, Mentions, Actions, Browser)"
+                            title="Add Context (Media, Files, Actions, Browser)"
                           >
                             <Icon icon={Plus} className="w-3.5 h-3.5" />
                           </button>
@@ -2600,6 +2787,7 @@ Click to re-index project.`}
 
             {/* Unified Omnibar Input Card */}
             <div className="relative rounded-2xl bg-zinc-900/90 border border-zinc-800/90 focus-within:border-purple-500/50 focus-within:ring-1 focus-within:ring-purple-500/20 p-2.5 transition-all shadow-lg">
+              {renderFileContext()}
               {/* Attached Image Previews */}
               {attachedImages.length > 0 && (
                 <div className="space-y-1.5 pb-2">
@@ -2647,11 +2835,14 @@ Click to re-index project.`}
               <textarea
                 ref={textareaRef}
                 value={draft}
-                onChange={(e) => chatDraft.set(e.target.value)}
+                onChange={(e) => {
+                  chatDraft.set(e.target.value);
+                  if (e.target.value.endsWith("@")) setIsFilePickerOpen(true);
+                }}
                 onPaste={handlePaste}
                 onDragOver={handleImageDragOver}
                 onDragLeave={handleImageDragLeave}
-                onDrop={handleImageDrop}
+                onDrop={handleComposerDrop}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
@@ -2687,7 +2878,7 @@ Click to re-index project.`}
                           ? "bg-zinc-800 text-zinc-100 border-zinc-700"
                           : "bg-zinc-800/40 hover:bg-zinc-800/80 border-zinc-800/80 text-zinc-400 hover:text-zinc-200"
                       }`}
-                      title="Add Context (Media, Mentions, Actions, Browser)"
+                      title="Add Context (Media, Files, Actions, Browser)"
                     >
                       <Icon icon={Plus} className="w-3.5 h-3.5" />
                     </button>

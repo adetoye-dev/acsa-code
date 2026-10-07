@@ -104,6 +104,11 @@ vi.mock("../../services/aiModelManager", () => ({
   syncOllamaModels: () => undefined,
 }));
 
+vi.mock("../../services/fileAccess", () => ({
+  readTextFile: async () => "export const x = 1;",
+  writeTextFile: async () => undefined,
+}));
+
 vi.mock("../../services/ollamaSetup", () => ({
   openAiManagementDashboard: () => undefined,
   checkOllamaStatus: async () => ({ running: false, models: [] }),
@@ -596,5 +601,71 @@ describe("a model that can only chat", () => {
     });
 
     expect(screen.getByTitle("Run Agent (Enter)")).toBeTruthy();
+  });
+});
+
+
+/**
+ * Files as chat context.
+ *
+ * The picker replaced a "Mentions" entry that typed an "@" nothing handled, so
+ * the first thing to pin is that the thing a reader attaches is the thing the
+ * composer says is attached — and that they can take it back off.
+ */
+describe("attaching a file to a message", () => {
+  const TREE = [
+    {
+      name: "src",
+      path: "/work/acsa-code/src",
+      is_dir: true,
+      size_bytes: 0,
+      children: [
+        { name: "index.tsx", path: "/work/acsa-code/src/index.tsx", is_dir: false, size_bytes: 12 },
+        { name: "routes.ts", path: "/work/acsa-code/src/routes.ts", is_dir: false, size_bytes: 12 },
+      ],
+    },
+  ];
+
+  const renderWithFiles = () =>
+    render(<AiAssistantChat {...baseProps} projectFiles={TREE as never} />);
+
+  /** Open the picker and choose a file by name — the chip is a button too, so a
+   *  role query alone would match the thing already attached. */
+  const choose = async (name: string) => {
+    fireEvent.click(screen.getByTitle(/Add Context/));
+    fireEvent.click(screen.getByTestId("add-context-files"));
+    const options = await screen.findAllByTestId("file-option");
+    const option = options.find((node) => node.textContent?.includes(name));
+    if (!option) throw new Error(`no file option for ${name}`);
+    fireEvent.click(option);
+  };
+
+  it("offers the project's files and shows what was attached", async () => {
+    renderWithFiles();
+
+    await choose("index.tsx");
+
+    const chip = await screen.findByTestId("attached-file");
+    expect(chip.textContent).toContain("index.tsx");
+    // The path is what the prompt will carry, so it is what the chip promises.
+    expect(chip.getAttribute("title")).toBe("/work/acsa-code/src/index.tsx");
+  });
+
+  it("takes it back off when the reader removes it", async () => {
+    renderWithFiles();
+
+    await choose("index.tsx");
+    await screen.findByTestId("attached-file");
+
+    fireEvent.click(screen.getByTitle(/Remove index\.tsx/));
+    await waitFor(() => expect(screen.queryByTestId("attached-file")).toBeNull());
+  });
+
+  it("does not attach the same file twice", async () => {
+    renderWithFiles();
+
+    for (const _ of [0, 1]) await choose("index.tsx");
+
+    expect(screen.getAllByTestId("attached-file")).toHaveLength(1);
   });
 });

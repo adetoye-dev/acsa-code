@@ -322,6 +322,14 @@ export function FileTree({
               setConfirmDelete({ path: node.path, isDir });
             }
           }}
+          /* The path as text, so dropping this row on the chat attaches the file.
+             A drop carries either an image or a path, and this is the only way the
+             second kind can happen inside the app. */
+          draggable={!isDir}
+          onDragStart={(e) => {
+            e.dataTransfer.setData("text/plain", node.path);
+            e.dataTransfer.effectAllowed = "copy";
+          }}
           tabIndex={0}
           style={{ paddingLeft: `${depth * 12 + 10}px` }}
           className={`group flex items-center justify-between py-1 pr-2 rounded cursor-pointer transition-colors ${

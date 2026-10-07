@@ -1576,6 +1576,7 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
               status={status}
               activityLog={activityLog}
               projectRoot={activeProject.path}
+              projectFiles={projectFiles}
               branch={gitBranch}
               onRunPipeline={(request, override, activePath, code, history, images, runMode) => {
                 if (override) {

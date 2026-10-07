@@ -98,6 +98,12 @@ export interface ChatMessage {
   role: "user" | "assistant" | "system";
   content: string;
   images?: string[];
+  /**
+   * Files folded into this message's prompt, by path. The prompt carries their
+   * text; the transcript shows these, because a reader wants to see what they
+   * attached rather than a hundred lines of it.
+   */
+  attachedPaths?: string[];
   timestamp: number;
   provider?: string;
   model?: string;

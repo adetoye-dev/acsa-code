@@ -17,6 +17,20 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+### Added
+
+- **Files can be attached to a chat message, from the explorer or from a picker.**
+  The **Mentions** entry in the composer's `+` menu typed an `@` that nothing
+  handled, so the only way to point the assistant at a file was to describe it and
+  hope. It is **Files** now: a filterable list of the project's files, and a file
+  row can also be dragged straight from the explorer onto the composer. What is
+  attached shows as a removable chip above the input — and again in the transcript,
+  on the message it went with — while the file's text travels in the prompt, read
+  from disk at the moment the message is sent rather than when it was attached. A
+  message carries at most 60 KB of files, and a file that crosses that line arrives
+  shortened and labelled, so a model is never quietly handed the start of a file and
+  left to answer as though it had read the end.
+
 ## [0.2.27] - 2026-10-06
 
 ### Added
