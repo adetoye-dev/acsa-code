@@ -303,3 +303,44 @@ describe("the chat toggle, while the agent is blocked on the user", () => {
     expect(screen.queryByTestId("chat-needs-you")).toBeNull();
   });
 });
+
+/**
+ * The assistant dock was a `clamp()` — always 30% of the window. On a laptop that
+ * leaves the editor around 790px, and a file with longer lines is clipped by the
+ * editor's own viewport, which reads as the dock cutting the code off. These pin
+ * that the split can be moved, that it cannot be moved past half the window, and
+ * that the width survives a restart.
+ */
+describe("the assistant dock's width", () => {
+  beforeEach(() => {
+    try {
+      localStorage.removeItem("acsa_chat_width");
+    } catch {}
+  });
+
+  const width = () => Number.parseInt(screen.getByTestId("chat-dock-panel").style.width, 10);
+
+  it("is dragged from its own edge, and remembered", async () => {
+    renderShell();
+    const start = width();
+    expect(start).toBeGreaterThan(0);
+
+    // The handle is on the dock's left edge, so dragging *left* grows it.
+    fireEvent.mouseDown(screen.getByTitle("Drag to resize the assistant"), { clientX: 1000 });
+    fireEvent.mouseMove(window, { clientX: 900 });
+    fireEvent.mouseUp(window);
+
+    await waitFor(() => expect(width()).toBeGreaterThan(start));
+    expect(localStorage.getItem("acsa_chat_width")).toBe(String(width()));
+  });
+
+  it("stops at half the window, so the editor always keeps the other half", () => {
+    renderShell();
+
+    fireEvent.mouseDown(screen.getByTitle("Drag to resize the assistant"), { clientX: 1200 });
+    fireEvent.mouseMove(window, { clientX: -5000 });
+    fireEvent.mouseUp(window);
+
+    expect(width()).toBeLessThanOrEqual(Math.round(window.innerWidth * 0.5));
+  });
+});

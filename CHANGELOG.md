@@ -33,6 +33,15 @@ for them, not which file moved.
 
 ### Changed
 
+- **The assistant dock can be dragged, and it remembers where you put it.** It was
+  a `clamp()` — always 30% of the window, with no way to argue — so on a laptop the
+  editor was left about 790px and a file with longer lines was clipped by the
+  editor's own viewport (`wordWrap` is off by default). That reads as the assistant
+  cutting the code off, and the only remedy was to close the dock. Dragging its left
+  edge moves the split and the width is kept. To be clear about what was *not*
+  happening: the editor was never being covered: its scrollbar, its minimap and the
+  review markers on its right edge all sit immediately beside the dock, which is
+  how you can tell the pane is the width it should be.
 - **The dependency gate can fail for a reason again.** It was a bare
   `npm audit --audit-level=high`, and it had been red on every push — not because
   anything regressed, but because advisories published since have no fix at that
