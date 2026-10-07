@@ -46,6 +46,17 @@ for them, not which file moved.
   being reported fails too, and the lockfile's `source-map-js` was moved to the
   patched 1.2.2 on the way through.
 
+### Fixed
+
+- **The shell builds off macOS again.** File ▸ Open File… added an AppleScript
+  helper that is gated to macOS, beside a caller that was deliberately left
+  ungated so the script it builds could be tested — which stopped the Rust shell
+  compiling at all on Linux, and would have stopped Windows for the same reason.
+  Both are gated the same way now, with `test` allowed so the script stays under
+  test everywhere. CI had not seen it because the dependency gate above failed
+  first and the job stopped before the Rust step ran; narrowing that gate is what
+  surfaced this.
+
 ## [0.2.27] - 2026-10-06
 
 ### Added

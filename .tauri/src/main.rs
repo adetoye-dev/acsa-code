@@ -528,7 +528,12 @@ fn pick_folder() -> Result<Option<String>, String> {
 }
 
 /// Escape a string for use inside an AppleScript double-quoted literal.
-#[cfg(target_os = "macos")]
+///
+/// Gated to macOS because only macOS speaks AppleScript — but `test` is allowed
+/// too, because `open_file_panel_script` below is built and asserted on every
+/// platform, and a helper that exists only on the machine that runs the panel
+/// leaves the script unbuildable everywhere else.
+#[cfg(any(target_os = "macos", test))]
 fn applescript_literal(text: &str) -> String {
     text.replace('\\', "\\\\").replace('"', "\\\"")
 }
@@ -617,6 +622,7 @@ fn pick_save_file(default_name: String, prompt: String) -> Result<Option<String>
 /// either turns the script into a different script, which is the same reason
 /// `applescript_literal` exists. Testable here, unlike the call itself, because the
 /// call opens a window on someone's screen.
+#[cfg(any(target_os = "macos", test))]
 fn open_file_panel_script(prompt: &str, default_dir: Option<&str>) -> String {
     // Where the panel opens depends on what is being opened. A backup import
     // starts at the Desktop, because a bundle exported there is where the next
