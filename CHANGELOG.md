@@ -17,7 +17,7 @@ for them, not which file moved.
 
 ## [Unreleased]
 
-## [0.2.28] - 2026-10-07
+## [0.2.29] - 2026-10-07
 
 ### Added
 
@@ -31,6 +31,10 @@ for them, not which file moved.
   outweighs a common one like `path`. Snippets, not whole files, and inside a
   budget — a local model's window cannot take a 60 KB dump. When nothing matched,
   the model is told to say so rather than invent project detail.
+
+## [0.2.28] - 2026-10-07
+
+### Added
 
 - **Files can be attached to a chat message, from the explorer or from a picker.**
   The **Mentions** entry in the composer's `+` menu typed an `@` that nothing
@@ -654,7 +658,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.28...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.29...dev
+[0.2.29]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.28...v0.2.29
 [0.2.28]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.27...v0.2.28
 [0.2.27]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.26...v0.2.27
 [0.2.26]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.25...v0.2.26
