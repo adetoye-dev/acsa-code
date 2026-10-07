@@ -1667,8 +1667,15 @@ export function AiAssistantChat({
     // Chat only, now: plan mode runs on the agent runtime with a read-only
     // sandbox, so its instruction lives in `AGENT_PLAN_INSTRUCTIONS` rather than
     // in a system message prepended here.
-    const outgoingMessages: Array<{ role: "user" | "assistant" | "system"; content: string }> =
-      nextHistory.map((m) => ({ role: m.role, content: m.content }));
+    // The transcript keeps the prompt without the attachments — the chips above
+    // the message say what was attached — but the model has to be *sent* the
+    // text, or a dragged file is a chip the assistant cannot see. That is what it
+    // was: agent runs got `promptToSend`, chat runs got the bare prompt and
+    // answered "no specific file has been mentioned".
+    const outgoingMessages: Array<{ role: "user" | "assistant" | "system"; content: string }> = [
+      ...nextHistory.slice(0, -1).map((m) => ({ role: m.role, content: m.content })),
+      { role: "user" as const, content: promptToSend },
+    ];
 
     await streamChatCompletion({
       provider: selectedModelItem.providerId,

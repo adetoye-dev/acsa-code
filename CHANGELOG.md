@@ -17,6 +17,16 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A file dragged into the composer reaches the model in ask mode.** It showed as
+  a chip in the transcript and went no further. The prompt with the file's text
+  folded into it was built for both paths, and only the agent path used it — so a
+  chat turn carried the transcript's own copy, which deliberately holds no file
+  text, and the assistant replied "since no specific file has been mentioned",
+  which is exactly what it had been handed. Attaching a file worked in agent mode
+  and was silently dropped in ask mode.
+
 ## [0.2.29] - 2026-10-07
 
 ### Added

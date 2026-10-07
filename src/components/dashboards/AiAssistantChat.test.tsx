@@ -109,6 +109,12 @@ vi.mock("../../services/fileAccess", () => ({
   writeTextFile: async () => undefined,
 }));
 
+// The chat transport, captured rather than exercised: what matters here is what
+// a chat turn is *handed*, which is the half that had a file dropped from it.
+vi.mock("../../services/aiChatService", () => ({
+  streamChatCompletion: vi.fn(async () => undefined),
+}));
+
 vi.mock("../../services/ollamaSetup", () => ({
   openAiManagementDashboard: () => undefined,
   checkOllamaStatus: async () => ({ running: false, models: [] }),
@@ -117,6 +123,7 @@ vi.mock("../../services/ollamaSetup", () => ({
 
 const { AiAssistantChat, effectiveWorkflowMode } = await import("./AiAssistantChat");
 const { chatDraft } = await import("../../services/chatDraft");
+const { streamChatCompletion } = await import("../../services/aiChatService");
 
 const baseProps = {
   status: "idle" as const,
@@ -688,5 +695,76 @@ describe("attaching a file to a message", () => {
     for (const _ of [0, 1]) await choose("index.tsx");
 
     expect(screen.getAllByTestId("attached-file")).toHaveLength(1);
+  });
+});
+
+/**
+ * A file attached to a *chat* turn has to reach the model.
+ *
+ * It did not. `promptToSend` — the prompt with the file's text folded into it —
+ * was built on both paths, but only the agent path used it; the chat path sent
+ * the transcript's own copy, which deliberately holds no file text. So a dragged
+ * file was a chip the assistant could not see, and it answered "since no specific
+ * file has been mentioned", which is exactly what it had been handed. The send
+ * path had no test at all, which is how that survived.
+ */
+describe("a file attached to a chat turn", () => {
+  const TREE = [
+    {
+      name: "src",
+      path: "/work/acsa-code/src",
+      is_dir: true,
+      size_bytes: 0,
+      children: [
+        { name: "index.tsx", path: "/work/acsa-code/src/index.tsx", is_dir: false, size_bytes: 12 },
+      ],
+    },
+  ];
+
+  /** Attach a file, type a question, and send it — a model that cannot call tools,
+   *  so the turn takes the chat path. */
+  const attachAskAndSend = async () => {
+    model.canRun = { [LOCAL_CHAT_MODEL.model]: false };
+    model.initial = LOCAL_CHAT_MODEL;
+    model.list = [LOCAL_CHAT_MODEL];
+    (streamChatCompletion as unknown as { mockClear: () => void }).mockClear();
+
+    render(<AiAssistantChat {...baseProps} projectRoot="/work/acsa-code" projectFiles={TREE as never} />);
+
+    fireEvent.click(screen.getByTitle(/Add Context/));
+    fireEvent.click(screen.getByTestId("add-context-files"));
+    const options = await screen.findAllByTestId("file-option");
+    const option = options.find((node) => node.textContent?.includes("index.tsx"));
+    if (!option) throw new Error("no file option for index.tsx");
+    fireEvent.click(option);
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "explain this file" } });
+    fireEvent.click(screen.getByTitle("Run Agent (Enter)"));
+  };
+
+  const sentMessages = () => {
+    const calls = (streamChatCompletion as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    const params = calls.at(-1)?.[0] as { messages: Array<{ content: string }> };
+    return params.messages;
+  };
+
+  it("sends the file's text, not only the chip", async () => {
+    await attachAskAndSend();
+
+    await waitFor(() => expect(streamChatCompletion).toHaveBeenCalled());
+    const last = sentMessages().at(-1);
+    expect(last?.content).toContain("explain this file");
+    expect(last?.content).toContain("export const x = 1;"); // the file's text
+    expect(last?.content).toContain("index.tsx"); // and which file it is
+  });
+
+  it("keeps the file's text out of the transcript", async () => {
+    // The chips above the message are what a reader should see, not a wall of the
+    // file they attached.
+    await attachAskAndSend();
+
+    await waitFor(() => expect(streamChatCompletion).toHaveBeenCalled());
+    expect(screen.queryByText(/export const x = 1;/)).toBeNull();
+    expect(screen.getByText("explain this file")).toBeTruthy();
   });
 });
