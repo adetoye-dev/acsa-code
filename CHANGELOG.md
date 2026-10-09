@@ -17,6 +17,274 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.30] - 2026-10-07
+
+### Fixed
+
+- **A file dragged into the composer reaches the model in ask mode.** It showed as
+  a chip in the transcript and went no further. The prompt with the file's text
+  folded into it was built for both paths, and only the agent path used it — so a
+  chat turn carried the transcript's own copy, which deliberately holds no file
+  text, and the assistant replied "since no specific file has been mentioned",
+  which is exactly what it had been handed. Attaching a file worked in agent mode
+  and was silently dropped in ask mode.
+
+## [0.2.29] - 2026-10-07
+
+### Added
+
+- **Ask mode reads your code now.** A chat turn used to carry a *map* of the
+  project — LOC, frameworks, the names of 35 symbols — and not one line of code. A
+  hosted frontier model can sometimes bluff past that; a small local model cannot,
+  so it answered generically about a repository it had never seen. That is what
+  "local models give generic answers" was. The turn now carries the file you have
+  open (or the part you have selected) and the files your question points at,
+  found by searching the project's contents and ranked so a rare word like `gh`
+  outweighs a common one like `path`. Snippets, not whole files, and inside a
+  budget — a local model's window cannot take a 60 KB dump. When nothing matched,
+  the model is told to say so rather than invent project detail.
+
+## [0.2.28] - 2026-10-07
+
+### Added
+
+- **Files can be attached to a chat message, from the explorer or from a picker.**
+  The **Mentions** entry in the composer's `+` menu typed an `@` that nothing
+  handled, so the only way to point the assistant at a file was to describe it and
+  hope. It is **Files** now: a filterable list of the project's files, and a file
+  row can also be dragged straight from the explorer onto the composer. What is
+  attached shows as a removable chip above the input — and again in the transcript,
+  on the message it went with — while the file's text travels in the prompt, read
+  from disk at the moment the message is sent rather than when it was attached. A
+  message carries at most 60 KB of files, and a file that crosses that line arrives
+  shortened and labelled, so a model is never quietly handed the start of a file and
+  left to answer as though it had read the end.
+
+### Changed
+
+- **The model picker lists every model, and a chat-only one still works.** It used
+  to filter out the models that cannot call tools and print "· 2 hidden" — hiding
+  exactly the models a reader might want, a local one or a free one, and saying
+  nothing about why. Every configured model is listed now. Pick one that cannot
+  call tools and the turn runs as a chat instead: agent and plan both need a model
+  that calls tools, so running them anyway read files and answered without
+  changing anything.
+- **A capability switch is the app's business, not the mode chip's.** That
+  downgrade used to *move the reader's mode* — the chip flipped to ask mode, which
+  is a control they can cancel, putting them back in a mode the model cannot run at
+  all. The chip now only ever shows a mode the reader chose; the downgrade happens
+  at the moment of sending and is not surfaced as something to undo. The model menu
+  says what the turn will do, in a sentence, instead of pushing them at a different
+  model.
+- **The editor wraps long lines by default instead of clipping them.** The editor
+  lives in a pane the assistant dock narrows, so a line that runs past its right
+  edge is the common case, not the exception — and a line cut off 15px from the dock
+  reads as the dock having eaten it. Anyone who prefers it clipped still has the
+  setting; the default only changes for a setting that has never been touched.
+
+- **The assistant dock can be dragged, and it remembers where you put it.** It was
+  a `clamp()` — always 30% of the window, with no way to argue — so on a laptop the
+  editor was left about 790px and a file with longer lines was clipped by the
+  editor's own viewport (`wordWrap` is off by default). That reads as the assistant
+  cutting the code off, and the only remedy was to close the dock. Dragging its left
+  edge moves the split and the width is kept. To be clear about what was *not*
+  happening: the editor was never being covered: its scrollbar, its minimap and the
+  review markers on its right edge all sit immediately beside the dock, which is
+  how you can tell the pane is the width it should be.
+- **The dependency gate can fail for a reason again.** It was a bare
+  `npm audit --audit-level=high`, and it had been red on every push — not because
+  anything regressed, but because advisories published since have no fix at that
+  level: `braces`, a denial of service in a glob matcher reached only through
+  Tailwind 3's build-time file watcher, has no released version outside the
+  vulnerable range, so the only way to satisfy the old gate was to cross a breaking
+  Tailwind upgrade. A gate that can only be satisfied by breaking something gets
+  ignored, which is how it ends up unwired — so the level is unchanged, and the one
+  unfixable advisory is now named in `scripts/audit_gate.mjs` with the reason it is
+  safe to carry. A *new* high or critical still fails, a carried advisory that stops
+  being reported fails too, and the lockfile's `source-map-js` was moved to the
+  patched 1.2.2 on the way through.
+
+### Fixed
+
+- **The shell builds off macOS again.** File ▸ Open File… added an AppleScript
+  helper that is gated to macOS, beside a caller that was deliberately left
+  ungated so the script it builds could be tested — which stopped the Rust shell
+  compiling at all on Linux, and would have stopped Windows for the same reason.
+  Both are gated the same way now, with `test` allowed so the script stays under
+  test everywhere. CI had not seen it because the dependency gate above failed
+  first and the job stopped before the Rust step ran; narrowing that gate is what
+  surfaced this.
+- **The repository page finds `gh` where the app actually put it.** It read "The
+  GitHub CLI (gh) is not installed" on machines where `gh` was installed and signed
+  in — every client's, and this one — because the check was `shutil.which`, which
+  reads PATH, and a window launched from the Dock is given launchd's PATH rather
+  than the one from the user's shell profile. Homebrew's `/opt/homebrew/bin` is not
+  in it, and that is exactly where this app's own advice (`brew install gh`) puts
+  the binary. The command was also run by the bare name and re-resolved against the
+  same PATH, so the second half of the mistake hid the first. A shared lookup now
+  tries PATH, then the install directories the common package managers use — and
+  Ollama uses it too, where a copy in `~/.local/bin` had been invisible for the
+  same reason.
+- **A tooltip in the editor is no longer cut off at the pane's edge.** Hover,
+  suggest and parameter-hint widgets are absolutely positioned inside Monaco, and
+  every editor pane carries `overflow: hidden` — so a widget reaching past the
+  pane's right edge was clipped exactly there and its text was cut mid-word
+  ("…: Reco"). It looks like the tooltip is running into the chat panel; it is
+  the editor's own boundary hiding it. The editors now render those widgets in a
+  viewport-anchored layer the pane cannot clip. Measured in a browser at this
+  app's pane width, the same hover went from 599px→1351px with the pane ending at
+  955px, to fully readable past that edge.
+
+## [0.2.27] - 2026-10-06
+
+### Added
+
+- **The File menu has the operations a Mac app is expected to have in it.** File
+  offered "Close Window" and nothing else — Tauri's default — so opening a file or a
+  folder meant finding the button for it somewhere in the workbench. It now opens with
+  **Open File… (⌘O)**, **Open Folder… (⇧⌘O)**, **Save (⌘S)** and **Save All (⌥⌘S)**,
+  and each of them runs the same function the command palette calls rather than a
+  second implementation of it. Open File… starts its panel in the project — where the
+  file is, and the only place the reader is allowed to read from. The standard menus
+  are untouched: the default menu is kept, and these items are inserted into it.
+
+### Changed
+
+- **The Performance panel no longer draws a machine it has not measured.** With
+  telemetry offline it showed a full, plausible host — 15% CPU, 88% memory, 926.4 GB of
+  disk, "341 MB reclaimable", and a badge reading "Optimal Health" — all of it literals
+  in the component. An unmeasured value is a dash now, the badge says "No Reading", and
+  the workspace panel says it has measured nothing. Those fabricated storage numbers
+  were also what hid the wire mismatch in the CPU and RAM columns: a missing field
+  fell back to the previous value, and the previous value was an example.
+- **The runtime line has a supplier.** `Node · Vite · Python` read three fields nothing
+  produced, so it said `unknown` on every machine. The engine now reports its own
+  interpreter and the host's Node — a packaged build carries an embedded Python, so the
+  engine is the only honest source — and the bundler version is captured at build time,
+  where it is a fact rather than a guess.
+- **The file tree shows the dotfiles you actually work in.** The rule was "skip
+  anything starting with a dot", which hid `.env`, `.gitignore`, `.github/` and
+  `.vscode/` — files a developer opens constantly — in order to avoid walking caches.
+  The caches are named now (`.git`, `.next`, `.turbo`, `.pnpm-store` and the like), so
+  `.env` is visible while a tree of generated files still is not.
+- **TypeScript files are given the project, so an import resolves rather than being
+  hidden.** The editor's TypeScript worker is a Web Worker with no filesystem, so an
+  import could only resolve to a file it had been handed — which is why the two "cannot
+  find module" diagnostics were suppressed, and why a misspelled import was as invisible
+  as a correct relative path. The worker is now handed the project's own source files,
+  the type entry of every package the project declares, and the project's own tsconfig:
+  `./pagination.js` finds `pagination.ts`, `expo-router` resolves, and `paths` aliases
+  work. With that in place the suppression is gone, so an import that really cannot be
+  resolved is reported again.
+- **Choosing a model that can only chat turns ask mode on, and says why.** Agent and
+  plan runs need a model that calls tools, so a local model the daemon reports as
+  having no tool support could only read files and answer without changing anything.
+  The model menu warned about that and offered a different model — the wrong way
+  round, since the model is the thing you chose, often because it is free and stays
+  on your machine. The mode moves instead, the chip that appears explains itself on
+  hover, and turning agent back on afterwards is left alone rather than undone.
+- **…and it is handed back when you pick a model that can run it.** Ask mode in that
+  case is the app's doing, so choosing a capable model restores the mode the switch
+  took. A mode you set yourself is never overruled.
+
+- **The Performance page's CPU and RAM columns show numbers again, and its host line
+  names the host.** Three shell structs serialise their fields in `snake_case`
+  (`cpu_percent`, `size_mb`) while the page reads them in `camelCase`, so those fields
+  arrived `undefined`: the process table rendered `%` and `MB` with nothing in front of
+  them, and the host line read `ACSA Local Engine (unknown unknown)` on every machine.
+  The storage numbers had drifted the same way and were *hidden* rather than visible —
+  the page keeps the previous value when a field is missing, and the previous value was
+  a hardcoded example, so an invented "341 MB reclaimable" looked like a reading. All
+  three are aligned, the host line gets its real values, and
+  `tests/test_wire_contract.py` now compares the two sides of the boundary: a field the
+  frontend declares without a `?` has to be one the shell actually sends.
+### Fixed
+
+- **A review card keeps all of its text when the editor gets narrower.** The cards
+  live in Monaco view zones, and a zone is applied with a height that is only right
+  for the width it was measured at. Opening the chat dock narrows the editor, a card
+  whose text needs another line becomes taller than its zone, and its last line was
+  clipped — the sentence stopping mid-way, which stayed that way through window
+  resizes because nothing asked for a new measurement. The heights are re-measured on
+  Monaco's layout change now, the same way they already were on scroll.
+
+- **TypeScript files stop reporting errors that are not there.** Monaco 0.57 moved
+  its TypeScript API, and the configuration that sets the compiler options and
+  suppresses module-resolution diagnostics was reading the old location — so it
+  silently did nothing and the worker fell back to its own defaults. Every `.ts`
+  file showed `Cannot find module … (2792)` and a `.tsx` file was underlined end to
+  end for want of a `--jsx` flag, while the same files were clean in other editors.
+  It now applies, and says so out loud if the API moves again.
+- **The file tree no longer stops five folders down.** Projects laid out like
+  `apps/api/migrations/app/<migration>/` showed `(empty folder)` for folders that
+  had files, because the walk had a hard depth cap of 5. The cap is a backstop now
+  rather than a limit, and a symlink pointing back up the tree is recognised
+  instead of being walked into.
+- **An update that cannot install says why, and offers a way through.** Opened from
+  the Downloads folder or straight out of the disk image, macOS runs ACSA Code from
+  a read-only copy — and an app in a read-only place cannot replace itself, so the
+  update died with `Read-only file system (os error 30)`. That names no cause and
+  offers no next step, which is where the reports came from. It now explains which
+  copy you are running, tells you to move it into Applications, and links the
+  release page so there is a way forward either way.
+
+## [0.2.26] - 2026-10-06
+
+### Added
+
+- **ACSA Code installs Ollama for you.** Setting up a local model used to send you
+  to a website: the wizard's install step told you to go and get Ollama yourself,
+  and the only way to continue was to come back once you had. It now fetches
+  Ollama's own release — about 190 MB on macOS — unpacks it into the app's own data
+  folder and starts it. No administrator password, nothing written outside that
+  folder, no installer to click through and no `curl | sh`.
+- **A run going in circles is stopped, and told which way.** Beyond the clock, an
+  agent turn is now bounded by repetition — the same action five times is a loop —
+  and by a 60-step backstop, about double the longest legitimate run measured here.
+  Whichever fires, the turn stops through the same path as the Stop button, and
+  OUTPUT names the repeated action or the count instead of saying only that we
+  intervened. A turn waiting on your approval counts against neither.
+
+### Changed
+
+- **The interface type is larger.** The scale started at 9px and the app leaned on
+  the bottom of it: badges, metadata and status lines were set at 9–11px, below the
+  12px most interfaces start at. Nothing renders below 11px now. This is the
+  interface around your code, not your code — the editor and terminal keep their own
+  font settings.
+- **The setup wizard explains the model it has already chosen.** Its last step said
+  "Select Local Model to Download" above a dropdown that arrived filled in. It now
+  names the memory it measured, the model that follows from it and why, and it
+  disappears once the download starts, with the download named in its place.
+
+### Fixed
+
+- **The local-model page no longer offers downloads there is nowhere to put.** With
+  Ollama absent or stopped the page showed the whole catalogue, and clicking Pull
+  was how you found out. The catalogue and the installed-models list now appear only
+  once the daemon answers; before that the page offers to install it, or to start it.
+- **A model whose allowance cannot fit one turn is no longer offered for agent
+  runs.** Groq's free tier answers a real run with 413 — 8,000 tokens per minute
+  against an 18,000-token request — which trimming cannot fix, because every run
+  fails the same way. The refusal is remembered for the session, so the model drops
+  out of the agent and plan lists with the picker's existing hidden count, while chat
+  still offers it.
+- **A per-minute token cap no longer reads like a context window.** The two look
+  alike and are opposites: one means the conversation is too long, the other that a
+  single request exceeds the tier's entire allowance and no retry will help. The
+  message says which, and points at what does.
+- **The plan note is on the reply it belongs to.** It was written into the message
+  once, at finalisation, so it depended on the plan file's write having finished and
+  could be missing altogether. It renders from the same state as the Implement
+  button beside it now.
+- **A failed usage write says why.** Metering is best-effort and must never fail a
+  run, which it does not — but it was also silent, and a missing usage row with no
+  reason is undiagnosable. The reason reaches the OUTPUT panel.
+- **Marketplace item names are no longer crushed to a single letter.** A
+  fixed-width trust badge shared a row with the name, and the name — the only
+  shrinkable child — absorbed the whole squeeze once the assistant was docked. The
+  badge wraps to its own line instead.
+
 ## [0.2.25] - 2026-09-29
 
 ### Fixed
@@ -402,7 +670,12 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.25...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.30...dev
+[0.2.30]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.29...v0.2.30
+[0.2.29]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.28...v0.2.29
+[0.2.28]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.27...v0.2.28
+[0.2.27]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.26...v0.2.27
+[0.2.26]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.25...v0.2.26
 [0.2.25]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.24...v0.2.25
 [0.2.24]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.23...v0.2.24
 [0.2.23]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.22...v0.2.23

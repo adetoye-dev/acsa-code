@@ -22,6 +22,9 @@ import {
 } from "../../services/aiAutocomplete";
 import { reviewFile, isReviewableFile, type ReviewIssue } from "../../services/aiReview";
 import { configureMonacoTypeScript } from "../../services/monacoTsConfig";
+import { useRemeasureOnLayout } from "../../hooks/useRemeasureOnLayout";
+import { PANE_EDITOR_OPTIONS } from "../../services/monacoPaneOptions";
+import { syncProjectFiles } from "../../services/monacoProjectFiles";
 import { applyMonacoTheme } from "../../services/themeManager";
 import { getAutoSelectedLocalWorker, resolveEditorAiConfig } from "../../services/aiModelManager";
 import type { AISettings } from "../SettingsModal";
@@ -99,8 +102,14 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
       renderLineHighlightOnlyWhenFocus: false,
       tabSize: aiSettings?.tabSize ?? 4,
       insertSpaces: aiSettings?.insertSpaces ?? true,
-      wordWrap: aiSettings?.wordWrap ? ("on" as const) : ("off" as const),
-      automaticLayout: true,
+      // Wrap unless the reader turned it off. The editor lives in a pane that the
+      // assistant dock narrows, so a line that runs past its edge is the common
+      // case rather than the exception — and a clipped line reads as the dock
+      // having eaten it. `undefined` means the setting has never been touched.
+      wordWrap: aiSettings?.wordWrap === false ? ("off" as const) : ("on" as const),
+      // `automaticLayout` (resize) and `fixedOverflowWidgets` (a hover at the
+      // pane's edge is clipped otherwise) — see services/monacoPaneOptions.ts.
+      ...PANE_EDITOR_OPTIONS,
       scrollBeyondLastLine: false,
       minimap: { enabled: true, maxColumn: 80 },
       bracketPairColorization: { enabled: true },
@@ -143,7 +152,7 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
       fontLigatures: aiSettings?.enableLigatures ?? true,
       tabSize: aiSettings?.tabSize ?? 4,
       insertSpaces: aiSettings?.insertSpaces ?? true,
-      wordWrap: aiSettings?.wordWrap ? "on" : "off",
+      wordWrap: aiSettings?.wordWrap === false ? "off" : "on",
     });
   }, [
     aiSettings?.fontSize,
@@ -270,6 +279,15 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
 
   // ── ACSA file review ──────────────────────────────────────────────────
   const [reviewIssues, setReviewIssues] = useState<ReviewIssue[]>([]);
+  /**
+   * The editor instance, as state rather than only a ref.
+   *
+   * A ref does not re-render, so an effect that reads one on mount sees `null` and
+   * never runs again: the re-measure-on-scroll below was wired that way, and only
+   * worked once something else happened to re-render first. Anything that has to
+   * subscribe to the editor can key off this.
+   */
+  const [editorInstance, setEditorInstance] = useState<MonacoType.editor.IStandaloneCodeEditor | null>(null);
   const [isReviewing, setIsReviewing] = useState(false);
   const [reviewError, setReviewError] = useState("");
   const [reviewNote, setReviewNote] = useState("");
@@ -758,7 +776,7 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
 
   // Zones scrolled into view were never measurable while hidden; size them now.
   useEffect(() => {
-    const editor = editorRef.current;
+    const editor = editorInstance;
     if (!editor) return;
     let timer: number | undefined;
     const subscription = editor.onDidScrollChange(() => {
@@ -771,7 +789,16 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
       if (timer) window.clearTimeout(timer);
       subscription.dispose();
     };
-  }, [measureVisibleZones, threadIsCollapsed]);
+  }, [editorInstance, measureVisibleZones, threadIsCollapsed]);
+
+  // …and, for the same reason, when the editor's *width* changes: a card's zone
+  // is applied with a height that is only right for the width it was measured at,
+  // so narrowing the editor clips the last line of any card that wrapped.
+  useRemeasureOnLayout(
+    editorInstance,
+    measureVisibleZones,
+    () => setZoneEpoch((epoch) => epoch + 1),
+  );
 
   // Highlight each finding's line and let the gutter glyph toggle its thread.
   const decorationIdsRef = useRef<string[]>([]);
@@ -837,9 +864,14 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
     // The TypeScript contribution (and its worker) only exists once a JS/TS
     // model has been created, so configure it here rather than in beforeMount.
     configureMonacoTypeScript(monaco, projectRoot);
+    // Then give the worker the project, so an import resolves to a real file
+    // instead of being reported as missing. Deliberately not awaited: the editor
+    // is usable while it lands, and it is cached per project.
+    void syncProjectFiles(monaco, projectRoot);
 
     editorRef.current = editor;
     monacoRef.current = monaco;
+    setEditorInstance(editor);
 
     selectionDisposableRef.current = editor.onDidChangeCursorSelection(() => {
       const selection = editor.getSelection();

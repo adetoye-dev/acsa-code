@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex};
 use sysinfo::System;
+use tauri::menu::{Menu, MenuItemBuilder, MenuItemKind, PredefinedMenuItem};
 use tauri::{Emitter, Manager, State};
 
 // ── Data Structures ─────────────────────────────────────────────────────────
@@ -39,6 +40,16 @@ pub struct PipelineOutputLine {
 /// Host system metrics snapshot.
 #[derive(Debug, Clone, Serialize)]
 pub struct SystemMetrics {
+    /// The host, as the Performance panel names it: `ACSA Local Engine (macos
+    /// aarch64)`. The page has read `platform` and `architecture` since it was
+    /// written and this struct never sent them, so that line read
+    /// `(unknown unknown)` on every machine. Optional in the type, which is why
+    /// nothing failed — see `tests/test_wire_contract.py`.
+    pub platform: String,
+    pub architecture: String,
+    /// Logical cores. The page asks for `cpu_count`; this struct sent only
+    /// `cpu_count_physical` and `cpu_count_logical`.
+    pub cpu_count: usize,
     pub cpu_usage_percent: f32,
     pub cpu_count_physical: usize,
     pub cpu_count_logical: usize,
@@ -67,11 +78,68 @@ pub struct FileNode {
     pub path: String,
     pub is_dir: bool,
     pub size_bytes: u64,
+    /// Last write time, ms since the epoch.
+    ///
+    /// The editor mirrors project files into Monaco's TypeScript worker and skips
+    /// the ones it already has. Size alone cannot see an edit that kept the same
+    /// length — a rename to an equal-length identifier — so a stale copy of a file
+    /// would go on answering imports. Zero when the platform cannot say.
+    pub modified_ms: u64,
     pub children: Option<Vec<FileNode>>,
 }
 
-fn build_file_tree(dir: &std::path::Path, max_depth: usize) -> Vec<FileNode> {
-    if max_depth == 0 || !dir.is_dir() {
+/// How deep the tree walk goes.
+///
+/// It was 5, which is under `apps/api/migrations/app/<migration>/` — so a real
+/// project's migration folders rendered as "(empty folder)" while every other
+/// editor listed their contents, and the user's report was exactly that: "we stop
+/// reading into those multi-level folders".
+///
+/// A depth cap cannot be picked well here. Anything shallow enough to bound a
+/// pathological tree is shallow enough to hide an ordinary path in a monorepo, and
+/// the number says nothing about why it was chosen. 64 is not a policy, it is a
+/// backstop for the one case a cycle check cannot see — a filesystem that invents
+/// new paths forever. What actually bounds the walk is the ignore list.
+const MAX_TREE_DEPTH: usize = 64;
+
+/// Directories the explorer never walks into.
+///
+/// This used to be "anything whose name starts with a dot", which is how `.env`,
+/// `.gitignore`, `.github/` and `.vscode/` became invisible — files a developer
+/// opens and edits constantly, hidden to avoid descending into caches. Naming the
+/// caches keeps what the rule was for (never walking thousands of generated files)
+/// without hiding the dotfiles people actually work in.
+///
+/// Deliberately not here: `build`, `coverage`, `out`. Every one of those is a
+/// plausible *source* directory in some project, and the whole complaint this
+/// replaces was a tree that hid things the user could see elsewhere.
+const IGNORED_DIRS: [&str; 16] = [
+    // Dependencies and build output.
+    "node_modules",
+    "__pycache__",
+    "target",
+    "dist",
+    "venv",
+    ".venv",
+    // Version control, package stores and tool caches.
+    ".git",
+    ".pnpm-store",
+    ".cache",
+    ".turbo",
+    ".next",
+    ".nuxt",
+    ".svelte-kit",
+    ".gradle",
+    ".dart_tool",
+    ".pytest_cache",
+];
+
+fn build_file_tree(
+    dir: &std::path::Path,
+    depth: usize,
+    visited: &mut std::collections::HashSet<PathBuf>,
+) -> Vec<FileNode> {
+    if depth == 0 || !dir.is_dir() {
         return Vec::new();
     }
 
@@ -81,27 +149,39 @@ fn build_file_tree(dir: &std::path::Path, max_depth: usize) -> Vec<FileNode> {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
 
-            // Ignore hidden and heavy build dirs
-            if name.starts_with('.')
-                || name == "node_modules"
-                || name == "__pycache__"
-                || name == "target"
-                || name == "dist"
-                || name == ".venv"
-                || name == "venv"
-            {
+            let is_dir = path.is_dir();
+            // Directories only, and by name. A *file* called `dist` or a directory
+            // called `.config` is something the user put there; hiding entries by
+            // name is how `.env` came to be invisible.
+            if is_dir && IGNORED_DIRS.contains(&name.as_str()) {
                 continue;
             }
 
-            let is_dir = path.is_dir();
+            let metadata = entry.metadata().ok();
             let size_bytes = if is_dir {
                 0
             } else {
-                entry.metadata().map(|m| m.len()).unwrap_or(0)
+                metadata.as_ref().map(|m| m.len()).unwrap_or(0)
             };
+            let modified_ms = metadata
+                .as_ref()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
 
             let children = if is_dir {
-                Some(build_file_tree(&path, max_depth - 1))
+                // A symlink pointing at one of its own ancestors is a cycle. Without
+                // this the walk either recurses forever or — with a cap — fills the
+                // tree with copies of the same folder. Canonicalising is the only
+                // way to see that two paths are one directory; a failure to resolve
+                // falls back to the path itself, which is the old behaviour.
+                let real = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                if visited.insert(real) {
+                    Some(build_file_tree(&path, depth - 1, visited))
+                } else {
+                    Some(Vec::new())
+                }
             } else {
                 None
             };
@@ -111,6 +191,7 @@ fn build_file_tree(dir: &std::path::Path, max_depth: usize) -> Vec<FileNode> {
                 path: path.to_string_lossy().to_string(),
                 is_dir,
                 size_bytes,
+                modified_ms,
                 children,
             });
         }
@@ -200,7 +281,13 @@ fn list_project_files(project_path: String) -> Result<Vec<FileNode>, String> {
     if !path.exists() {
         return Err(format!("Directory does not exist: {}", project_path));
     }
-    Ok(build_file_tree(&path, 5))
+    // The root goes in first, so a link anywhere below that points back at it is
+    // recognised rather than walked again.
+    let mut visited = std::collections::HashSet::new();
+    if let Ok(real) = std::fs::canonicalize(&path) {
+        visited.insert(real);
+    }
+    Ok(build_file_tree(&path, MAX_TREE_DEPTH, &mut visited))
 }
 
 #[tauri::command]
@@ -441,7 +528,12 @@ fn pick_folder() -> Result<Option<String>, String> {
 }
 
 /// Escape a string for use inside an AppleScript double-quoted literal.
-#[cfg(target_os = "macos")]
+///
+/// Gated to macOS because only macOS speaks AppleScript — but `test` is allowed
+/// too, because `open_file_panel_script` below is built and asserted on every
+/// platform, and a helper that exists only on the machine that runs the panel
+/// leaves the script unbuildable everywhere else.
+#[cfg(any(target_os = "macos", test))]
 fn applescript_literal(text: &str) -> String {
     text.replace('\\', "\\\\").replace('"', "\\\"")
 }
@@ -524,17 +616,38 @@ fn pick_save_file(default_name: String, prompt: String) -> Result<Option<String>
     }
 }
 
-/// Ask the user for an existing file to read — the import half of a backup.
+/// The AppleScript that asks for a file, and where its panel opens.
+///
+/// Its own function because both halves come from the page: an unescaped quote in
+/// either turns the script into a different script, which is the same reason
+/// `applescript_literal` exists. Testable here, unlike the call itself, because the
+/// call opens a window on someone's screen.
+#[cfg(any(target_os = "macos", test))]
+fn open_file_panel_script(prompt: &str, default_dir: Option<&str>) -> String {
+    // Where the panel opens depends on what is being opened. A backup import
+    // starts at the Desktop, because a bundle exported there is where the next
+    // import should look. Opening a file in the editor starts in the project — a
+    // panel that opens at the Desktop for that is a dozen clicks away from the
+    // file the reader wants, and anything picked outside the project root comes
+    // back as a refusal rather than as a tab.
+    let location = match default_dir.map(str::trim).filter(|dir| !dir.is_empty()) {
+        Some(dir) => format!(" default location (POSIX file \"{}\")", applescript_literal(dir)),
+        None => " default location (path to desktop folder)".to_string(),
+    };
+    format!(
+        "POSIX path of (choose file with prompt \"{}\"{})",
+        applescript_literal(prompt),
+        location,
+    )
+}
+
+/// Ask the user for an existing file to read — the import half of a backup, and
+/// the editor's File ▸ Open File….
 #[tauri::command]
-fn pick_open_file(prompt: String) -> Result<Option<String>, String> {
+fn pick_open_file(prompt: String, default_dir: Option<String>) -> Result<Option<String>, String> {
     #[cfg(target_os = "macos")]
     {
-        // Same starting point as the save panel, so a backup exported to the
-        // Desktop is where the next import looks for it.
-        let script = format!(
-            "POSIX path of (choose file with prompt \"{}\" default location (path to desktop folder))",
-            applescript_literal(&prompt)
-        );
+        let script = open_file_panel_script(&prompt, default_dir.as_deref());
         let output = std::process::Command::new("osascript")
             .arg("-e")
             .arg(&script)
@@ -549,7 +662,7 @@ fn pick_open_file(prompt: String) -> Result<Option<String>, String> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = prompt;
+        let _ = (prompt, default_dir);
         Ok(None)
     }
 }
@@ -1680,6 +1793,9 @@ fn fetch_system_metrics(state: State<'_, AppState>) -> Result<SystemMetrics, Str
     };
 
     Ok(SystemMetrics {
+        platform: std::env::consts::OS.to_string(),
+        architecture: std::env::consts::ARCH.to_string(),
+        cpu_count: cpu_count_logical,
         cpu_usage_percent: (cpu_usage * 10.0).round() / 10.0,
         cpu_count_physical: physical_cores,
         cpu_count_logical,
@@ -1764,7 +1880,16 @@ fn round1(value: f64) -> f64 {
     (value * 10.0).round() / 10.0
 }
 
+/// Serialised as camelCase because the page reads `cpuPercent`/`memoryMb`: without
+/// it serde writes `cpu_percent`/`memory_mb`, the fields arrive `undefined`, and the
+/// row renders the unit with no number in front of it — which is how this was
+/// reported. These three are the structs whose frontend types are camelCase; the
+/// others across this boundary (`FileNode`, `SystemMetrics`, `PipelineOutputLine`)
+/// are snake_case on both sides and agree. `tests/test_wire_contract.py` compares
+/// all of them, because "the two sides agree" is not a thing to check by eye.
+
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StorageCategory {
     pub id: String,
     pub name: String,
@@ -1773,7 +1898,16 @@ pub struct StorageCategory {
     pub reclaimable_mb: f64,
 }
 
+/// Serialised as camelCase because the page reads `cpuPercent`/`memoryMb`: without
+/// it serde writes `cpu_percent`/`memory_mb`, the fields arrive `undefined`, and the
+/// row renders the unit with no number in front of it — which is how this was
+/// reported. These three are the structs whose frontend types are camelCase; the
+/// others across this boundary (`FileNode`, `SystemMetrics`, `PipelineOutputLine`)
+/// are snake_case on both sides and agree. `tests/test_wire_contract.py` compares
+/// all of them, because "the two sides agree" is not a thing to check by eye.
+
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StorageMetrics {
     pub total_gb: f64,
     pub free_gb: f64,
@@ -1784,7 +1918,16 @@ pub struct StorageMetrics {
     pub categories: Vec<StorageCategory>,
 }
 
+/// Serialised as camelCase because the page reads `cpuPercent`/`memoryMb`: without
+/// it serde writes `cpu_percent`/`memory_mb`, the fields arrive `undefined`, and the
+/// row renders the unit with no number in front of it — which is how this was
+/// reported. These three are the structs whose frontend types are camelCase; the
+/// others across this boundary (`FileNode`, `SystemMetrics`, `PipelineOutputLine`)
+/// are snake_case on both sides and agree. `tests/test_wire_contract.py` compares
+/// all of them, because "the two sides agree" is not a thing to check by eye.
+
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RunningProcessItem {
     pub pid: u32,
     pub name: String,
@@ -2442,16 +2585,19 @@ impl OllamaState {
     }
 }
 
-/// Download a model, streaming progress as `ollama:frame` events.
+/// Run an engine `ollama` subcommand and forward its NDJSON frames as
+/// `ollama:frame` events.
 ///
-/// A download is the one Ollama action that takes minutes and can fail halfway,
-/// so it needs the same streaming treatment as chat. The engine talks to
-/// Ollama's own `/api/pull`; this only forwards its frames.
-#[tauri::command]
-async fn ollama_pull(
-    app_handle: tauri::AppHandle,
-    state: State<'_, OllamaState>,
-    model: String,
+/// One helper for both heavy local-engine jobs — pulling a model and installing
+/// the engine — because a download that takes minutes and can fail halfway
+/// needs the same streaming treatment either way, and they report the same
+/// frame shape. They also share the one cancellation slot: an install and a pull
+/// are both multi-hundred-megabyte transfers, and running two at once is not
+/// something a user wants to discover.
+fn spawn_ollama_stream(
+    app_handle: &tauri::AppHandle,
+    state: &OllamaState,
+    args: &[String],
 ) -> Result<(), String> {
     if let Some(mut previous) = state.child.lock().map_err(|e| e.to_string())?.take() {
         let _ = previous.kill();
@@ -2459,8 +2605,7 @@ async fn ollama_pull(
 
     let resource_dir = app_handle.path().resource_dir().ok();
     let (program, mut argv) = engine_invocation(resource_dir.as_deref(), "ollama");
-    argv.push("pull".to_string());
-    argv.push(format!("{{\"model\":\"{}\"}}", model));
+    argv.extend(args.iter().cloned());
 
     let mut child = Command::new(&program)
         .args(&argv)
@@ -2468,16 +2613,16 @@ async fn ollama_pull(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("could not start the download ({}): {}", program.display(), e))?;
+        .map_err(|e| format!("could not start {} ({}): {}", argv.join(" "), program.display(), e))?;
 
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| "could not capture download output".to_string())?;
+        .ok_or_else(|| "could not capture engine output".to_string())?;
     let mut stderr = child
         .stderr
         .take()
-        .ok_or_else(|| "could not capture download errors".to_string())?;
+        .ok_or_else(|| "could not capture engine errors".to_string())?;
     *state.child.lock().map_err(|e| e.to_string())? = Some(child);
 
     let app_for_reader = app_handle.clone();
@@ -2500,6 +2645,37 @@ async fn ollama_pull(
     });
 
     Ok(())
+}
+
+/// Download a model, streaming progress as `ollama:frame` events.
+///
+/// The engine talks to Ollama's own `/api/pull`; this only forwards its frames.
+#[tauri::command]
+async fn ollama_pull(
+    app_handle: tauri::AppHandle,
+    state: State<'_, OllamaState>,
+    model: String,
+) -> Result<(), String> {
+    spawn_ollama_stream(
+        &app_handle,
+        &state,
+        &["pull".to_string(), format!("{{\"model\":\"{}\"}}", model)],
+    )
+}
+
+/// Fetch Ollama itself and unpack it into the app's own data directory.
+///
+/// The user should never have to leave the app, find the right build for their
+/// chip and drag it somewhere — that was the old behaviour, and it read as the
+/// app refusing to do its job. The engine downloads Ollama's own published
+/// release and unpacks it; no administrator password, nothing written outside
+/// the app's folder.
+#[tauri::command]
+async fn ollama_install(
+    app_handle: tauri::AppHandle,
+    state: State<'_, OllamaState>,
+) -> Result<(), String> {
+    spawn_ollama_stream(&app_handle, &state, &["install".to_string(), "{}".to_string()])
 }
 
 #[tauri::command]
@@ -4038,6 +4214,65 @@ async fn codex_exec(
 /// the same number.
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Give the File menu the operations a Mac app is expected to have in it.
+///
+/// Tauri's default menu is the platform one — the app menu, Edit with its
+/// clipboard items, Window, Help — and this app added nothing to it, so File
+/// offered "Close Window" and nothing else. Opening a file or a folder from the
+/// menu bar is not a nicety on macOS; it is where a reader looks first.
+///
+/// The default menu is *kept* and these items are inserted at the top of File,
+/// rather than a menu being built from scratch: the standard items are not ours to
+/// drop, and rebuilding them would be a second place for them to be wrong.
+///
+/// Each item raises an id the frontend already knows how to act on. That is the
+/// point — the menu is a second way into the same functions the command palette
+/// calls, not a second implementation of them.
+fn install_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
+    let menu = Menu::default(app)?;
+
+    let open_file = MenuItemBuilder::with_id("menu.open-file", "Open File…")
+        .accelerator("CmdOrCtrl+O")
+        .build(app)?;
+    let open_folder = MenuItemBuilder::with_id("menu.open-folder", "Open Folder…")
+        .accelerator("CmdOrCtrl+Shift+O")
+        .build(app)?;
+    let save = MenuItemBuilder::with_id("menu.save", "Save")
+        .accelerator("CmdOrCtrl+S")
+        .build(app)?;
+    // Option+Cmd+S, matching the editor convention: Shift+Cmd+S is "Save As"
+    // everywhere else, and this app has no Save As.
+    let save_all = MenuItemBuilder::with_id("menu.save-all", "Save All")
+        .accelerator("CmdOrCtrl+Alt+S")
+        .build(app)?;
+    let after_open = PredefinedMenuItem::separator(app)?;
+    let before_close = PredefinedMenuItem::separator(app)?;
+
+    let file = menu.items()?.into_iter().find_map(|item| match item {
+        MenuItemKind::Submenu(submenu) if submenu.text().ok().as_deref() == Some("File") => {
+            Some(submenu)
+        }
+        _ => None,
+    });
+
+    if let Some(file) = file {
+        file.insert_items(
+            &[
+                &open_file,
+                &open_folder,
+                &after_open,
+                &save,
+                &save_all,
+                &before_close,
+            ],
+            0,
+        )?;
+    }
+
+    app.set_menu(menu)?;
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(AppState {
@@ -4081,6 +4316,7 @@ fn main() {
             chat_stream,
             chat_cancel,
             ollama_pull,
+            ollama_install,
             ollama_cancel,
             codex_exec,
             agent_start,
@@ -4112,6 +4348,27 @@ fn main() {
                 "[ACSA Code] started. Engine dir: {:?}",
                 resolve_engine_dir(app.path().resource_dir().ok().as_deref())
             );
+
+            if let Err(error) = install_menu(app.handle()) {
+                // A menu that cannot be built is not a reason to refuse to start,
+                // but it is a reason to say so rather than to look like this app
+                // simply has no menu items.
+                eprintln!("[ACSA Code] could not install the application menu: {error}");
+            }
+
+            let menu_handle = app.handle().clone();
+            app.on_menu_event(move |_app, event| {
+                let action = match event.id().as_ref() {
+                    "menu.open-file" => "open-file",
+                    "menu.open-folder" => "open-folder",
+                    "menu.save" => "save",
+                    "menu.save-all" => "save-all",
+                    // Predefined items (Quit, Copy, Close Window) are handled by
+                    // the platform and arrive here too; they are not ours to act on.
+                    _ => return,
+                };
+                let _ = menu_handle.emit("acsa:menu", action);
+            });
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -4134,6 +4391,150 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn find_by_name<'a>(nodes: &'a [FileNode], name: &str) -> Option<&'a FileNode> {
+        for node in nodes {
+            if node.name == name {
+                return Some(node);
+            }
+            if let Some(children) = &node.children {
+                if let Some(found) = find_by_name(children, name) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+
+    fn walk(root: &std::path::Path) -> Vec<FileNode> {
+        let mut visited = std::collections::HashSet::new();
+        if let Ok(real) = std::fs::canonicalize(root) {
+            visited.insert(real);
+        }
+        build_file_tree(root, MAX_TREE_DEPTH, &mut visited)
+    }
+
+    /// File ▸ Open File… opens its panel in the project, and a backup import still
+    /// opens at the Desktop. The difference is the whole point of the argument, so
+    /// both are pinned — along with the escaping, because a quote in either string
+    /// would end the AppleScript literal and start another one.
+    #[test]
+    fn the_open_panel_starts_where_the_thing_being_opened_is() {
+        let in_project = open_file_panel_script("Open File:", Some("/Users/me/proj"));
+        assert!(in_project.contains("default location (POSIX file \"/Users/me/proj\")"));
+
+        let from_desktop = open_file_panel_script("Import backup:", None);
+        assert!(from_desktop.contains("default location (path to desktop folder)"));
+
+        // An empty or whitespace directory is the same as none: a panel told to
+        // open at "" would fail rather than fall back.
+        assert!(open_file_panel_script("p", Some("  ")).contains("path to desktop folder"));
+
+        let quoted = open_file_panel_script("He said \"hi\"", Some("/tmp/a \"b\""));
+        assert!(quoted.contains("prompt \"He said \\\"hi\\\"\""));
+        assert!(quoted.contains("POSIX file \"/tmp/a \\\"b\\\"\""));
+    }
+
+    /// The editor hands the reader two shapes and both have to work: absolute
+    /// paths straight from the file tree, and `node_modules/...` relative to the
+    /// project for a dependency's types. What must not change is the boundary —
+    /// `resolve_project_path` is what stops the page reading the rest of the disk,
+    /// so widening it for either shape would be a hole, not a fix.
+    #[test]
+    fn the_file_reader_accepts_both_path_shapes_and_still_refuses_to_escape() {
+        let root = scratch("resolve-shapes");
+        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        std::fs::write(root.join("src.ts"), "export const x = 1;").unwrap();
+        std::fs::write(root.join("node_modules/pkg/index.d.ts"), "export {};").unwrap();
+        let root_arg = root.to_string_lossy().to_string();
+
+        let absolute = root.join("src.ts").to_string_lossy().to_string();
+        assert!(resolve_project_path(&root_arg, &absolute).is_ok());
+        assert!(resolve_project_path(&root_arg, "node_modules/pkg/index.d.ts").is_ok());
+        assert!(resolve_project_path(&root_arg, "../outside.ts").is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The cap was 5, which is under `apps/api/migrations/app/<migration>/`. A
+    /// project laid out like that showed "(empty folder)" for folders every other
+    /// editor listed, which is what a user reported — the tree simply stopped.
+    #[test]
+    fn a_file_below_the_old_depth_cap_is_reached() {
+        let root = scratch("tree-depth");
+        let mut deep = root.clone();
+        for level in 0..8 {
+            deep = deep.join(format!("level{level}"));
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("buried.ts"), "export const x = 1;").unwrap();
+
+        let tree = walk(&root);
+        assert!(
+            find_by_name(&tree, "buried.ts").is_some(),
+            "the walk stopped before the file: {tree:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A link back up the tree is a cycle. Without the visited set the walk either
+    /// recurses until the stack goes, or fills the tree with copies of itself.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_back_up_the_tree_terminates() {
+        let root = scratch("tree-cycle");
+        let inner = root.join("a").join("b");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(inner.join("real.ts"), "export const x = 1;").unwrap();
+        std::os::unix::fs::symlink(&root, inner.join("back")).unwrap();
+
+        let tree = walk(&root);
+
+        assert!(find_by_name(&tree, "real.ts").is_some());
+        // The link is still listed — it is a real entry — but it is not walked into.
+        let back = find_by_name(&tree, "back").expect("the link should still be listed");
+        assert_eq!(back.children.as_ref().map(|c| c.len()), Some(0));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// What actually bounds the walk, now that depth no longer does.
+    #[test]
+    fn heavy_and_hidden_directories_are_not_walked() {
+        let root = scratch("tree-ignore");
+        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        std::fs::write(root.join("node_modules/pkg/index.js"), "module.exports = {}").unwrap();
+        std::fs::create_dir_all(root.join(".git/objects")).unwrap();
+        std::fs::write(root.join(".git/objects/ab12"), "binary").unwrap();
+        std::fs::create_dir_all(root.join(".next/server")).unwrap();
+        std::fs::write(root.join("visible.ts"), "export const x = 1;").unwrap();
+
+        let tree = walk(&root);
+
+        assert!(find_by_name(&tree, "visible.ts").is_some());
+        assert!(find_by_name(&tree, "node_modules").is_none());
+        assert!(find_by_name(&tree, "index.js").is_none());
+        assert!(find_by_name(&tree, ".git").is_none());
+        assert!(find_by_name(&tree, ".next").is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The rule was "skip anything starting with a dot", which hid the files a
+    /// developer opens most — `.env` above all. Only *named* caches are skipped.
+    #[test]
+    fn dotfiles_a_user_edits_are_listed() {
+        let root = scratch("tree-dotfiles");
+        std::fs::write(root.join(".env"), "API_KEY=1").unwrap();
+        std::fs::write(root.join(".gitignore"), "node_modules").unwrap();
+        std::fs::create_dir_all(root.join(".github/workflows")).unwrap();
+        std::fs::write(root.join(".github/workflows/ci.yml"), "on: push").unwrap();
+
+        let tree = walk(&root);
+
+        assert!(find_by_name(&tree, ".env").is_some(), "a project's .env must be visible");
+        assert!(find_by_name(&tree, ".gitignore").is_some());
+        assert!(find_by_name(&tree, "ci.yml").is_some(), "nested dot-directories are walked");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The relaunch derives the bundle from the resource directory, and a wrong

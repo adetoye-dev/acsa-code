@@ -27,6 +27,7 @@ import {
   type OllamaStatus,
   type OllamaProgressEvent,
 } from "../../services/ollamaSetup";
+import { openExternal } from "../../services/openExternal";
 import { setDefaultProvider, syncOllamaModels } from "../../services/aiModelManager";
 import { HashProgressBar } from "./HashProgressBar";
 
@@ -101,22 +102,25 @@ export function OllamaSetupWizard({ onClose, onComplete, asModal = true }: Ollam
   }
 
   async function runInstall() {
-    setIsBusy(true);
+    // Downloading Ollama is this app's job, not the user's. The engine fetches
+    // Ollama's own published release and unpacks it into the app's data folder —
+    // no administrator password, nothing written outside our own directory.
     setLogs([]);
+    setErrorMsg("");
+    setIsBusy(true);
     setProgressPercent(0);
-    setProgressStatus("Preparing Ollama installation…");
+    setProgressStatus("Starting the Ollama download…");
     try {
       await installOllama((evt: OllamaProgressEvent) => {
         setProgressPercent(evt.percent);
         setProgressStatus(evt.status);
         if (evt.log) addLog(evt.log);
       });
-      // After install, re-check status and move to start
-      const s = await checkOllamaStatus();
-      setStatus(s);
-      setStep("start");
+      addLog("✓ Ollama is installed.");
+      // Installed now — re-detect, which advances to starting the server.
+      await runDetect();
     } catch (err: any) {
-      setErrorMsg(err.message || "Installation failed.");
+      setErrorMsg(err.message || "Setup failed.");
       setStep("error");
     } finally {
       setIsBusy(false);
@@ -242,7 +246,9 @@ export function OllamaSetupWizard({ onClose, onComplete, asModal = true }: Ollam
             <div className="text-xs text-amber-200/90 leading-relaxed">
               <span className="font-semibold text-white">Ollama is not yet installed.</span>
               <p className="mt-0.5 text-zinc-300">
-                ACSA Code will download and configure Ollama directly without requiring root or administrator passwords.
+                ACSA Code will download Ollama and set it up for you — about 190 MB, no password
+                prompt, and nothing written outside the app&apos;s own folder. Then it starts the
+                server and downloads a model for you.
               </p>
               {status && status.totalRamGb > 0 && (
                 <div className="mt-1 text-2xs text-amber-300/80 font-mono">
@@ -256,7 +262,7 @@ export function OllamaSetupWizard({ onClose, onComplete, asModal = true }: Ollam
           {isBusy && (
             <HashProgressBar
               percent={progressPercent}
-              statusText={progressStatus || "Downloading & unpacking Ollama…"}
+              statusText={progressStatus || "Downloading Ollama…"}
             />
           )}
 
@@ -276,14 +282,23 @@ export function OllamaSetupWizard({ onClose, onComplete, asModal = true }: Ollam
           )}
 
           {!isBusy && (
-            <button
-              type="button"
-              onClick={runInstall}
-              className="flex items-center gap-2 w-full justify-center px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-xs font-bold text-white transition-colors shadow-sm"
-            >
-              <Icon icon={Download} className="w-3.5 h-3.5" />
-              Download & Install Ollama
-            </button>
+            <div className="space-y-2">
+              <button
+                type="button"
+                onClick={runInstall}
+                className="flex items-center gap-2 w-full justify-center px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-xs font-bold text-white transition-colors shadow-sm"
+              >
+                <Icon icon={Download} className="w-3.5 h-3.5" />
+                Install Ollama
+              </button>
+              <button
+                type="button"
+                onClick={() => void openExternal("https://ollama.com/download")}
+                className="w-full text-2xs text-zinc-400 hover:text-zinc-200 py-1.5 transition-colors text-center"
+              >
+                Already have it, or prefer to install it yourself? Open the download page
+              </button>
+            </div>
           )}
         </div>
       );
@@ -347,16 +362,27 @@ export function OllamaSetupWizard({ onClose, onComplete, asModal = true }: Ollam
 
       return (
         <div className="space-y-4">
+          {isBusy ? (
+            /* The field goes away rather than greying out. A disabled control
+               invites the user to try it; naming the download in plain words is
+               the honest thing to show, especially since the bar beneath it
+               reports Ollama's own status ("pulling 60e05f21…"), which does not
+               name the model at all. */
+            <p className="text-xs font-semibold text-zinc-300">
+              Downloading <span className="font-mono text-purple-300">{selectedModel}</span>
+            </p>
+          ) : (
           <div className="space-y-2">
-            <label htmlFor="ollamasetupwizard-select-local-model-to-download-1" className="text-xs font-semibold text-zinc-300">
-              Select Local Model to Download
-            </label>
-            {status && status.totalRamGb > 0 && (
-              <p className="text-2xs text-zinc-400">
-                System RAM: <span className="text-zinc-200 font-mono font-medium">{status.totalRamGb} GB</span> ·
-                Recommended: <span className="text-purple-400 font-mono font-semibold">{status.recommendedModel}</span>
-              </p>
-            )}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label htmlFor="ollamasetupwizard-select-local-model-to-download-1" className="text-xs font-semibold text-zinc-300">
+                Model to download
+              </label>
+              {status && status.totalRamGb > 0 && (
+                <span className="px-2 py-0.5 rounded-full text-3xs font-mono font-medium bg-purple-950/60 text-purple-300 border border-purple-500/30">
+                  Recommended for your PC
+                </span>
+              )}
+            </div>
             <select id="ollamasetupwizard-select-local-model-to-download-1"
               value={selectedModel}
               onChange={(e) => setSelectedModel(e.target.value)}
@@ -369,7 +395,31 @@ export function OllamaSetupWizard({ onClose, onComplete, asModal = true }: Ollam
                 </option>
               ))}
             </select>
+            {/* The conclusion, not just the control: what we found on this
+                machine, which model that led to, and what it buys them. Saying
+                "select a model" above a filled-in box hid all of that behind a
+                menu with a default nobody had explained. */}
+            <p className="text-2xs text-zinc-400 leading-relaxed">
+              {status && status.totalRamGb > 0 ? (
+                <>
+                  We detected{" "}
+                  <span className="text-zinc-200 font-mono font-medium">{status.totalRamGb} GB</span> of RAM,
+                  so we recommend{" "}
+                  <span className="text-purple-400 font-mono font-semibold">{status.recommendedModel}</span> —
+                  the best balance of capability and speed at that size. It runs fully offline and leaves the
+                  machine responsive.
+                </>
+              ) : (
+                <>
+                  Picked for this machine as the best balance of capability and speed — it runs fully offline
+                  and leaves the machine responsive.
+                </>
+              )}
+              {" "}
+              Prefer another? Change it above.
+            </p>
           </div>
+          )}
 
           {/* One-line loading hash bar during model pull */}
           {isBusy && (

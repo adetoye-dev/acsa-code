@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -112,12 +113,47 @@ def collect() -> dict:
     return _shorten(bundle, home) if len(home) > 1 else bundle
 
 
+def _probe_version(command: str, *args: str) -> str:
+    """The version a tool prints, or "" when it is not installed.
+
+    Not an error: Node is optional here, and the panel would rather say so than
+    show a version this machine does not have.
+    """
+    try:
+        completed = subprocess.run(
+            [command, *args], capture_output=True, text=True, timeout=5
+        )
+        return completed.stdout.strip().lstrip("v")
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def versions() -> dict:
+    """What this app runs on, for the Performance panel's runtime line.
+
+    The engine is the only part that knows its own interpreter: a packaged build
+    carries an embedded Python, so asking the *machine* for `python3 --version`
+    would report a version this app does not use, or nothing at all. Node is
+    probed rather than assumed, because the app does not run on Node — the version
+    that matters is whichever one an npx-based MCP server would get.
+    """
+    return {
+        "python": platform.python_version(),
+        "node": _probe_version("node", "--version"),
+        "platform": sys.platform,
+        "machine": platform.machine(),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     action = args[0] if args else "bundle"
 
+    if action == "versions":
+        print(json.dumps({"ok": True, "data": versions()}))
+        return 0
     if action != "bundle":
-        print(json.dumps({"ok": False, "error": "usage: support bundle <path>"}))
+        print(json.dumps({"ok": False, "error": "usage: support bundle <path> | support versions"}))
         return 2
     if len(args) < 2:
         print(json.dumps({"ok": False, "error": "support bundle needs a destination path"}))

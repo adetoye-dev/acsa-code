@@ -113,7 +113,10 @@
   body {
     @apply bg-zinc-950 text-zinc-100 antialiased selection:bg-zinc-700/60 selection:text-white font-sans;
     font-family: var(--ide-ui-font);
-    font-size: 13px;
+    /* The base for every element that does not name a size. It was the same
+       13px as `text-body`, so raising one without the other would have left the
+       unclassified text as the smallest thing on screen. */
+    font-size: 14px;
     line-height: 1.5;
     letter-spacing: -0.011em;
     -webkit-font-smoothing: antialiased;

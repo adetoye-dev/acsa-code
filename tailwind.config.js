@@ -91,12 +91,28 @@ export default {
        * names — deliberately size-only, with no line-height, because an arbitrary
        * `text-[11px]` sets no line-height either and matching that is what keeps
        * this a rename rather than a restyle.
+       *
+       * That rename has since been spent. The complaint it produced is the one
+       * users actually file: "hard to read, the font is quite tiny". The scale was
+       * six 1px steps from 9px to 14px, and the app leans on the bottom of it —
+       * 76 uses of `4xs` and 137 of `3xs` were 9px and 10px, across badges, mono
+       * metadata and status lines. Nothing is allowed below 11px now, which costs
+       * one rung: `4xs` and `3xs` render the same size. They were 1px apart, so
+       * the hierarchy between them was never load-bearing, and the range is better
+       * spent on being legible than on a distinction nobody could see.
+       *
+       * `xs` and `sm` are Tailwind's own steps and are restated here so the ladder
+       * is one list. Their line-heights are kept explicitly — overriding a size
+       * with a bare string drops the line-height the default carried, which would
+       * silently retighten every row that uses them.
        */
       fontSize: {
-        "4xs": "9px",
-        "3xs": "10px",
-        "2xs": "11px",
-        body: "13px",
+        "4xs": "11px",
+        "3xs": "11px",
+        "2xs": "12px",
+        xs: ["13px", { lineHeight: "1rem" }],
+        body: "14px",
+        sm: ["15px", { lineHeight: "1.25rem" }],
       },
       /**
        * One ordinal scale for everything that stacks.

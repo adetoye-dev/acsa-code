@@ -8,9 +8,9 @@
  *    streamed into the transcript step by step.
  */
 
-import { useState, useRef, useEffect, useCallback, memo } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo, memo } from "react";
 import { Icon } from "../ui/Icon";
-import { RotateCcw, Trash2, Copy, GitCommit, Maximize2, Minimize2, RefreshCw, Square, User, Check, ChevronDown, ChevronRight, Code, Code2, MessageSquare, ListTodo, X, Bot, CheckCircle2, Plus, Folder, GitBranch, ArrowUp, Image as ImageIcon, Database, AlertCircle, AtSign, Sparkles, Shield, Terminal, Search, Wrench, Users, HelpCircle } from "lucide-react";
+import { RotateCcw, Trash2, Copy, GitCommit, Maximize2, Minimize2, RefreshCw, Square, User, Check, ChevronDown, ChevronRight, Code, Code2, MessageSquare, ListTodo, X, Bot, CheckCircle2, Plus, Folder, GitBranch, ArrowUp, Image as ImageIcon, Database, AlertCircle, AtSign, FileCode, Sparkles, Shield, Terminal, Search, Wrench, Users, HelpCircle } from "lucide-react";
 import type { PipelineStatus, PipelineOutputLine } from "../../types/telemetry";
 import { FOLLOW_THRESHOLD_PX, isFollowingBottom } from "../../services/scrollAnchor";
 import {
@@ -51,7 +51,10 @@ import type { AgentQuestion, PendingFileChange, ProjectIndexState } from "../../
 import { approvalSummary, countDiffLines } from "../../hooks/usePipeline";
 import { localProviderFor, type ApprovalDecision } from "../../services/agentApproval";
 import { canRunAgent, rememberTierTooSmall } from "../../services/aiModelManager";
-import { writeTextFile } from "../../services/fileAccess";
+import { attachmentBlock, readAttachments, type AttachedFile } from "../../services/chatAttachments";
+import { filterFiles, flattenFiles } from "../../services/fileSearch";
+import type { FileNode } from "../FileTree";
+import { readTextFile, writeTextFile } from "../../services/fileAccess";
 import { formatDuration } from "../../services/agentTurnLimit";
 import { summarizeFailure } from "../../services/providerErrors";
 
@@ -86,6 +89,8 @@ interface AiAssistantChatProps {
   onPopOutWide?: () => void;
   isWide?: boolean;
   selectedContext?: { path: string; code: string } | null;
+  /** The project's files, for "Add Context → Files…". Absent means no picker. */
+  projectFiles?: FileNode[];
   failureDetail?: string;
   /** A finished run that left every file's path and size untouched. */
   noFileChanges?: boolean;
@@ -126,6 +131,24 @@ interface AiAssistantChatProps {
 }
 
 export type WorkflowMode = "agent" | "chat" | "plan";
+
+/**
+ * The mode a run will actually use, which is not always the one on the chip.
+ *
+ * Agent and plan runs go through the runtime, which needs a model that calls
+ * tools. A model that cannot — a local one the daemon reports as having no tool
+ * support, say — would read files and answer without changing anything, so the
+ * run becomes a chat instead of a failure.
+ *
+ * The user's own `workflowMode` is deliberately left alone. It is their
+ * selection, it is what the chip reports, and a mode the app moved behind their
+ * back is one they can cancel by accident — which lands them straight back in a
+ * mode the model cannot run. So the chip only ever shows a mode the reader chose,
+ * and the downgrade stays internal.
+ */
+export function effectiveWorkflowMode(mode: WorkflowMode, canRunAgent: boolean): WorkflowMode {
+  return canRunAgent ? mode : "chat";
+}
 
 /**
  * What "Implement plan" sends.
@@ -290,6 +313,23 @@ const ChatTranscript = memo(function ChatTranscript({
                   : "bg-zinc-900/90 border border-zinc-800/90 text-zinc-100 rounded-tl-sm w-full"
               }`}
             >
+              {/* Attached files, as the chips they were when they were sent. */}
+              {msg.attachedPaths && msg.attachedPaths.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {msg.attachedPaths.map((path) => (
+                    <span
+                      key={path}
+                      data-testid="message-attachment"
+                      title={path}
+                      className="flex items-center gap-1.5 px-1.5 py-1 rounded-md bg-zinc-900/70 border border-zinc-700/70 text-2xs text-zinc-300 max-w-[14rem]"
+                    >
+                      <Icon icon={FileCode} className="w-3 h-3 text-zinc-500 shrink-0" />
+                      <span className="truncate font-mono">{path.split("/").pop() || path}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+
               {/* User Attached Images */}
               {msg.images && msg.images.length > 0 && (
                 <div className="flex flex-wrap gap-2 mb-2">
@@ -593,6 +633,7 @@ export function AiAssistantChat({
   onPopOutWide,
   isWide = false,
   selectedContext = null,
+  projectFiles = [],
   failureDetail = "",
   noFileChanges = false,
   waitingForUser = "",
@@ -672,6 +713,20 @@ export function AiAssistantChat({
       ? `${selectedModelItem.model} — runs on this machine. Free, and nothing leaves it, but a local model is far less capable than a hosted one.`
       : `${selectedModelItem.model} — hosted by ${selectedModelItem.providerName}`
     : `Running on ${effectiveProvider}:${effectiveModel}`;
+
+  /**
+   * Whether the chosen model can drive agent or plan at all.
+   *
+   * Both go through the runtime, which needs a model that calls tools; a local
+   * model the daemon reports as having no tool support can only talk. Nothing
+   * selected reads as `true`: with no explicit choice the app falls back to a
+   * configured default, and guessing "cannot" there would switch a working setup
+   * into ask mode on first paint.
+   */
+  const selectedModelCanRunAgent = selectedModelItem
+    ? canRunAgent(selectedModelItem.providerId, selectedModelItem.model)
+    : true;
+
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
   const [modelSearchQuery, setModelSearchQuery] = useState("");
   // Persistent chat history across tab switches, panel open/close, and reloads
@@ -690,15 +745,11 @@ export function AiAssistantChat({
   const [undoNotice, setUndoNotice] = useState<string | null>(null);
   const [workflowMode, setWorkflowMode] = useState<WorkflowMode>("agent");
 
-  // The finalisation effect below reads the mode and the plan-file result, but it
-  // must not *depend* on them: it appends the assistant reply, so re-running it
-  // when either changes would add the same message twice. Mirrored instead, and
-  // kept current by their own effects.
-  const workflowModeRef = useRef(workflowMode);
+  // The finalisation effect below reads the plan-file result, but must not
+  // *depend* on it: it appends the assistant reply, so re-running it when the
+  // value changes would add the same message twice. Mirrored instead, and kept
+  // current by its own effect.
   const planFileRef = useRef(planFile);
-  useEffect(() => {
-    workflowModeRef.current = workflowMode;
-  }, [workflowMode]);
   // Entering or leaving a mode starts a new piece of work. Keeping the previous
   // plan-file result would leave `Implement plan` enabled for a plan that is no
   // longer on screen — the control has to mean "the plan you can see is written".
@@ -709,6 +760,24 @@ export function AiAssistantChat({
   useEffect(() => {
     planFileRef.current = planFile;
   }, [planFile]);
+
+  /**
+   * What the next message will be sent as.
+   *
+   * The chip keeps showing the reader's own mode; this is what the run uses. See
+   * `effectiveWorkflowMode`.
+   */
+  const effectiveMode = effectiveWorkflowMode(workflowMode, selectedModelCanRunAgent);
+
+  /**
+   * What the mode chip's tooltip says.
+   *
+   * The chip is only ever the reader's own choice — the app's capability
+   * downgrade is internal (see `effectiveWorkflowMode`) — so this is simply the
+   * way back out. Both composers render it, hence one sentence rather than two
+   * that drift.
+   */
+  const modeChipTitle = workflowMode === "plan" ? "Turn plan mode off" : "Turn ask mode off";
 
   /**
    * A plan run's answer *is* the plan, so it gets written down.
@@ -743,6 +812,15 @@ export function AiAssistantChat({
 
   // Multimodal image attachment state
   const [attachedImages, setAttachedImages] = useState<string[]>([]);
+  /**
+   * Files folded into the next message. Chips above the input, text in the prompt —
+   * see services/chatAttachments.ts for what a large file does to the budget.
+   */
+  const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
+  const [isFilePickerOpen, setIsFilePickerOpen] = useState(false);
+  const [fileQuery, setFileQuery] = useState("");
+  const fileQueryInputRef = useRef<HTMLInputElement | null>(null);
+  const filePickerRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleImageFiles = (files: FileList | File[]) => {
@@ -773,6 +851,54 @@ export function AiAssistantChat({
   };
 
   const handleImageDragLeave = () => setIsImageDragOver(false);
+
+  const projectFileList = useMemo(() => flattenFiles(projectFiles), [projectFiles]);
+
+  const attachFile = (path: string) => {
+    const clean = path.trim();
+    if (!clean) return;
+    setAttachedFiles((prev) =>
+      prev.some((file) => file.path === clean)
+        ? prev
+        : [...prev, { path: clean, name: clean.split("/").pop() || clean }],
+    );
+    setIsFilePickerOpen(false);
+    setFileQuery("");
+  };
+
+  const removeFile = (path: string) => {
+    setAttachedFiles((prev) => prev.filter((file) => file.path !== path));
+  };
+
+  /**
+   * A drop carries either an image or a path. Images were the only kind this
+   * understood; a row dragged out of the explorer carries its path as text, which
+   * is the same file the reader was pointing at.
+   */
+  useEffect(() => {
+    if (isFilePickerOpen) fileQueryInputRef.current?.focus();
+  }, [isFilePickerOpen]);
+
+  const handleComposerDrop = (e: React.DragEvent) => {
+    // Only when the drop carries no file objects — a dropped file has no path in a
+    // webview, and the existing rule that a stray text file is not an attachment
+    // stays exactly as it was. `getData` is also absent from a synthetic
+    // DataTransfer, so reading it has to be the thing that can fail without
+    // taking the image path down with it.
+    const droppedFiles = e.dataTransfer?.files?.length ?? 0;
+    if (droppedFiles === 0) {
+      let asText = "";
+      try {
+        asText = e.dataTransfer?.getData?.("text/plain")?.trim() ?? "";
+      } catch {
+        asText = "";
+      }
+      // An absolute path is what an explorer row carries; dragged text is not a
+      // file and attaching it would put whatever was selected into the prompt.
+      if (asText.startsWith("/")) attachFile(asText);
+    }
+    handleImageDrop(e);
+  };
 
   const handleImageDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -956,12 +1082,6 @@ export function AiAssistantChat({
       // A plan turn is *supposed* to leave the code alone, so "no files were
       // added" is true and misleading: the file it did write is the plan. Say where
       // it went, and offer the one next step.
-      const planNote =
-        !planFileRef.current
-          ? ""
-          : planFileRef.current.ok
-          ? `\n\n> Plan written to \`implementation-plan.md\`. **Implement plan** hands it to the agent.`
-          : "\n\n> The plan is above, but `implementation-plan.md` could not be written.";
       // The runtime's own state, not a guess from the text: it says
       // `waitingOnUserInput` when a skill has asked a question and the turn is
       // holding for an answer. Without this the reply ends the turn looking like
@@ -974,7 +1094,6 @@ export function AiAssistantChat({
           : "";
       const finalContent = isSuccess
         ? (streamingAnswer || "Task completed.") +
-          planNote +
           (noFileChanges && !planRunRef.current ? noChangesNote : "") +
           waitingNote
         : failureDetail || failureSummary
@@ -1222,6 +1341,12 @@ export function AiAssistantChat({
       ) {
         setIsContextMenuOpen(false);
       }
+      if (
+        filePickerRef.current &&
+        !filePickerRef.current.contains(e.target as Node)
+      ) {
+        setIsFilePickerOpen(false);
+      }
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
@@ -1373,14 +1498,32 @@ export function AiAssistantChat({
   // ── Handle Send ─────────────────────────────────────────────────────────
   const handleSend = async (textToSend = draft, forcedMode?: WorkflowMode) => {
     // The caller may be switching mode and sending in one click (Implement plan).
-    // Reading `workflowMode` here would use the value from before the update, and
-    // the run would take the wrong branch — planning when it was asked to build.
-    const mode = forcedMode ?? workflowMode;
+    // Reading the state variable here would use the value from before the update,
+    // and the run would take the wrong branch — planning when asked to build.
+    //
+    // `effectiveMode` is the reader's mode *unless* the chosen model cannot run
+    // it, in which case the run is a chat. The chip is untouched by that: see
+    // `effectiveWorkflowMode`.
+    const mode = forcedMode ?? effectiveMode;
     const trimmed = textToSend.trim();
-    if (!trimmed && attachedImages.length === 0) return;
+    if (!trimmed && attachedImages.length === 0 && attachedFiles.length === 0) return;
 
     const currentImages = attachedImages.length > 0 ? [...attachedImages] : undefined;
-    const promptToSend = trimmed || (currentImages ? "Please analyze the attached image(s)." : "");
+    const currentFiles = attachedFiles.length > 0 ? [...attachedFiles] : [];
+    const basePrompt =
+      trimmed ||
+      (currentFiles.length > 0
+        ? "Please look at the attached file(s)."
+        : currentImages
+          ? "Please analyze the attached image(s)."
+          : "");
+    // Read at send time rather than at attach time: the reader may have edited the
+    // file since, and the message should carry what is on disk when it is sent.
+    const attachmentText =
+      currentFiles.length > 0
+        ? attachmentBlock(await readAttachments(currentFiles, (path) => readTextFile(path, projectRoot)))
+        : "";
+    const promptToSend = `${basePrompt}${attachmentText}`;
 
     if (mode === "agent" || mode === "plan") {
       if (status === "running") {
@@ -1449,8 +1592,9 @@ export function AiAssistantChat({
       const userMsg: ChatMessage = {
         id: `user-${Date.now()}`,
         role: "user",
-        content: promptToSend,
+        content: basePrompt,
         images: currentImages,
+        attachedPaths: currentFiles.map((file) => file.path),
         timestamp: Date.now(),
       };
       setChatMessages((prev) => {
@@ -1460,6 +1604,7 @@ export function AiAssistantChat({
       });
       chatDraft.set("");
       setAttachedImages([]);
+      setAttachedFiles([]);
       return;
     }
 
@@ -1485,10 +1630,12 @@ export function AiAssistantChat({
     const userMsg: ChatMessage = {
       id: `user-${Date.now()}`,
       role: "user",
-      content: promptToSend,
+      content: basePrompt,
       images: currentImages,
+      attachedPaths: currentFiles.map((file) => file.path),
       timestamp: Date.now(),
     };
+    setAttachedFiles([]);
 
     const assistantMsgId = `assistant-${Date.now()}`;
     const assistantPlaceholder: ChatMessage = {
@@ -1520,8 +1667,15 @@ export function AiAssistantChat({
     // Chat only, now: plan mode runs on the agent runtime with a read-only
     // sandbox, so its instruction lives in `AGENT_PLAN_INSTRUCTIONS` rather than
     // in a system message prepended here.
-    const outgoingMessages: Array<{ role: "user" | "assistant" | "system"; content: string }> =
-      nextHistory.map((m) => ({ role: m.role, content: m.content }));
+    // The transcript keeps the prompt without the attachments — the chips above
+    // the message say what was attached — but the model has to be *sent* the
+    // text, or a dragged file is a chip the assistant cannot see. That is what it
+    // was: agent runs got `promptToSend`, chat runs got the bare prompt and
+    // answered "no specific file has been mentioned".
+    const outgoingMessages: Array<{ role: "user" | "assistant" | "system"; content: string }> = [
+      ...nextHistory.slice(0, -1).map((m) => ({ role: m.role, content: m.content })),
+      { role: "user" as const, content: promptToSend },
+    ];
 
     await streamChatCompletion({
       provider: selectedModelItem.providerId,
@@ -1529,6 +1683,11 @@ export function AiAssistantChat({
       messages: outgoingMessages,
       images: currentImages,
       projectRoot,
+      // What the reader is looking at. The engine reads these, plus whatever the
+      // index says matches the question, so a model that cannot call tools still
+      // answers about this project rather than about code in general.
+      activePath: selectedContext?.path ?? "",
+      selection: selectedContext?.code ?? "",
       baseUrl: activeProvider?.baseUrl,
       apiKey: activeProvider?.apiKey,
       signal: controller.signal,
@@ -1600,32 +1759,99 @@ export function AiAssistantChat({
     void handleSend(text);
   };
 
+  /**
+   * The files attached to the next message, and the picker that adds them.
+   *
+   * One block for both composers — the centered hero and the docked one — so the
+   * two cannot end up with different ideas about what is attached.
+   */
+  const renderFileContext = () => (
+    <>
+      {attachedFiles.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 pb-1">
+          {attachedFiles.map((file) => (
+            <span
+              key={file.path}
+              data-testid="attached-file"
+              title={file.path}
+              className="flex items-center gap-1.5 pl-1.5 pr-1 py-1 rounded-md bg-zinc-800/80 border border-zinc-700/70 text-2xs text-zinc-200 max-w-[16rem]"
+            >
+              <Icon icon={FileCode} className="w-3 h-3 text-zinc-400 shrink-0" />
+              <span className="truncate font-mono">{file.name}</span>
+              <button
+                type="button"
+                onClick={() => removeFile(file.path)}
+                title={`Remove ${file.name}`}
+                className="p-0.5 rounded text-zinc-500 hover:text-white hover:bg-zinc-700/70 transition-colors cursor-pointer shrink-0"
+              >
+                <Icon icon={X} className="w-2.5 h-2.5" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {isFilePickerOpen && (
+        <div
+          ref={filePickerRef}
+          className="absolute bottom-full mb-2 left-0 w-72 max-h-64 bg-[#18181b]/95 backdrop-blur-xl border border-zinc-700/60 rounded-xl shadow-2xl p-1.5 z-popover flex flex-col"
+        >
+          <input
+            ref={fileQueryInputRef}
+            value={fileQuery}
+            onChange={(e) => setFileQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setIsFilePickerOpen(false);
+              if (e.key === "Enter") {
+                const first = filterFiles(projectFileList, fileQuery, 1)[0];
+                if (first) attachFile(first.path);
+              }
+            }}
+            placeholder="Filter project files…"
+            className="mb-1.5 w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-purple-500/60"
+          />
+          <div className="overflow-y-auto">
+            {filterFiles(projectFileList, fileQuery).map((file) => (
+              <button
+                key={file.path}
+                type="button"
+                data-testid="file-option"
+                onClick={() => attachFile(file.path)}
+                title={file.path}
+                className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left text-2xs text-zinc-300 hover:bg-zinc-800/80 hover:text-white transition-colors cursor-pointer"
+              >
+                <Icon icon={FileCode} className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
+                <span className="truncate font-mono">{file.name}</span>
+                <span className="ml-auto truncate text-3xs text-zinc-500 max-w-[8rem]">
+                  {file.path.replace(/\/[^/]+$/, "")}
+                </span>
+              </button>
+            ))}
+            {projectFileList.length === 0 && (
+              <p className="px-2 py-3 text-2xs text-zinc-500">No files in this project yet.</p>
+            )}
+          </div>
+        </div>
+      )}
+    </>
+  );
+
   const renderModelMenu = (isCenterHero: boolean) => {
-    // A run that goes through the runtime needs a model that can call tools —
-    // agent mode and plan mode both do. Chat mode does not: it streams a
-    // completion, so a model that can only talk is exactly the right model there.
-    //
-    // Which models qualify is not a guess. `canRunAgent` asks the provider sets
-    // whether the runtime can reach it at all, and — for a local model, where the
-    // daemon reports facts — whether the model itself supports tools.
-    const needsToolCalling = workflowMode === "agent" || workflowMode === "plan";
-    const eligibleModels = needsToolCalling
-      ? configuredModels.filter((m) => canRunAgent(m.providerId, m.model))
-      : configuredModels;
-    const hiddenCount = configuredModels.length - eligibleModels.length;
-    const selectedIsIneligible =
-      needsToolCalling &&
-      Boolean(selectedModelItem) &&
-      !canRunAgent(selectedModelItem!.providerId, selectedModelItem!.model);
+    // Every configured model, in every mode. The list used to drop the ones that
+    // cannot call tools and print "· 2 hidden", which removed exactly the models a
+    // reader might want — a local one, a free one — and left them wondering what
+    // was missing. `canRunAgent` is still asked; it just decides how the turn runs
+    // (see `effectiveWorkflowMode`) rather than what the reader is allowed to pick.
+    const selectedIsChatOnly = Boolean(selectedModelItem) && !selectedModelCanRunAgent;
 
     const cleanSearch = modelSearchQuery.trim().toLowerCase();
     const filteredModels = cleanSearch
-      ? eligibleModels.filter(
+      ? configuredModels.filter(
           (m) =>
             m.model.toLowerCase().includes(cleanSearch) ||
             m.providerName.toLowerCase().includes(cleanSearch)
         )
-      : eligibleModels;
+      : configuredModels;
 
     return (
       <div
@@ -1639,31 +1865,17 @@ export function AiAssistantChat({
             {workflowMode === "plan" ? "Plan Model" : workflowMode === "chat" ? "Chat Model" : "Agent Model"}
           </span>
           <span className="text-3xs text-zinc-500 font-mono">
-            {eligibleModels.length} models
-            {hiddenCount > 0 ? ` · ${hiddenCount} hidden` : ""}
+            {configuredModels.length} models
           </span>
         </div>
 
-        {selectedIsIneligible && (
-          <div className="mb-2 shrink-0 rounded-lg border border-amber-500/40 bg-amber-950/40 p-2 space-y-1.5">
-            <p className="text-3xs text-amber-200 font-sans leading-relaxed">
-              <span className="font-mono">{selectedModelItem!.model}</span> cannot drive a{" "}
-              {workflowMode} run — it does not call tools, so a turn would read files and
-              reply without changing anything.
-            </p>
-            {eligibleModels[0] && (
-              <button
-                type="button"
-                onClick={() => {
-                  handleSelectModel(eligibleModels[0]);
-                  setIsModelMenuOpen(false);
-                }}
-                className="w-full px-2 py-1 rounded-md bg-amber-500/90 hover:bg-amber-400 text-amber-950 text-3xs font-semibold font-sans transition-colors"
-              >
-                Use {eligibleModels[0].model} instead
-              </button>
-            )}
-          </div>
+        {/* A note, not a warning: the turn will run, as a chat. Nothing here asks
+            the reader to change their mind about the model they picked. */}
+        {selectedIsChatOnly && (
+          <p className="mb-2 shrink-0 rounded-lg border border-zinc-700/70 bg-zinc-900/60 p-2 text-3xs text-zinc-400 font-sans leading-relaxed">
+            <span className="font-mono text-zinc-300">{selectedModelItem!.model}</span> does not call
+            tools, so a turn answers in the chat instead of editing files.
+          </p>
         )}
 
         {configuredModels.length > 5 && (
@@ -1680,26 +1892,7 @@ export function AiAssistantChat({
         )}
 
         <div className="flex-1 overflow-y-auto space-y-0.5 min-h-0 pr-0.5">
-          {configuredModels.length > 0 && eligibleModels.length === 0 ? (
-            <div className="px-2.5 py-3 text-center space-y-2">
-              <div className="text-xs text-amber-300 font-sans">None of these can run {workflowMode} mode</div>
-              <p className="text-3xs text-zinc-500 font-sans">
-                {hiddenCount === configuredModels.length
-                  ? "Every model you have configured chats only. Agent and plan runs need one that can call tools."
-                  : "The models that can call tools are filtered out by your search."}
-              </p>
-              <button
-                type="button"
-                onClick={() => {
-                  setIsModelMenuOpen(false);
-                  openAiManagementDashboard();
-                }}
-                className="w-full px-2.5 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold font-sans transition-colors shadow-sm"
-              >
-                ⚙️ Add a model that can run the agent
-              </button>
-            </div>
-          ) : configuredModels.length === 0 ? (
+          {configuredModels.length === 0 ? (
             <div className="px-2.5 py-3 text-center space-y-2">
               <div className="text-xs text-zinc-400 font-sans">No model available</div>
               <p className="text-3xs text-zinc-500 font-sans">
@@ -1799,19 +1992,20 @@ export function AiAssistantChat({
         <span className="font-medium">Media</span>
       </button>
 
-      {/* 2: Mentions */}
+      {/* 2: Files — this replaced a "Mentions" entry that typed an `@` no one
+             handled. A mention is a file reference, so it opens the picker. */}
       <button
         type="button"
+        data-testid="add-context-files"
         onClick={() => {
           setIsContextMenuOpen(false);
-          const nextPrompt = draft && !draft.endsWith(" ") ? `${draft} @` : `${draft}@`;
-          chatDraft.set(nextPrompt);
-          setTimeout(() => textareaRef.current?.focus(), 50);
+          setFileQuery("");
+          setIsFilePickerOpen(true);
         }}
         className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs text-zinc-200 hover:bg-zinc-800/80 hover:text-white transition-all group"
       >
         <Icon icon={AtSign} className="w-4 h-4 text-zinc-400 group-hover:text-zinc-200 shrink-0" />
-        <span className="font-medium">Mentions</span>
+        <span className="font-medium">Files</span>
       </button>
 
       {/* 3: Actions */}
@@ -2008,6 +2202,7 @@ Click to re-index project.`}
 
                   {/* Centered Floating Hero Omnibar Card */}
                   <div className="relative rounded-2xl bg-[#1c1c24]/95 backdrop-blur-xl border border-zinc-700/60 shadow-2xl p-4 space-y-3">
+                    {renderFileContext()}
                     {/* Attached Image Previews */}
                     {attachedImages.length > 0 && (
                       <div className="space-y-2 pb-1">
@@ -2056,11 +2251,15 @@ Click to re-index project.`}
                     <textarea
                       ref={textareaRef}
                       value={draft}
-                      onChange={(e) => chatDraft.set(e.target.value)}
+                      onChange={(e) => {
+                        chatDraft.set(e.target.value);
+                        // "@" is how every other editor starts a file reference.
+                        if (e.target.value.endsWith("@")) setIsFilePickerOpen(true);
+                      }}
                       onPaste={handlePaste}
                       onDragOver={handleImageDragOver}
                       onDragLeave={handleImageDragLeave}
-                      onDrop={handleImageDrop}
+                      onDrop={handleComposerDrop}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && !e.shiftKey) {
                           e.preventDefault();
@@ -2098,7 +2297,7 @@ Click to re-index project.`}
                                 ? "bg-zinc-800 text-zinc-100 border-zinc-700"
                                 : "bg-zinc-800/40 hover:bg-zinc-800/80 border-zinc-800/80 text-zinc-400 hover:text-zinc-200"
                             }`}
-                            title="Add Context (Media, Mentions, Actions, Browser)"
+                            title="Add Context (Media, Files, Actions, Browser)"
                           >
                             <Icon icon={Plus} className="w-3.5 h-3.5" />
                           </button>
@@ -2112,7 +2311,7 @@ Click to re-index project.`}
                           <button
                             type="button"
                             onClick={() => setWorkflowMode("agent")}
-                            title={workflowMode === "plan" ? "Turn plan mode off" : "Turn ask mode off"}
+                            title={modeChipTitle}
                             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/40 text-amber-200 text-xs font-medium transition-all shadow-sm"
                           >
                             <Icon icon={X} className="w-3 h-3 shrink-0" />
@@ -2280,6 +2479,13 @@ Click to re-index project.`}
             not in the composer: a control there is present before anything has been
             planned, which is how it came to start a write-enabled turn naming a file
             that did not exist. */}
+        {planFile && !isStreaming && (
+          <p className="px-3 pb-1 shrink-0 text-3xs text-zinc-400" data-testid="plan-note">
+            {planFile.ok
+              ? "Plan written to implementation-plan.md — the agent can implement it from there."
+              : "The plan is above, but implementation-plan.md could not be written."}
+          </p>
+        )}
         {planFile?.ok === true && !isStreaming && (
           <div className="px-3 pb-2 shrink-0">
             <button
@@ -2489,6 +2695,7 @@ Click to re-index project.`}
 
             {/* Unified Omnibar Input Card */}
             <div className="relative rounded-2xl bg-zinc-900/90 border border-zinc-800/90 focus-within:border-purple-500/50 focus-within:ring-1 focus-within:ring-purple-500/20 p-2.5 transition-all shadow-lg">
+              {renderFileContext()}
               {/* Attached Image Previews */}
               {attachedImages.length > 0 && (
                 <div className="space-y-1.5 pb-2">
@@ -2536,11 +2743,14 @@ Click to re-index project.`}
               <textarea
                 ref={textareaRef}
                 value={draft}
-                onChange={(e) => chatDraft.set(e.target.value)}
+                onChange={(e) => {
+                  chatDraft.set(e.target.value);
+                  if (e.target.value.endsWith("@")) setIsFilePickerOpen(true);
+                }}
                 onPaste={handlePaste}
                 onDragOver={handleImageDragOver}
                 onDragLeave={handleImageDragLeave}
-                onDrop={handleImageDrop}
+                onDrop={handleComposerDrop}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
@@ -2576,7 +2786,7 @@ Click to re-index project.`}
                           ? "bg-zinc-800 text-zinc-100 border-zinc-700"
                           : "bg-zinc-800/40 hover:bg-zinc-800/80 border-zinc-800/80 text-zinc-400 hover:text-zinc-200"
                       }`}
-                      title="Add Context (Media, Mentions, Actions, Browser)"
+                      title="Add Context (Media, Files, Actions, Browser)"
                     >
                       <Icon icon={Plus} className="w-3.5 h-3.5" />
                     </button>
@@ -2588,7 +2798,7 @@ Click to re-index project.`}
                     <button
                       type="button"
                       onClick={() => setWorkflowMode("agent")}
-                      title={workflowMode === "plan" ? "Turn plan mode off" : "Turn ask mode off"}
+                      title={modeChipTitle}
                       className="relative shrink-0 flex items-center gap-1 px-2 py-1 rounded-md bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/40 text-amber-200 text-xs font-medium transition-all"
                     >
                       <Icon icon={X} className="w-3 h-3 shrink-0" />

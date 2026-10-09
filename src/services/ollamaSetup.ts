@@ -68,24 +68,6 @@ export async function checkOllamaStatus(): Promise<OllamaStatus> {
 }
 
 /**
- * Ollama's own installer is the way in.
- *
- * This used to download and unpack the macOS package itself, streaming progress
- * from a dev-server route that only existed while a browser was open. Downloading
- * an installer and running it is the vendor's job: theirs is signed, notarised
- * and kept current, and a copy we fetch can be neither. So the wizard sends the
- * user to the source and keeps everything after that in the app — starting the
- * server, pulling models, wiring the provider.
- */
-export async function installOllama(onProgress: (evt: OllamaProgressEvent) => void): Promise<void> {
-  onProgress({ percent: 0, status: "Ollama is installed from ollama.com" });
-  throw new Error(
-    "Install Ollama from https://ollama.com/download, then choose Retry. Everything after " +
-      "that — starting it, downloading models, using it as a provider — happens here.",
-  );
-}
-
-/**
  * Stream model pull progress.
  * Resolves with the pulled model name when complete.
  */
@@ -100,16 +82,18 @@ export async function pullOllamaModel(
 }
 
 /**
- * Download through the desktop shell.
+ * Drive one streaming engine command through the desktop shell.
  *
  * The engine streams one NDJSON frame per progress update on its stdout and Rust
- * forwards each as an `ollama:frame` event, so the wizard shows the same percent
- * it did over the dev bridge — this is the path the packaged app uses.
+ * forwards each as an `ollama:frame` event. A model pull and the engine install
+ * are the same shape end to end, so they share one reader and one promise.
  */
-async function pullViaIpc(
-  model: string,
+async function streamViaIpc(
+  command: "ollama_pull" | "ollama_install",
+  payload: Record<string, unknown>,
   onProgress: (evt: OllamaProgressEvent) => void,
-): Promise<string> {
+  idleStatus: string,
+): Promise<{ model?: string; binaryPath?: string }> {
   const { invoke } = await import("@tauri-apps/api/core");
   const { listen } = await import("@tauri-apps/api/event");
 
@@ -120,7 +104,7 @@ async function pullViaIpc(
     unlisten = [];
   };
 
-  return new Promise<string>((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     void (async () => {
       const handle = (line: string) => {
         if (finished) return;
@@ -130,6 +114,7 @@ async function pullViaIpc(
             status?: string;
             done?: boolean;
             model?: string;
+            binaryPath?: string;
             error?: string;
           };
           if (obj.error && !obj.done) {
@@ -139,7 +124,7 @@ async function pullViaIpc(
           if (obj.percent !== undefined || obj.status) {
             onProgress({
               percent: obj.percent ?? 0,
-              status: obj.status || `Downloading ${model}…`,
+              status: obj.status || idleStatus,
               log: obj.status,
             });
           }
@@ -147,7 +132,7 @@ async function pullViaIpc(
             finished = true;
             cleanup();
             if (obj.error) reject(new Error(obj.error));
-            else resolve(obj.model || model);
+            else resolve(obj);
           }
         } catch {
           /* a partial or non-JSON line carries nothing to show */
@@ -166,12 +151,12 @@ async function pullViaIpc(
           finished = true;
           cleanup();
           const note = String(event.payload ?? "").trim();
-          reject(new Error(note || "The download stopped before finishing."));
+          reject(new Error(note || "The operation stopped before finishing."));
         }),
       );
 
       try {
-        await invoke("ollama_pull", { model });
+        await invoke(command, payload);
       } catch (error) {
         finished = true;
         cleanup();
@@ -179,6 +164,29 @@ async function pullViaIpc(
       }
     })();
   });
+}
+
+async function pullViaIpc(
+  model: string,
+  onProgress: (evt: OllamaProgressEvent) => void,
+): Promise<string> {
+  const frame = await streamViaIpc("ollama_pull", { model }, onProgress, `Downloading ${model}…`);
+  return frame.model || model;
+}
+
+/**
+ * Set Ollama up on this machine, streaming progress.
+ *
+ * Resolves with the path to the engine that was installed. Downloading Ollama is
+ * this app's job, not the user's: the previous build had no such call at all and
+ * the wizard simply told them to go and install it themselves.
+ */
+export async function installOllama(
+  onProgress: (evt: OllamaProgressEvent) => void,
+): Promise<string> {
+  if (!hasIpc()) throw desktopRequired("Setting up Ollama");
+  const frame = await streamViaIpc("ollama_install", {}, onProgress, "Setting up Ollama…");
+  return frame.binaryPath || "";
 }
 
 /** Start the Ollama server and wait for it to become healthy (up to 6s). */

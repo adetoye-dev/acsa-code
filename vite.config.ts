@@ -1,10 +1,15 @@
-import { defineConfig } from "vite";
+import { defineConfig, version as viteVersion } from "vite";
 import react from "@vitejs/plugin-react";
 import { apiGuardPlugin } from "./vite-api-guard";
 
 // https://vitejs.dev/config/
 export default defineConfig(async ({ command }) => ({
   plugins: [react(), ...(command === "serve" ? [apiGuardPlugin()] : [])],
+
+  // The Performance panel's runtime line names the bundler, and nothing at runtime
+  // can know it: Vite is a build tool, so the version is captured here, where it is
+  // a fact, rather than guessed from a package.json that does not ship.
+  define: { __ACSA_VITE_VERSION__: JSON.stringify(viteVersion) },
 
   // Vite options tailored for development and Tauri desktop integration
   clearScreen: false,

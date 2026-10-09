@@ -16,6 +16,7 @@ Usage: python3 ai_cli.py test-connection '{"provider": "deepseek"}'
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sys
@@ -617,31 +618,383 @@ def _emit(frame: dict) -> None:
     sys.stdout.flush()
 
 
-def _chat_context(project_root: str, needs_git: bool) -> str:
-    """Project intelligence + workspace git context, as the assistant prompt saw it."""
+# ── What a chat turn carries ─────────────────────────────────────────────────
+#
+# A chat turn used to carry a *map* of the project — LOC, frameworks, the names of
+# 35 symbols — and not one line of code. A hosted frontier model can sometimes
+# bluff past that. A small local model cannot: it has no priors about a project it
+# has never seen, so it answers generically about a repository it cannot read. That
+# is the whole of "local models give generic answers in ask mode".
+#
+# Everything needed to do better is already on disk. The index holds file paths,
+# symbol names, line ranges and signatures, so a question can be turned into
+# *snippets* rather than whole files — which is what keeps this inside a local
+# model's window, where a 60 KB dump would simply not fit.
+#
+# Order matters at the end of a prompt: the code comes last, nearest the question,
+# because that is the part a small model attends to hardest.
+
+CHAT_CONTEXT_BUDGET_BYTES = 12 * 1024
+CHAT_ACTIVE_FILE_BYTES = 6 * 1024
+# Per file, so one heavily-matched file cannot spend the whole budget and leave
+# the others out.
+CHAT_PER_FILE_BYTES = 4 * 1024
+# Below this, send the file rather than the lines that matched. A patchwork of
+# matching lines is harder to read than the file itself, and the shape of the
+# code is half of what answers a question about it.
+CHAT_WHOLE_FILE_BYTES = 6 * 1024
+CHAT_MAX_RETRIEVED_FILES = 6
+CHAT_HEAD_LINES = 60
+CHAT_SNIPPET_PAD_LINES = 2
+# A file matched on every other line would otherwise contribute one enormous
+# range; the first handful of hits is the useful part.
+CHAT_SNIPPET_LINES = 12
+
+# Words that carry no retrieval signal. A question is mostly made of them. The
+# two-letter entries matter as much as the long ones: without them `gh`, `db` and
+# `id` would be dropped for being short, and those are exactly the words a
+# question about this codebase turns on.
+_CHAT_STOPWORDS = frozenset(
+    """
+    an as at be by do go if in is it me my no of on or so to up us we
+    the and for are but not you all can her was one our out day get has him his how its
+    new now old see two way who did use with this that what when where which while does
+    why into from have here there their them then these those than about would could
+    should file files code line lines app project tell show explain called name using
+    works work make makes made need needs please help
+    """.split()
+)
+
+_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_CAMEL = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z0-9]+|[A-Z]+")
+
+
+def _question_terms(question: str) -> list[str]:
+    """The identifiers and words of a question, lower-cased and de-duplicated.
+
+    `useThemeColor` contributes itself *and* its parts, because the file that
+    answers a question about it may be named either way.
+    """
+    terms: list[str] = []
+
+    def add(candidate: str) -> None:
+        lowered = candidate.lower()
+        if len(lowered) >= 2 and lowered not in _CHAT_STOPWORDS and lowered not in terms:
+            terms.append(lowered)
+
+    for raw in _WORD.findall(question or ""):
+        add(raw)
+        for part in raw.split("_"):
+            add(part)
+        for part in _CAMEL.findall(raw):
+            add(part)
+    return terms
+
+
+def _read_project_source(project_root: str, relative: str) -> str | None:
+    """A project file's text, or None. Never reads outside the project."""
+    if not relative:
+        return None
+    try:
+        root = Path(project_root).resolve()
+        target = (root / relative).resolve()
+        if target != root and root not in target.parents:
+            return None
+        if not target.is_file() or target.stat().st_size > 2_000_000:
+            return None
+        return target.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def _content_hits(
+    project_root: str, terms: list[str]
+) -> tuple[dict[str, tuple[list[int], set[str]]], dict[str, int]]:
+    """Which files contain the question's terms, and how rare each term is.
+
+    Content, not just names. A question about "the `gh` binary" names neither
+    `tool_paths` nor `find`, so a name-only match can never reach the file that
+    answers it — while the question's own words are in the docstring.
+
+    Rarity is the ranking signal, and it is what makes this work: `path` appears
+    across half the project and is worth almost nothing, `gh` appears in a handful
+    and is worth a lot. Counting files per term is cheap next to the search.
+    """
+    if not terms:
+        return {}, {}
+    # Word boundaries, not substrings. `gh` unanchored is inside "high", "light",
+    # "through" and half the prose in the repository, so it measures as the *most*
+    # common token in the project and carries no signal at all — which is exactly
+    # backwards for the two-letter words that matter most.
+    term_patterns = {term: re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE) for term in terms}
+    try:
+        import fs_cli
+
+        result = fs_cli.search(
+            {
+                "projectRoot": project_root,
+                "query": "|".join(rf"\b{re.escape(term)}\b" for term in terms),
+                "useRegex": True,
+                "maxResults": 4000,
+            }
+        )
+    except Exception:  # noqa: BLE001 - context is an enhancement, never a failure
+        return {}, {}
+
+    hits_by_file: dict[str, tuple[set[int], set[str]]] = {}
+    files_per_term: dict[str, int] = {}
+    for entry in result.get("results") or []:
+        relative = str(entry.get("relativeFilePath") or "")
+        if not relative:
+            continue
+        line_numbers, matched_terms = hits_by_file.setdefault(relative, (set(), set()))
+        for match in entry.get("matches") or []:
+            try:
+                line_numbers.add(int(match.get("lineNumber") or 0))
+            except (TypeError, ValueError):
+                continue
+            line = str(match.get("lineContent") or "")
+            matched_terms.update(term for term, pattern in term_patterns.items() if pattern.search(line))
+        for term in matched_terms:
+            files_per_term[term] = files_per_term.get(term, 0) + 1
+
+    return {
+        relative: (sorted(line_numbers), terms_present)
+        for relative, (line_numbers, terms_present) in hits_by_file.items()
+    }, files_per_term
+
+
+def _rank_files(
+    files: dict,
+    content: dict[str, tuple[list[int], set[str]]],
+    files_per_term: dict[str, int],
+    terms: list[str],
+    active_path: str,
+) -> list[tuple[float, str, list[dict], list[int]]]:
+    """The files most likely to answer the question, best first. Pure.
+
+    Returns (score, path, matching symbols, matching lines) per file.
+    """
+    # Rarer in the project, more informative: `gh` beats `path`. Normalised against
+    # the commonest term in *this* question rather than the corpus size, because the
+    # search walks more files than the index holds and a wrong denominator would
+    # quietly skew every weight.
+    max_df = max(files_per_term.values(), default=1)
+    weight = {
+        term: 1 + math.log(1 + max_df / (files_per_term.get(term, 0) + 1)) for term in terms
+    }
+    ranked: list[tuple[float, str, list[dict], list[int]]] = []
+
+    for relative in set(list(files.keys()) + list(content.keys())):
+        entry = files.get(relative) if isinstance(files.get(relative), dict) else {}
+        symbols = [s for s in (entry.get("symbols") or []) if isinstance(s, dict)]
+        lines, terms_present = content.get(relative, ([], set()))
+        lowered_path = str(relative).lower()
+        score = 0.0
+        hits: list[dict] = []
+
+        for term in terms:
+            if term in lowered_path:
+                score += 4
+            for symbol in symbols:
+                name = str(symbol.get("name") or "").lower()
+                if not name:
+                    continue
+                if name == term:
+                    score += 12
+                    hits.append(symbol)
+                elif term in name:
+                    score += 4
+                    hits.append(symbol)
+        # A file containing the question's own words is evidence, and the evidence
+        # is worth more when those words are rare.
+        score += sum(weight.get(term, 0) for term in terms_present)
+        score += min(2.0, 0.25 * len(lines))
+
+        # The file on screen is nearly always the subject, even when the question
+        # never names it.
+        if active_path and str(relative) == active_path:
+            score += 6
+
+        if score > 0:
+            ranked.append((score, str(relative), hits, lines))
+
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    return ranked
+
+
+def _merge_line_numbers(lines: list[int], pad: int) -> list[tuple[int, int]]:
+    """Matching line numbers, padded and merged into ranges. Pure."""
+    ranges = [(max(1, int(line) - pad), int(line) + pad) for line in lines or []]
+    ranges.sort()
+    merged: list[tuple[int, int]] = []
+    for start, end in ranges:
+        if merged and start <= merged[-1][1] + 1:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _merge_ranges(hits: list[dict], pad: int) -> list[tuple[int, int]]:
+    """Symbol line ranges, padded and merged so slices do not overlap. Pure."""
+    ranges: list[tuple[int, int]] = []
+    for symbol in hits or []:
+        try:
+            start = int(symbol.get("start_line") or 0) - pad
+            end = int(symbol.get("end_line") or 0) + pad
+        except (TypeError, ValueError):
+            continue
+        if start > 0 and end >= start:
+            ranges.append((start, end))
+    ranges.sort()
+    merged: list[tuple[int, int]] = []
+    for start, end in ranges:
+        if merged and start <= merged[-1][1] + 1:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _slice_lines(text: str, ranges: list[tuple[int, int]]) -> str:
+    """Just those 1-based line ranges of `text`, joined with a gap marker. Pure."""
+    lines = text.splitlines()
+    taken: list[str] = []
+    for start, end in ranges:
+        taken.extend(lines[max(0, start - 1) : end])
+        taken.append("        …")
+    if taken and taken[-1].strip() == "…":
+        taken.pop()
+    return "\n".join(taken)
+
+
+def _code_context_block(
+    project_root: str, index_data: dict, question: str, active_path: str, selection: str
+) -> str:
+    """What the reader is looking at, plus the files the question points at."""
+    sections: list[str] = []
+    spent = 0
+
+    def add(header: str, body: str, budget: int) -> bool:
+        nonlocal spent
+        room = min(budget, CHAT_CONTEXT_BUDGET_BYTES - spent)
+        if room <= 0 or not body.strip():
+            return False
+        trimmed = body
+        if len(body) > room:
+            trimmed = f"{body[:room]}\n[truncated — {len(body) - room} more characters]"
+        sections.append(f"{header}\n```\n{trimmed}\n```")
+        spent += len(trimmed)
+        return True
+
+    # 1. What the reader has open. A selection beats the whole file, because it is
+    #    the part they are actually asking about.
+    if active_path:
+        if (selection or "").strip():
+            add(f"{active_path} — the reader has this selected", selection.strip(), CHAT_ACTIVE_FILE_BYTES)
+        else:
+            source = _read_project_source(project_root, active_path)
+            if source:
+                add(f"{active_path} — the file the reader has open", source, CHAT_ACTIVE_FILE_BYTES)
+
+    # 2. Retrieval. The open file is skipped: it is already above, in full.
+    terms = _question_terms(question)
+    files = (index_data or {}).get("files") or {}
+    content, files_per_term = _content_hits(project_root, terms)
+    ranked = _rank_files(files, content, files_per_term, terms, active_path)
+
+    retrieved = 0
+    for _score, relative, symbol_hits, matched_lines in ranked[: CHAT_MAX_RETRIEVED_FILES * 3]:
+        if spent >= CHAT_CONTEXT_BUDGET_BYTES or retrieved >= CHAT_MAX_RETRIEVED_FILES:
+            break
+        if relative == active_path:
+            continue
+        source = _read_project_source(project_root, relative)
+        if source is None:
+            continue
+        if len(source) <= CHAT_WHOLE_FILE_BYTES:
+            body = source
+            header = f"{relative} — the whole file ({len(source.splitlines())} lines)"
+        else:
+            # Symbol ranges first — they are the precise thing. Failing that, the
+            # lines that matched, which is what a name-only match cannot give.
+            ranges = _merge_ranges(symbol_hits, CHAT_SNIPPET_PAD_LINES) or _merge_line_numbers(
+                matched_lines[:CHAT_SNIPPET_LINES], CHAT_SNIPPET_PAD_LINES
+            )
+            if ranges:
+                body = _slice_lines(source, ranges)
+                shown = ", ".join(f"{a}-{b}" for a, b in ranges[:3])
+                extra = f" (+{len(ranges) - 3} more)" if len(ranges) > 3 else ""
+                header = f"{relative} — lines {shown}{extra}"
+            else:
+                body = "\n".join(source.splitlines()[:CHAT_HEAD_LINES])
+                header = f"{relative} — first {CHAT_HEAD_LINES} lines"
+        if add(header, body, CHAT_PER_FILE_BYTES):
+            retrieved += 1
+
+    if not sections:
+        return (
+            "\n\n--- Project Code Context ---\n"
+            "Nothing was retrieved for this question and no file is open. Answer from "
+            "general knowledge, and say plainly when you are guessing about this project.\n"
+            "--- End of Project Code Context ---\n"
+        )
+
+    return (
+        "\n\n--- Project Code Context ---\n"
+        "Retrieved from this project for the question below. If the answer is not in "
+        "here, say so rather than inventing project detail.\n\n"
+        + "\n\n".join(sections)
+        + "\n--- End of Project Code Context ---\n"
+    )
+
+
+def _last_user_text(messages: list) -> str:
+    """The newest thing the reader actually asked."""
+    for message in reversed(messages or []):
+        if isinstance(message, dict) and message.get("role") == "user":
+            return str(message.get("content") or "")
+    return ""
+
+
+def _chat_context(
+    project_root: str,
+    needs_git: bool,
+    question: str = "",
+    active_path: str = "",
+    selection: str = "",
+) -> str:
+    """Workspace state, project intelligence, and the code the question needs.
+
+    The code goes last: it is the part that has to be nearest the question for a
+    small model to use it.
+    """
     if not project_root or not Path(project_root).is_dir():
         return ""
 
-    index_context = ""
+    index_data: dict = {}
     try:
         import indexer_cli
 
-        data = indexer_cli._load(project_root)
-        if data:
-            profile = data.get("profile") or {}
-            names = list((data.get("symbols") or {}).keys())
-            shown = names[:35]
-            more = f" (+{len(names) - 35} more)" if len(names) > 35 else ""
-            index_context = (
-                "\n\n--- Project Intelligence & Symbol Graph ---\n"
-                f"Scale Tier: {profile.get('scale_tier') or 'standard'} "
-                f"({profile.get('total_loc') or 0} LOC across {profile.get('indexed_files') or 0} files)\n"
-                f"Frameworks / Stack: {', '.join(profile.get('frameworks') or []) or profile.get('primary_language') or 'General'}\n"
-                f"Indexed Symbols: {', '.join(shown)}{more}\n"
-                "--- End of Project Intelligence ---\n"
-            )
+        index_data = indexer_cli._load(project_root) or {}
     except Exception:  # noqa: BLE001 - context is an enhancement, never a failure
-        index_context = ""
+        index_data = {}
+
+    profile = index_data.get("profile") or {}
+    index_context = ""
+    if profile:
+        names = list((index_data.get("symbols") or {}).keys())
+        shown = names[:35]
+        more = f" (+{len(names) - 35} more)" if len(names) > 35 else ""
+        index_context = (
+            "\n\n--- Project Intelligence & Symbol Graph ---\n"
+            f"Scale Tier: {profile.get('scale_tier') or 'standard'} "
+            f"({profile.get('total_loc') or 0} LOC across {profile.get('indexed_files') or 0} files)\n"
+            f"Frameworks / Stack: {', '.join(profile.get('frameworks') or []) or profile.get('primary_language') or 'General'}\n"
+            f"Indexed Symbols: {', '.join(shown)}{more}\n"
+            "--- End of Project Intelligence ---\n"
+        )
 
     workspace = ""
     if needs_git:
@@ -664,7 +1017,8 @@ def _chat_context(project_root: str, needs_git: bool) -> str:
         except Exception:  # noqa: BLE001 - same
             pass
 
-    return index_context + (f"\n{workspace}" if workspace else "")
+    code_context = _code_context_block(project_root, index_data, question, active_path, selection)
+    return (f"\n{workspace}" if workspace else "") + index_context + code_context
 
 
 CHAT_SYSTEM_PROMPT = (
@@ -812,7 +1166,11 @@ def chat_stream(payload: dict) -> None:
     messages = payload.get("messages") or []
 
     system = CHAT_SYSTEM_PROMPT + _chat_context(
-        str(payload.get("projectRoot") or ""), bool(payload.get("needsGitContext", True))
+        str(payload.get("projectRoot") or ""),
+        bool(payload.get("needsGitContext", True)),
+        _last_user_text(messages),
+        str(payload.get("activePath") or ""),
+        str(payload.get("selection") or ""),
     )
     sent = [{"role": "system", "content": system}]
     for message in messages:

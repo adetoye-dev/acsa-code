@@ -16,7 +16,7 @@ import { DESKTOP_REQUIRED_MESSAGE, hasIpc } from "./engineBridge";
  * handled below are unchanged — only the transport differs.
  */
 async function streamViaIpc(params: any): Promise<void> {
-  const { provider, model, messages, images, projectRoot, baseUrl, apiKey, signal, onDelta, onDone, onError } = params;
+  const { provider, model, messages, images, projectRoot, activePath, selection, baseUrl, apiKey, signal, onDelta, onDone, onError } = params;
   const { invoke } = await import("@tauri-apps/api/core");
   const { listen } = await import("@tauri-apps/api/event");
 
@@ -68,7 +68,17 @@ async function streamViaIpc(params: any): Promise<void> {
     );
 
     await invoke("chat_stream", {
-      payload: JSON.stringify({ provider, model, messages, images, projectRoot, baseUrl, apiKey }),
+      payload: JSON.stringify({
+        provider,
+        model,
+        messages,
+        images,
+        projectRoot,
+        activePath,
+        selection,
+        baseUrl,
+        apiKey,
+      }),
     });
   } catch (err: any) {
     if (!finished) {
@@ -98,6 +108,12 @@ export interface ChatMessage {
   role: "user" | "assistant" | "system";
   content: string;
   images?: string[];
+  /**
+   * Files folded into this message's prompt, by path. The prompt carries their
+   * text; the transcript shows these, because a reader wants to see what they
+   * attached rather than a hundred lines of it.
+   */
+  attachedPaths?: string[];
   timestamp: number;
   provider?: string;
   model?: string;
@@ -122,6 +138,17 @@ export interface StreamChatParams {
   messages: Array<{ role: "user" | "assistant" | "system"; content: string }>;
   images?: string[];
   projectRoot?: string;
+  /**
+   * What the reader is looking at. The engine turns these into code context for
+   * the turn — see `_code_context_block` in `core-engine/ai_cli.py`.
+   *
+   * A chat turn used to carry a map of the project (LOC, frameworks, symbol
+   * names) and no code at all, which is fine for a frontier model and useless for
+   * a small local one: with nothing to read it answers generically about a
+   * repository it has never seen.
+   */
+  activePath?: string;
+  selection?: string;
   baseUrl?: string;
   apiKey?: string;
   signal?: AbortSignal;
@@ -136,6 +163,8 @@ export async function streamChatCompletion({
   messages,
   images,
   projectRoot = "",
+  activePath = "",
+  selection = "",
   baseUrl = "",
   apiKey = "",
   signal,
@@ -145,7 +174,21 @@ export async function streamChatCompletion({
 }: StreamChatParams): Promise<void> {
   // The packaged app has no dev server; prefer the app's own channel when it exists.
   if (hasIpc()) {
-    await streamViaIpc({ provider, model, messages, images, projectRoot, baseUrl, apiKey, signal, onDelta, onDone, onError });
+    await streamViaIpc({
+      provider,
+      model,
+      messages,
+      images,
+      projectRoot,
+      activePath,
+      selection,
+      baseUrl,
+      apiKey,
+      signal,
+      onDelta,
+      onDone,
+      onError,
+    });
     return;
   }
 

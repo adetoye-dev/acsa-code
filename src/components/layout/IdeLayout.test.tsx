@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { UsePipelineReturn } from "../../hooks/usePipeline";
 
 // jsdom has neither of these; the shell's grid and its scroll containers want them.
@@ -22,6 +22,18 @@ vi.mock("../sidebar/MarketplaceSidebar", () => ({
   MarketplaceSidebar: () => <div data-testid="marketplace-page" />,
 }));
 vi.mock("./UpdateButton", () => ({ UpdateButton: () => null }));
+/**
+ * The macOS application menu arrives as one event carrying an id. Captured here so
+ * a test can raise the ids the Rust side raises.
+ */
+const menu = vi.hoisted(() => ({ listener: null as null | ((event: { payload: string }) => void) }));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: async (_name: string, handler: (event: { payload: string }) => void) => {
+    menu.listener = handler;
+    return () => undefined;
+  },
+}));
+
 vi.mock("../../services/engineBridge", () => ({
   DESKTOP_REQUIRED_MESSAGE: "the desktop app is required",
   hasIpc: () => true,
@@ -126,6 +138,66 @@ afterEach(cleanup);
 
 const renderShell = () => render(<IdeLayout {...pipeline()} />);
 
+/**
+ * The macOS application menu lives in Rust and arrives here as one event with an
+ * id. The menu is a second way into the same actions the command palette calls, so
+ * this pins that the ids reach those actions — an id nobody handles is a menu item
+ * that does nothing, which is the state File was in before it existed.
+ */
+describe("the application menu", () => {
+  const saved = { paths: [] as string[], folders: 0 };
+  beforeEach(() => {
+    saved.paths = [];
+    saved.folders = 0;
+  });
+
+  const withMenu = () => ({
+    ...pipeline(),
+    activeTabPath: "/work/acsa-code/src/app.ts",
+    openTabs: [
+      { path: "/work/acsa-code/src/app.ts", name: "app.ts", content: "", originalContent: "", isDirty: true },
+    ],
+    pickFolder: async () => "/picked/folder",
+    openFolder: async () => {
+      saved.folders += 1;
+    },
+    saveFile: async (path: string) => {
+      saved.paths.push(path);
+    },
+  });
+
+  const fireMenu = async (id: string) => {
+    await waitFor(() => expect(menu.listener).not.toBeNull());
+    await act(async () => {
+      menu.listener?.({ payload: id });
+    });
+  };
+
+  it("saves the file in front of the reader when Save is chosen", async () => {
+    render(<IdeLayout {...(withMenu() as unknown as UsePipelineReturn)} />);
+    await fireMenu("save");
+    expect(saved.paths).toEqual(["/work/acsa-code/src/app.ts"]);
+  });
+
+  it("saves every unsaved tab when Save All is chosen", async () => {
+    render(<IdeLayout {...(withMenu() as unknown as UsePipelineReturn)} />);
+    await fireMenu("save-all");
+    expect(saved.paths).toEqual(["/work/acsa-code/src/app.ts"]);
+  });
+
+  it("opens a folder when Open Folder is chosen", async () => {
+    render(<IdeLayout {...(withMenu() as unknown as UsePipelineReturn)} />);
+    await fireMenu("open-folder");
+    await waitFor(() => expect(saved.folders).toBe(1));
+  });
+
+  it("ignores an id it does not know, rather than throwing", async () => {
+    render(<IdeLayout {...(withMenu() as unknown as UsePipelineReturn)} />);
+    await fireMenu("menu.something-new");
+    expect(saved.paths).toEqual([]);
+  });
+});
+
 describe("the workbench shell", () => {
   it("paints the sidebar, the editor with its tree, and the chat — not the terminal", async () => {
     renderShell();
@@ -229,5 +301,46 @@ describe("the chat toggle, while the agent is blocked on the user", () => {
     render(<IdeLayout {...pipeline()} />);
     fireEvent.click(screen.getByRole("button", { name: /^chat$/i }));
     expect(screen.queryByTestId("chat-needs-you")).toBeNull();
+  });
+});
+
+/**
+ * The assistant dock was a `clamp()` — always 30% of the window. On a laptop that
+ * leaves the editor around 790px, and a file with longer lines is clipped by the
+ * editor's own viewport, which reads as the dock cutting the code off. These pin
+ * that the split can be moved, that it cannot be moved past half the window, and
+ * that the width survives a restart.
+ */
+describe("the assistant dock's width", () => {
+  beforeEach(() => {
+    try {
+      localStorage.removeItem("acsa_chat_width");
+    } catch {}
+  });
+
+  const width = () => Number.parseInt(screen.getByTestId("chat-dock-panel").style.width, 10);
+
+  it("is dragged from its own edge, and remembered", async () => {
+    renderShell();
+    const start = width();
+    expect(start).toBeGreaterThan(0);
+
+    // The handle is on the dock's left edge, so dragging *left* grows it.
+    fireEvent.mouseDown(screen.getByTitle("Drag to resize the assistant"), { clientX: 1000 });
+    fireEvent.mouseMove(window, { clientX: 900 });
+    fireEvent.mouseUp(window);
+
+    await waitFor(() => expect(width()).toBeGreaterThan(start));
+    expect(localStorage.getItem("acsa_chat_width")).toBe(String(width()));
+  });
+
+  it("stops at half the window, so the editor always keeps the other half", () => {
+    renderShell();
+
+    fireEvent.mouseDown(screen.getByTitle("Drag to resize the assistant"), { clientX: 1200 });
+    fireEvent.mouseMove(window, { clientX: -5000 });
+    fireEvent.mouseUp(window);
+
+    expect(width()).toBeLessThanOrEqual(Math.round(window.innerWidth * 0.5));
   });
 });

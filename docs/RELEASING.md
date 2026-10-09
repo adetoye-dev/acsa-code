@@ -107,14 +107,22 @@ spctl -a -vv "$APP"                                 # "Unnotarized Developer ID"
 `ACSA_NO_TIMESTAMP=1` uses `--timestamp=none`, which is valid but not notarisable;
 CI uses a real secure timestamp.
 
-### Why there is no disk image
+### The disk image is built by hand, from the stapled app
 
 `tauri build --bundles app,dmg` looks tidier and is wrong: the DMG bundler
 rebuilds the app and then **consumes** it (verified — after a `--bundles dmg` run
 the loose `.app` is gone), so the nested signing is thrown away and the image
-ships an app Apple rejects. The release ships a zip of the signed, notarised,
-stapled `.app` instead. A disk image can be added later by building it from the
-*stapled* app with `hdiutil`, after notarisation.
+ships an app Apple rejects. So the app is built with `--bundles app`, signed,
+notarised and stapled, and only *then* does `release.yml` put it on a volume with
+an `Applications` alias, in the "Build the disk image" step. The image is signed
+and notarised in its own right after that.
+
+The image is the download, not the zip. A zip invites "unzip into Downloads and
+double-click", and macOS runs a quarantined app opened from there as a read-only
+translocated copy — which cannot be replaced, so the updater dies with `Read-only
+file system (os error 30)`. Every one of those reports came from that. A volume
+with an Applications alias puts the drag step in front of the user instead of
+leaving it to be discovered from an errno.
 
 ### In CI
 
@@ -123,6 +131,15 @@ zip and staples the app.
 
 Unsigned builds are quarantined by Gatekeeper on other people's Macs, so this is
 the step between "it builds" and "someone else can install it".
+
+### The landing page's download link points at the disk image
+
+`site/index.html` links straight at an asset on `latest`, so it can only name
+something that exists — and Workers Builds deploys on every commit, which means a
+link ahead of its release is a 404 on the main call to action. It points at
+`ACSA-Code.dmg` now that a release carries one; before that it pointed at the zip,
+for exactly that reason. Three links, one string.
+
 
 Everything on our side is already wired: the hardened runtime and entitlements
 are set in `.tauri/tauri.conf.json`, and `.github/workflows/release.yml` imports
@@ -243,11 +260,22 @@ warns that it is building unsigned, so a fork is not blocked.
 ### 3c. Verify locally before tagging
 
 ```bash
-cd .tauri && ../node_modules/.bin/tauri build --bundles app,dmg
+cd .tauri && ../node_modules/.bin/tauri build --bundles app
 codesign --verify --deep --strict --verbose=2 "target/release/bundle/macos/ACSA Code.app"
 spctl --assess --type execute --verbose=2 "target/release/bundle/macos/ACSA Code.app"
 xcrun stapler validate "target/release/bundle/macos/ACSA Code.app"
+
+# The disk image, the same way the workflow makes it — from the stapled app.
+STAGE=$(mktemp -d) && DMG=target/release/bundle/macos/ACSA-Code.dmg
+ditto "target/release/bundle/macos/ACSA Code.app" "$STAGE/ACSA Code.app"
+ln -s /Applications "$STAGE/Applications"
+hdiutil create -volname "ACSA Code" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 ```
+
+An unsigned image is enough to check the layout — mount it and confirm the app
+and the Applications alias are both there. Signing and notarising the image
+(`codesign --sign … --timestamp`, `notarytool submit --wait`, `stapler staple`)
+is what CI does; doing it locally needs the same credentials as below.
 
 `spctl` should report *accepted, source=Notarized Developer ID*. If it says
 *rejected*, the entitlement that matters most for this app is

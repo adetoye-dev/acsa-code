@@ -48,10 +48,53 @@ vi.mock("../../services/aiChatPersistence", () => ({
   subscribeChatHistory: () => () => undefined,
 }));
 
+/** The model in effect, and whether it is allowed to drive a tool-using run. */
+const model = vi.hoisted(() => ({
+  /**
+   * Model name -> whether it can drive a run, defaulting to yes. Per model rather
+   * than one flag, because the capability is a property of the model: a test that
+   * switches from a chat-only model to a capable one needs both answers at once.
+   */
+  canRun: {} as Record<string, boolean>,
+  /**
+   * The configured model list. It has to hold the model: the component re-resolves
+   * the selection on mount and drops anything the list does not contain, so an
+   * empty list here would quietly test the "no model selected" path instead.
+   */
+  list: [] as Array<Record<string, unknown>>,
+  initial: null as null | {
+    providerId: string;
+    providerName: string;
+    model: string;
+    speedBadge: string;
+    isDefault: boolean;
+    category: "local" | "cloud";
+  },
+}));
+
+const LOCAL_CHAT_MODEL = {
+  providerId: "ollama",
+  providerName: "Ollama",
+  model: "qwen2.5-coder:7b",
+  speedBadge: "Offline",
+  isDefault: true,
+  category: "local" as const,
+};
+
+const CLOUD_AGENT_MODEL = {
+  providerId: "openai",
+  providerName: "OpenAI",
+  model: "gpt-5.3-codex",
+  speedBadge: "Thinking",
+  isDefault: false,
+  category: "cloud" as const,
+};
+
 vi.mock("../../services/aiModelManager", () => ({
-  getConfiguredModelsList: () => [],
+  canRunAgent: (_providerId: string, name: string) => model.canRun[name] ?? true,
+  getConfiguredModelsList: () => model.list,
   ensureProvidersHydrated: async () => undefined,
-  resolveInitialSelectedModel: () => null,
+  resolveInitialSelectedModel: () => model.initial,
   saveActiveSelectedModel: () => undefined,
   getActiveSelectedModel: () => null,
   loadAllProviders: () => ({}),
@@ -61,14 +104,26 @@ vi.mock("../../services/aiModelManager", () => ({
   syncOllamaModels: () => undefined,
 }));
 
+vi.mock("../../services/fileAccess", () => ({
+  readTextFile: async () => "export const x = 1;",
+  writeTextFile: async () => undefined,
+}));
+
+// The chat transport, captured rather than exercised: what matters here is what
+// a chat turn is *handed*, which is the half that had a file dropped from it.
+vi.mock("../../services/aiChatService", () => ({
+  streamChatCompletion: vi.fn(async () => undefined),
+}));
+
 vi.mock("../../services/ollamaSetup", () => ({
   openAiManagementDashboard: () => undefined,
   checkOllamaStatus: async () => ({ running: false, models: [] }),
   EVENT_START_CODING_WITH_OLLAMA: "acsa:start-coding-with-ollama",
 }));
 
-const { AiAssistantChat } = await import("./AiAssistantChat");
+const { AiAssistantChat, effectiveWorkflowMode } = await import("./AiAssistantChat");
 const { chatDraft } = await import("../../services/chatDraft");
+const { streamChatCompletion } = await import("../../services/aiChatService");
 
 const baseProps = {
   status: "idle" as const,
@@ -83,6 +138,9 @@ afterEach(() => {
   cleanup();
   counted.byProvider = {};
   chatDraft.clear();
+  model.canRun = {};
+  model.initial = null;
+  model.list = [];
 });
 
 const transcriptRenders = () => counted.byProvider["deepseek"] ?? 0;
@@ -391,6 +449,39 @@ describe("dropping an image on the composer", () => {
 });
 
 /**
+ * Dragging a file out of the explorer and onto the composer.
+ *
+ * A drop from inside the app carries no `File` — a webview cannot hand one a
+ * path — so the row puts its path on the clipboard instead. What attaches is
+ * the file the reader was pointing at, and anything that is not a path (text
+ * they happened to have selected) is left alone rather than folded into the
+ * prompt.
+ */
+describe("dropping a file from the explorer onto the composer", () => {
+  const dragPath = (path: string) => ({ types: ["text/plain"], files: [], getData: () => path });
+
+  it("attaches the file the dragged row was pointing at", async () => {
+    render(<AiAssistantChat {...baseProps} />);
+    const box = screen.getByRole("textbox");
+
+    fireEvent.drop(box, { dataTransfer: dragPath("/work/acsa-code/src/index.tsx") });
+
+    const chip = await screen.findByTestId("attached-file");
+    expect(chip.getAttribute("title")).toBe("/work/acsa-code/src/index.tsx");
+  });
+
+  it("ignores dragged text that is not an absolute path", async () => {
+    render(<AiAssistantChat {...baseProps} />);
+    const box = screen.getByRole("textbox");
+
+    fireEvent.drop(box, { dataTransfer: dragPath("just some selected words") });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(screen.queryByTestId("attached-file")).toBeNull();
+  });
+});
+
+/**
  * Opening a chat lands on the newest message.
  *
  * The follow-tail effect deliberately refuses to scroll when the reader is not at
@@ -471,5 +562,209 @@ describe("where an opened chat starts", () => {
       Element.prototype.scrollIntoView = original;
       restore();
     }
+  });
+});
+
+/**
+ * The mode a run uses, when the model cannot do what the mode asks.
+ *
+ * This used to be handled by moving the reader's mode: picking a model the daemon
+ * reports as having no tool support switched the chip to ask mode. The reader
+ * could then switch that off — landing them back in a mode the model cannot run at
+ * all — and a control that appears on its own is one they will cancel. The
+ * downgrade is internal now, so the chip is only ever the reader's own choice.
+ */
+describe("the mode a run actually uses", () => {
+  it("is the reader's own when the model can run it", () => {
+    expect(effectiveWorkflowMode("agent", true)).toBe("agent");
+    expect(effectiveWorkflowMode("plan", true)).toBe("plan");
+    expect(effectiveWorkflowMode("chat", true)).toBe("chat");
+  });
+
+  it("is a chat when the model cannot call tools, whatever the chip says", () => {
+    // Agent and plan both go through the runtime, which needs a model that calls
+    // tools. Running them anyway is the failure this exists to prevent.
+    expect(effectiveWorkflowMode("agent", false)).toBe("chat");
+    expect(effectiveWorkflowMode("plan", false)).toBe("chat");
+    expect(effectiveWorkflowMode("chat", false)).toBe("chat");
+  });
+});
+
+describe("a model that can only chat", () => {
+  const onlyChat = () => {
+    model.canRun = { [LOCAL_CHAT_MODEL.model]: false };
+    model.initial = LOCAL_CHAT_MODEL;
+    model.list = [LOCAL_CHAT_MODEL, CLOUD_AGENT_MODEL];
+    render(<AiAssistantChat {...baseProps} />);
+  };
+  const openModelMenu = () => fireEvent.click(screen.getByTitle(/runs on this machine/));
+
+  it("leaves the mode chip alone, because the reader never turned it on", () => {
+    onlyChat();
+
+    expect(screen.queryByTitle("Turn ask mode off")).toBeNull();
+    expect(screen.queryByTitle(/does not call tools/)).toBeNull();
+    // And the composer still says agent, because agent is what they picked.
+    expect(screen.getByTitle("Run Agent (Enter)")).toBeTruthy();
+  });
+
+  it("lists every model, with nothing hidden", async () => {
+    onlyChat();
+
+    await waitFor(() => expect(screen.getByTitle(/runs on this machine/)).toBeTruthy());
+    openModelMenu();
+
+    expect(await screen.findByText("2 models")).toBeTruthy();
+    expect(screen.queryByText(/hidden/)).toBeNull();
+    expect(screen.getByText(CLOUD_AGENT_MODEL.model)).toBeTruthy();
+  });
+
+  it("says what the turn will do rather than asking them to pick another model", async () => {
+    onlyChat();
+
+    await waitFor(() => expect(screen.getByTitle(/runs on this machine/)).toBeTruthy());
+    openModelMenu();
+
+    expect(await screen.findByText(/answers in the chat instead of editing files/)).toBeTruthy();
+    // The old menu pushed them at a different model. Choosing is theirs; this only
+    // says what the turn will do.
+    expect(screen.queryByRole("button", { name: /Use .* instead/ })).toBeNull();
+  });
+});
+
+
+/**
+ * Files as chat context.
+ *
+ * The picker replaced a "Mentions" entry that typed an "@" nothing handled, so
+ * the first thing to pin is that the thing a reader attaches is the thing the
+ * composer says is attached — and that they can take it back off.
+ */
+describe("attaching a file to a message", () => {
+  const TREE = [
+    {
+      name: "src",
+      path: "/work/acsa-code/src",
+      is_dir: true,
+      size_bytes: 0,
+      children: [
+        { name: "index.tsx", path: "/work/acsa-code/src/index.tsx", is_dir: false, size_bytes: 12 },
+        { name: "routes.ts", path: "/work/acsa-code/src/routes.ts", is_dir: false, size_bytes: 12 },
+      ],
+    },
+  ];
+
+  const renderWithFiles = () =>
+    render(<AiAssistantChat {...baseProps} projectFiles={TREE as never} />);
+
+  /** Open the picker and choose a file by name — the chip is a button too, so a
+   *  role query alone would match the thing already attached. */
+  const choose = async (name: string) => {
+    fireEvent.click(screen.getByTitle(/Add Context/));
+    fireEvent.click(screen.getByTestId("add-context-files"));
+    const options = await screen.findAllByTestId("file-option");
+    const option = options.find((node) => node.textContent?.includes(name));
+    if (!option) throw new Error(`no file option for ${name}`);
+    fireEvent.click(option);
+  };
+
+  it("offers the project's files and shows what was attached", async () => {
+    renderWithFiles();
+
+    await choose("index.tsx");
+
+    const chip = await screen.findByTestId("attached-file");
+    expect(chip.textContent).toContain("index.tsx");
+    // The path is what the prompt will carry, so it is what the chip promises.
+    expect(chip.getAttribute("title")).toBe("/work/acsa-code/src/index.tsx");
+  });
+
+  it("takes it back off when the reader removes it", async () => {
+    renderWithFiles();
+
+    await choose("index.tsx");
+    await screen.findByTestId("attached-file");
+
+    fireEvent.click(screen.getByTitle(/Remove index\.tsx/));
+    await waitFor(() => expect(screen.queryByTestId("attached-file")).toBeNull());
+  });
+
+  it("does not attach the same file twice", async () => {
+    renderWithFiles();
+
+    for (const _ of [0, 1]) await choose("index.tsx");
+
+    expect(screen.getAllByTestId("attached-file")).toHaveLength(1);
+  });
+});
+
+/**
+ * A file attached to a *chat* turn has to reach the model.
+ *
+ * It did not. `promptToSend` — the prompt with the file's text folded into it —
+ * was built on both paths, but only the agent path used it; the chat path sent
+ * the transcript's own copy, which deliberately holds no file text. So a dragged
+ * file was a chip the assistant could not see, and it answered "since no specific
+ * file has been mentioned", which is exactly what it had been handed. The send
+ * path had no test at all, which is how that survived.
+ */
+describe("a file attached to a chat turn", () => {
+  const TREE = [
+    {
+      name: "src",
+      path: "/work/acsa-code/src",
+      is_dir: true,
+      size_bytes: 0,
+      children: [
+        { name: "index.tsx", path: "/work/acsa-code/src/index.tsx", is_dir: false, size_bytes: 12 },
+      ],
+    },
+  ];
+
+  /** Attach a file, type a question, and send it — a model that cannot call tools,
+   *  so the turn takes the chat path. */
+  const attachAskAndSend = async () => {
+    model.canRun = { [LOCAL_CHAT_MODEL.model]: false };
+    model.initial = LOCAL_CHAT_MODEL;
+    model.list = [LOCAL_CHAT_MODEL];
+    (streamChatCompletion as unknown as { mockClear: () => void }).mockClear();
+
+    render(<AiAssistantChat {...baseProps} projectRoot="/work/acsa-code" projectFiles={TREE as never} />);
+
+    fireEvent.click(screen.getByTitle(/Add Context/));
+    fireEvent.click(screen.getByTestId("add-context-files"));
+    const options = await screen.findAllByTestId("file-option");
+    const option = options.find((node) => node.textContent?.includes("index.tsx"));
+    if (!option) throw new Error("no file option for index.tsx");
+    fireEvent.click(option);
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "explain this file" } });
+    fireEvent.click(screen.getByTitle("Run Agent (Enter)"));
+  };
+
+  const sentMessages = () => {
+    const calls = (streamChatCompletion as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    const params = calls.at(-1)?.[0] as { messages: Array<{ content: string }> };
+    return params.messages;
+  };
+
+  it("sends the file's text, not only the chip", async () => {
+    await attachAskAndSend();
+
+    await waitFor(() => expect(streamChatCompletion).toHaveBeenCalled());
+    const last = sentMessages().at(-1);
+    expect(last?.content).toContain("explain this file");
+    expect(last?.content).toContain("export const x = 1;"); // the file's text
+    expect(last?.content).toContain("index.tsx"); // and which file it is
+  });
+
+  it("keeps the file's text out of the transcript", async () => {
+    // The chips above the message are what a reader should see, not a wall of the
+    // file they attached.
+    await attachAskAndSend();
+
+    await waitFor(() => expect(streamChatCompletion).toHaveBeenCalled());
+    expect(screen.queryByText(/export const x = 1;/)).toBeNull();
+    expect(screen.getByText("explain this file")).toBeTruthy();
   });
 });

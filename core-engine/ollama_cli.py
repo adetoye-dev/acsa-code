@@ -10,6 +10,7 @@ so the packaged IPC path and the dev bridge can share one implementation.
 
 Usage: python3 ollama_cli.py status
        python3 ollama_cli.py start
+       python3 ollama_cli.py install
        python3 ollama_cli.py pull '{"model": "qwen2.5-coder:7b"}'
        python3 ollama_cli.py delete '{"model": "qwen2.5-coder:7b"}'
 """
@@ -18,32 +19,85 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
 import time
+import tool_paths
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
 
-# Where the macOS app and the common package managers put the binary.
-BINARY_CANDIDATES = (
-    "/opt/homebrew/bin/ollama",
-    "/usr/local/bin/ollama",
-    "/usr/bin/ollama",
-    "/Applications/Ollama.app/Contents/Resources/ollama",
-)
+# Ollama's own macOS installer leaves the engine inside the app bundle. The other
+# places it can live — Homebrew, `/usr/local/bin` — are in `tool_paths`, which also
+# knows why a window launched from the Dock cannot see them on PATH.
+OLLAMA_APP_BINARY = "/Applications/Ollama.app/Contents/Resources/ollama"
 
 
 def _binary() -> str | None:
-    found = shutil.which("ollama")
-    if found:
-        return found
-    for candidate in BINARY_CANDIDATES:
-        if Path(candidate).is_file():
-            return candidate
+    """The Ollama binary, wherever it is.
+
+    In order: one already on PATH, then the copy this app installed itself, then
+    the bundle Ollama's installer left, then the usual install directories.
+    """
+    ours = _installed_binary()
+    extra = [str(ours)] if ours is not None else []
+    extra.append(OLLAMA_APP_BINARY)
+    return tool_paths.find("ollama", extra_paths=extra)
+
+
+def _install_root() -> Path:
+    """Where this app keeps an Ollama it installed itself.
+
+    Deliberately under the app's own data directory: installing here needs no
+    administrator password, replaces nothing the user already has, and is
+    removed by the same uninstall that removes the app.
+    """
+    override = os.environ.get("ACSA_OLLAMA_HOME")
+    if override:
+        return Path(override).expanduser()
+    home = Path.home()
+    if sys.platform == "darwin":
+        base = home / "Library" / "Application Support" / "ACSA Code"
+    elif os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA") or (home / "AppData" / "Local")) / "ACSA Code"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME") or (home / ".local" / "share")) / "acsa-code"
+    return base / "engines" / "ollama"
+
+
+def _installed_binary() -> Path | None:
+    """The engine binary inside our own install root, if it is already there."""
+    root = _install_root()
+    if sys.platform == "darwin":
+        candidate = root / "Ollama.app" / "Contents" / "Resources" / "ollama"
+    elif os.name == "nt":
+        candidate = root / "ollama.exe"
+    else:
+        candidate = root / "ollama"
+    return candidate if candidate.is_file() else None
+
+
+def _artifact_url() -> str | None:
+    """Ollama's own signed release for this machine, or None if we cannot say.
+
+    These are Ollama's published builds, fetched from Ollama — not something we
+    re-host. That is the whole reason this is allowed to exist: the previous
+    version refused to install on the grounds that "a copy we fetch can be
+    neither signed nor notarised", which was true of a copy *we* built and false
+    of the one the vendor publishes.
+    """
+    if sys.platform == "darwin":
+        return "https://ollama.com/download/Ollama-darwin.zip"
+    if os.name == "nt":
+        machine = platform.machine().lower()
+        if machine in ("arm64", "aarch64"):
+            return "https://ollama.com/download/ollama-windows-arm64.zip"
+        return "https://ollama.com/download/ollama-windows-amd64.zip"
     return None
 
 
@@ -189,6 +243,116 @@ def start(payload: dict | None = None) -> dict:
     return {"started": False, "error": "Ollama did not report ready in time."}
 
 
+def _download(url: str, destination: Path) -> int:
+    """Stream `url` into `destination`, emitting percent frames. Returns bytes."""
+    request = urllib.request.Request(url, headers={"User-Agent": "ACSA-Code"})
+    # No read deadline: a large build on a slow line is legitimately slow, and
+    # aborting a download that is still moving is the worst thing an installer
+    # can do. Only the connection needs a bound.
+    with urllib.request.urlopen(request, timeout=30) as response:
+        total = int(response.headers.get("Content-Length") or 0)
+        received = 0
+        # One frame per whole percent, not one per socket read. A chunked read
+        # fires ~750 times for a build this size, and every frame becomes a
+        # Tauri event and a React state update — a download that stutters the
+        # whole window it is reporting to.
+        last_percent = -1
+        with open(destination, "wb") as handle:
+            while True:
+                chunk = response.read(262_144)
+                if not chunk:
+                    break
+                handle.write(chunk)
+                received += len(chunk)
+                if total:
+                    percent = min(99, round(received / total * 100))
+                    if percent != last_percent:
+                        last_percent = percent
+                        _emit(
+                            {
+                                "percent": percent,
+                                "status": (
+                                    f"Downloading Ollama… {_format_size(received)} of {_format_size(total)}"
+                                ),
+                            }
+                        )
+    return received
+
+
+def install(payload: dict | None = None) -> None:
+    """Fetch Ollama for the user and unpack it where this app can run it.
+
+    Installing used to be the user's job: the wizard threw an error telling them
+    to go to ollama.com, download the right build for their chip, and come back.
+    That is a support ticket, not a setup step — a developer who has never used a
+    local model should not have to leave the app at all.
+
+    We unpack Ollama's own published release into a directory this app owns.
+    Nothing outside that folder is touched, so there is no password prompt; and
+    we do not run Ollama's installer or its `curl | sh` script, both of which
+    want root and write into system paths.
+    """
+    existing = _binary()
+    if existing:
+        _emit({"done": True, "alreadyInstalled": True, "binaryPath": existing})
+        return
+
+    url = _artifact_url()
+    if url is None:
+        _emit(
+            {
+                "done": True,
+                "error": (
+                    "Automatic setup is not available on this system yet. "
+                    "Install Ollama from ollama.com, then choose Retry."
+                ),
+            }
+        )
+        return
+
+    root = _install_root()
+    parent = root.parent
+    staging = parent / (root.name + ".staging")
+    archive = parent / (root.name + ".download")
+
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+        if staging.exists():
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True)
+
+        _emit({"percent": 0, "status": "Starting the Ollama download…"})
+        if _download(url, archive) <= 0:
+            raise RuntimeError("the download came back empty")
+
+        _emit({"percent": 100, "status": "Unpacking Ollama…"})
+        with zipfile.ZipFile(archive) as bundle:
+            bundle.extractall(staging)
+
+        # Swap the finished tree into place only once it is complete, so a
+        # download that dies halfway never leaves a half-installed engine that
+        # looks installed.
+        if root.exists():
+            shutil.rmtree(root)
+        shutil.move(str(staging), str(root))
+
+        binary = _installed_binary()
+        if binary is None:
+            raise RuntimeError("the archive did not contain the Ollama engine")
+        if os.name != "nt":
+            os.chmod(binary, 0o755)
+        _emit({"done": True, "binaryPath": str(binary)})
+    except Exception as exc:  # noqa: BLE001 - the CLI reports, it does not raise
+        _emit({"done": True, "error": f"Could not set up Ollama: {exc}"})
+    finally:
+        try:
+            archive.unlink(missing_ok=True)
+        except OSError:
+            pass
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+
+
 def pull(payload: dict | None = None) -> None:
     """Download a model, writing one NDJSON progress frame per line.
 
@@ -283,8 +447,15 @@ def show(payload: dict | None = None) -> dict:
     return {"ok": True, "model": model, **document}
 
 
-COMMANDS = {"status": status, "start": start, "pull": pull, "delete": delete, "show": show}
-STREAMING = {"pull"}
+COMMANDS = {
+    "status": status,
+    "start": start,
+    "install": install,
+    "pull": pull,
+    "delete": delete,
+    "show": show,
+}
+STREAMING = {"pull", "install"}
 
 
 def run(argv: list[str]) -> int:

@@ -200,7 +200,7 @@ export function SettingsModal({
   const [enableLigatures, setEnableLigatures] = useState(true);
   const [tabSize, setTabSize] = useState<number>(2);
   const [insertSpaces, setInsertSpaces] = useState(true);
-  const [wordWrap, setWordWrap] = useState(false);
+  const [wordWrap, setWordWrap] = useState(true);
 
   // Terminal state
   const [terminalFontSize, setTerminalFontSize] = useState(13);
@@ -255,7 +255,7 @@ export function SettingsModal({
     setEnableLigatures(safeSettings.enableLigatures ?? true);
     setTabSize(safeSettings.tabSize ?? 2);
     setInsertSpaces(safeSettings.insertSpaces ?? true);
-    setWordWrap(safeSettings.wordWrap ?? false);
+    setWordWrap(safeSettings.wordWrap ?? true);
     setTerminalFontSize(safeSettings.terminalFontSize ?? 13);
     setApprovalMode(
       isAgentApprovalMode(safeSettings.approvalMode)

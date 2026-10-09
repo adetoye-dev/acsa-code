@@ -478,7 +478,11 @@ export function MarketplaceSidebar({ projectRoot = "" }: MarketplaceSidebarProps
                           <ItemMark item={item} />
                         </span>
                         <span className="min-w-0 flex-1">
-                          <span className="flex items-center gap-1.5">
+                          {/* `flex-wrap` so the trust badge drops to its own line
+                              when the column is narrow — with chat docked the
+                              title was squeezed to "C…" by a badge that cannot
+                              shrink. The name is the thing being read. */}
+                          <span className="flex flex-wrap items-center gap-1.5">
                             <span className="truncate text-sm font-semibold text-zinc-100">
                               {item.name}
                             </span>
@@ -521,7 +525,7 @@ export function MarketplaceSidebar({ projectRoot = "" }: MarketplaceSidebarProps
                                 <ItemMark item={item} className="h-6 w-6" />
                               </span>
                               <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-2">
+                                <div className="flex flex-wrap items-center gap-2">
                                   <span className="truncate text-sm font-semibold text-zinc-100">
                                     {item.name}
                                   </span>

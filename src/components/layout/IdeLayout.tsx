@@ -25,6 +25,7 @@ import {
 import "dockview/dist/styles/dockview.css";
 import { Activity, Save, Folder, Search, GitPullRequest, GitFork, Download, PanelBottom, PanelLeft, FolderPlus, Settings, PanelRight, Cpu, MessageSquare, Palette, Package, Bot, GitCompare, X, Network } from "lucide-react";
 import { Icon } from "../ui/Icon";
+import { hasIpc } from "../../services/engineBridge";
 import { FileIcon } from "../ui/FileIcon";
 
 import { StatusBar, blockedLabel } from "./StatusBar";
@@ -271,6 +272,67 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
     window.addEventListener("mouseup", handleMouseUp);
   }, []);
 
+  /**
+   * The chat dock's width, dragged from its own left edge like the explorer's.
+   *
+   * It was a `clamp()` — always 30% of the window, with no way to argue with it.
+   * On a 1380px window that leaves the editor about 790px, and a file whose lines
+   * run past that is clipped by the editor's own viewport (`wordWrap` is off by
+   * default). That reads as the assistant cutting the code off, and the only
+   * remedy was to close the dock. A split the reader can move is the difference
+   * between a layout that suits the average and one that suits the file in front
+   * of them.
+   */
+  const [chatWidth, setChatWidth] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem("acsa_chat_width");
+      if (saved) {
+        const num = parseInt(saved, 10);
+        if (!isNaN(num) && num >= 300 && num <= 760) return num;
+      }
+    } catch {}
+    return 400;
+  });
+  const [isResizingChat, setIsResizingChat] = useState(false);
+  const chatWidthRef = useRef(chatWidth);
+  chatWidthRef.current = chatWidth;
+
+  const startResizingChat = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizingChat(true);
+
+    const startX = e.clientX;
+    const startWidth = chatWidthRef.current;
+    const prevCursor = document.body.style.cursor;
+    const prevUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      // The dock is on the right, so dragging *left* is growing it. The ceiling is
+      // half the window: past that the editor stops being an editor.
+      const delta = startX - moveEvent.clientX;
+      const ceiling = Math.max(300, Math.min(760, Math.round(window.innerWidth * 0.5)));
+      const newWidth = Math.max(300, Math.min(ceiling, startWidth + delta));
+      setChatWidth(newWidth);
+      chatWidthRef.current = newWidth;
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingChat(false);
+      document.body.style.cursor = prevCursor;
+      document.body.style.userSelect = prevUserSelect;
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+      try {
+        localStorage.setItem("acsa_chat_width", chatWidthRef.current.toString());
+      } catch {}
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+  }, []);
+
   // Closed on launch: the terminal is a tool you reach for, not the default view
   // of half the canvas. The titlebar toggle and ⌘J are how you get it.
   const [isBottomPanelOpen, setIsBottomPanelOpen] = useState(false);
@@ -425,6 +487,34 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
   };
 
   /**
+   * Open a file from the native picker into a tab.
+   *
+   * The panel opens in the project rather than at the Desktop, because that is
+   * where the file the reader wants is — and because the reader only reads inside
+   * the project root, so a choice made anywhere else comes back as a refusal in a
+   * tab rather than as the file.
+   */
+  const handleOpenFile = async () => {
+    if (!hasIpc()) return;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const picked = await invoke<string | null>("pick_open_file", {
+        prompt: "Open File:",
+        defaultDir: activeProject.path || null,
+      });
+      if (!picked) return;
+      await openFile({
+        name: picked.split("/").pop() || picked,
+        path: picked,
+        is_dir: false,
+        size_bytes: 0,
+      });
+    } catch (err) {
+      console.error("pick_open_file failed:", err);
+    }
+  };
+
+  /**
    * Show a screen.
    *
    * A page wants the canvas, so the terminal and the chat dock step aside — and
@@ -489,6 +579,45 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
   }, []);
 
   // ── Listen for Watermark / Global Quick Action Requests ───────────────────
+  /**
+   * The application menu's actions, which live in Rust and arrive as one event.
+   *
+   * Read through a ref so the subscription is made once: `activeTabPath` and the
+   * callbacks change on every keystroke, and resubscribing per render would be
+   * listener churn the menu has no use for.
+   */
+  const menuActionsRef = useRef<Record<string, () => void>>({});
+  useEffect(() => {
+    menuActionsRef.current = {
+      "open-file": () => void handleOpenFile(),
+      "open-folder": () => void handleOpenFolder(),
+      save: () => {
+        if (activeTabPath) void saveFile(activeTabPath);
+      },
+      "save-all": () => {
+        for (const tab of openTabs.filter((entry) => entry.isDirty)) void saveFile(tab.path);
+      },
+    };
+  });
+
+  useEffect(() => {
+    if (!hasIpc()) return;
+    let off: (() => void) | undefined;
+    let cancelled = false;
+    void (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      const stop = await listen<string>("acsa:menu", (event) => {
+        menuActionsRef.current[event.payload]?.();
+      });
+      if (cancelled) stop();
+      else off = stop;
+    })();
+    return () => {
+      cancelled = true;
+      off?.();
+    };
+  }, []);
+
   useEffect(() => {
     const handleOpenFileSearch = () => {
       setPaletteMode("file");
@@ -725,6 +854,15 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
       category: "File",
       icon: Folder,
       action: handleOpenFolder,
+    },
+    {
+      // The menu bar's File ▸ Open File…, offered here too so the two ways in are
+      // the same command rather than neighbours that drifted apart.
+      id: "file.openFile",
+      title: "Open File...",
+      category: "File",
+      icon: Folder,
+      action: handleOpenFile,
     },
     {
       id: "file.newProject",
@@ -1494,11 +1632,26 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
 
         {/* ── Right Secondary Tool Window (IntelliJ-Style AI Assistant Dock) ── */}
         {isRightPanelOpen && (
-          <aside className="w-[clamp(300px,30vw,520px)] max-w-[48%] border-l border-[var(--vscode-border)] bg-workbench flex flex-col h-full shrink-0 overflow-hidden z-raised shadow-2xl">
+          <aside
+            data-testid="chat-dock-panel"
+            style={{ width: `${chatWidth}px` }}
+            className="relative min-w-[300px] max-w-[50%] border-l border-[var(--vscode-border)] bg-workbench flex flex-col h-full shrink-0 overflow-hidden z-raised shadow-2xl"
+          >
+            {/* Pointer-only, like the explorer's handle: the dock is usable at its
+                default width, and this exists to change it. */}
+            <div
+              role="presentation"
+              onMouseDown={startResizingChat}
+              className={`absolute top-0 left-0 w-1.5 h-full cursor-col-resize hover:bg-zinc-600/40 transition-colors z-dock select-none ${
+                isResizingChat ? "bg-zinc-500" : ""
+              }`}
+              title="Drag to resize the assistant"
+            />
             <AiAssistantChat
               status={status}
               activityLog={activityLog}
               projectRoot={activeProject.path}
+              projectFiles={projectFiles}
               branch={gitBranch}
               onRunPipeline={(request, override, activePath, code, history, images, runMode) => {
                 if (override) {

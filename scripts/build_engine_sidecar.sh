@@ -66,6 +66,7 @@ mkdir -p .tauri/binaries
   --hidden-import ollama_cli \
   --hidden-import git_cli \
   --hidden-import gh_cli \
+  --hidden-import tool_paths \
   --hidden-import indexer_cli \
   --hidden-import skills_cli \
   --hidden-import mcp_cli \

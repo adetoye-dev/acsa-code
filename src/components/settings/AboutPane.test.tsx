@@ -1,14 +1,26 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 type Outcome = { kind: "available"; update: any } | { kind: "current" } | { kind: "failed"; detail: string };
 let outcome: Outcome = { kind: "current" };
+
+const RELEASE_URL = "https://github.com/adetoye-dev/acsa-code/releases/latest";
+
+const opened = vi.hoisted(() => ({ urls: [] as string[] }));
+vi.mock("../../services/openExternal", () => ({
+  openExternal: async (url: string) => {
+    opened.urls.push(url);
+    return true;
+  },
+  isOpenableUrl: () => true,
+}));
 
 vi.mock("../../services/appUpdater", () => ({
   autoCheckEnabled: () => true,
   setAutoCheck: vi.fn(),
   currentVersion: async () => "0.2.0",
+  RELEASE_PAGE_URL: "https://github.com/adetoye-dev/acsa-code/releases/latest",
   checkForUpdateDetailed: async () => outcome,
   installUpdate: vi.fn(async () => {
     // What the real service does: publish the new state and announce it. A mock
@@ -30,6 +42,57 @@ const { AboutPane } = await import("./AboutPane");
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  opened.urls = [];
+});
+
+describe("an update that cannot replace the copy that is running", () => {
+  it("says why and offers the way out, in that order", async () => {
+    // What the read-only failure looked like to users: "Read-only file system (os
+    // error 30)", with no cause and no next step. That user is not going to debug
+    // an errno, so the sentence has to explain the copy they are running and the
+    // link has to exist — it is the only action that can still work.
+    render(<AboutPane />);
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent("acsa:update", {
+          detail: {
+            kind: "install",
+            progress: {
+              version: "0.2.26",
+              phase: "failed",
+              percent: 0,
+              detail: "ACSA Code is running from a read-only location, so it cannot replace itself.",
+              remedy: "manual",
+            },
+          },
+        }),
+      );
+    });
+
+    expect(screen.getByText(/read-only location/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /open the download page/i }));
+    expect(opened.urls).toEqual([RELEASE_URL]);
+  });
+
+  it("does not offer a download page for a failure that can just be retried", async () => {
+    // The control: the link is tied to the remedy, not to failure in general.
+    render(<AboutPane />);
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent("acsa:update", {
+          detail: {
+            kind: "install",
+            progress: { version: "0.2.26", phase: "failed", percent: 0, detail: "network unreachable" },
+          },
+        }),
+      );
+    });
+
+    expect(screen.getByText(/network unreachable/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /open the download page/i })).toBeNull();
+  });
 });
 
 describe("the About pane", () => {

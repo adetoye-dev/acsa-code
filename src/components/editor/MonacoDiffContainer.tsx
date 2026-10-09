@@ -23,6 +23,7 @@ import "../../monacoSetup";
 import { Check, X, Menu } from "lucide-react";
 import { Icon } from "../ui/Icon";
 import { applyMonacoTheme } from "../../services/themeManager";
+import { PANE_EDITOR_OPTIONS } from "../../services/monacoPaneOptions";
 
 interface MonacoDiffContainerProps {
   originalContent: string;
@@ -94,7 +95,9 @@ export function MonacoDiffContainer({
       fontSize: 13,
       fontFamily: "var(--ide-font-family, 'JetBrains Mono', Menlo, Monaco, 'Courier New', monospace)",
       lineNumbers: "on",
-      automaticLayout: true,
+      // Same pane rules as the editor: re-measure on resize, and keep hovers and
+      // hints from being clipped at the pane's edge.
+      ...PANE_EDITOR_OPTIONS,
       scrollBeyondLastLine: false,
       readOnly: true,
       minimap: { enabled: false },

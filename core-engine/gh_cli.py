@@ -23,11 +23,12 @@ from __future__ import annotations
 import re
 import json
 import os
-import shutil
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+
+import tool_paths
 
 # These lists are network-bound and can take seconds on a large repository, so the
 # git module's local timeout would cut them off.
@@ -83,8 +84,23 @@ def _limit(payload: dict) -> int:
 
 
 def _gh_path() -> str | None:
-    """Split out so a test can say what happens when there is no `gh`."""
-    return shutil.which("gh")
+    """Split out so a test can say what happens when there is no `gh`.
+
+    Not `shutil.which` alone: a window launched from the Dock does not inherit the
+    PATH from the user's shell, so a `gh` installed with Homebrew — which is what
+    this app's own error message tells the user to do — is invisible to `which`
+    even though it runs in their terminal. See `tool_paths`.
+    """
+    return tool_paths.find("gh")
+
+
+def _gh(*args: str) -> list[str]:
+    """`gh <args>`, through the path that was found rather than the bare name.
+
+    The name alone is resolved against PATH — the PATH this process may not have.
+    The absolute path is the fact; the name is the guess.
+    """
+    return [_gh_path() or "gh", *args]
 
 
 def _run(args: list[str], cwd: str, timeout: int = GH_TIMEOUT) -> tuple[bool, str, str]:
@@ -309,7 +325,7 @@ def _gh_json(slug: str, args: list[str]) -> tuple[bool, list, str]:
     the working directory: the slug has already been read from the remote, and
     being explicit means the answer cannot change with the process's cwd.
     """
-    ok, out, err = _run(["gh", *args, "--repo", slug], os.getcwd())
+    ok, out, err = _run(_gh(*args, "--repo", slug), os.getcwd())
     if not ok:
         return False, [], (err or out).strip()
     try:
@@ -395,7 +411,7 @@ def run_log(payload: dict) -> dict:
         )
 
     ok, out, err = _run(
-        ["gh", "run", "view", run_id, "--log-failed", "--repo", slug],
+        _gh("run", "view", run_id, "--log-failed", "--repo", slug),
         cwd,
         LOG_TIMEOUT,
     )

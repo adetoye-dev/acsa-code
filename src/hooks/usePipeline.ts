@@ -15,6 +15,7 @@ import type { OpenFileTab } from "../types/workbench";
 import type { AISettings } from "../components/SettingsModal";
 import type { PipelineOutputLine, PipelineStatus } from "../types/telemetry";
 import { DESKTOP_REQUIRED_MESSAGE } from "../services/engineBridge";
+import { invalidateProjectFiles } from "../services/monacoProjectFiles";
 import type { AgentStep } from "../services/aiChatService";
 import {
   getActiveSelectedModel,
@@ -36,7 +37,11 @@ import {
 import { ensureProvidersHydrated } from "../services/aiModelManager";
 import {
   DEFAULT_TURN_LIMIT_MINUTES,
-  shouldStopTurn,
+  stopReason,
+  repeatedAction,
+  actionSignature,
+  turnRepeatNotice,
+  turnStepLimitNotice,
   turnLimitNotice,
 } from "../services/agentTurnLimit";
 import { PROVIDER_RETRY_LIMIT, providerRetryReason } from "../services/providerRetry";
@@ -460,8 +465,11 @@ async function runAgent(params: {
               projectPath: params.projectRoot,
             }),
           ]);
-        } catch {
-          /* metering is diagnostics; never let it surface as a run failure */
+        } catch (error) {
+          // Metering is diagnostics and must never fail a run — but it failed
+          // *silently*, and a finished plan run left no ledger row with nothing to
+          // say why. The write is still best-effort; the silence is not.
+          params.log?.("[usage] this turn's tokens were not recorded: " + String(error));
         }
       })();
     }
@@ -1753,6 +1761,11 @@ export function usePipeline(): UsePipelineReturn {
         const nodes = await invoke<FileNode[]>("list_project_files", {
           projectPath: activeProject.path,
         });
+        // The TypeScript worker's copy of the project is stale the moment the tree
+        // changes. Dropped here rather than inside the editor, so a file created by
+        // an agent run is visible to the next import that resolves — the editor
+        // re-mirrors on its next mount, and the walk is cached until then.
+        invalidateProjectFiles(activeProject.path);
         setProjectFiles(nodes);
         return nodes;
       } catch (err) {
@@ -2584,20 +2597,35 @@ export function usePipeline(): UsePipelineReturn {
   const turnLimitMinutes = aiSettings.turnLimitMinutes ?? DEFAULT_TURN_LIMIT_MINUTES;
   useEffect(() => {
     if (status !== "running") return;
-    if (!shouldStopTurn({ elapsedMs: turnElapsedMs, limitMinutes: turnLimitMinutes, blockedOnUser: Boolean(waitingForUser) })) {
-      return;
-    }
+    const signatures = agentSteps.map((step) => actionSignature(step));
+    const reason = stopReason({
+      elapsedMs: turnElapsedMs,
+      limitMinutes: turnLimitMinutes,
+      steps: agentSteps.length,
+      signatures,
+      blockedOnUser: Boolean(waitingForUser),
+    });
+    if (!reason) return;
+    // The sentence names which bound fired. "Stopped after 60 steps" tells the
+    // reader only that we intervened; the repeated action tells them what to fix.
+    const repeated = reason === "repeats" ? repeatedAction(signatures) : null;
+    const sentence =
+      reason === "repeats" && repeated
+        ? turnRepeatNotice(repeated.signature, repeated.count)
+        : reason === "steps"
+        ? turnStepLimitNotice(agentSteps.length)
+        : turnLimitNotice(turnLimitMinutes);
     setActivityLog((prev) => [
       ...prev,
       {
         line_number: prev.length + 1,
-        content: turnLimitNotice(turnLimitMinutes),
+        content: sentence,
         stream: "stderr" as const,
         is_json: false,
       },
     ]);
     void cancelPipeline();
-  }, [status, turnElapsedMs, turnLimitMinutes, waitingForUser, cancelPipeline]);
+  }, [status, turnElapsedMs, turnLimitMinutes, waitingForUser, cancelPipeline, agentSteps]);
 
   const clearLog = useCallback(() => {
     setActivityLog([]);
