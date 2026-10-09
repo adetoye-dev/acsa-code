@@ -17,6 +17,33 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Package imports resolve in the editor the way they do in VS Code.** Four gaps
+  in the TypeScript mirror, all the same shape: the worker is handed files, and it
+  was not being handed the right ones.
+  - **A package's manifest.** TypeScript resolves a package through `types`,
+    `typings` and `exports`. Without the manifest the worker falls back to
+    `<pkg>/index.d.ts`, so a package whose types are anywhere else —
+    `lucide-react` ships `dist/lucide-react.d.ts` — was *"Cannot find module"*.
+  - **A package's referenced declarations.** `next/index.d.ts` is nineteen lines of
+    `/// <reference path>` and `export *`. Registering the entry alone produced a
+    module with no members, which is *"Module 'next' has no exported member
+    'MetadataRoute'"*. The mirror follows the declaration graph now, including the
+    bare self-reference `next/font/google` is built from.
+  - **The subpaths a project actually imports.** `next/image` is named by nothing
+    in `next`'s entry, and there is no `exports` map to read it from — the
+    project's own imports are the only thing that says it exists. Same for a
+    package that is imported but not declared: the import is the evidence.
+  - **The reader's 2 MB ceiling**, which refused `lucide-react`'s 2.18 MB
+    declaration file. Types are read, never edited, so they have their own reader
+    with a ceiling that suits them.
+
+  Checked against the project this was reported from, with the real compiler and
+  the worker's own file lookup: `app/robots.ts`, `app/layout.tsx`,
+  `app/about/page.tsx` and `app/contact/page.tsx` go from failing imports to zero
+  diagnostics.
+
 ## [0.2.32] - 2026-10-10
 
 ### Fixed

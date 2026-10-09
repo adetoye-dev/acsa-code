@@ -27,7 +27,7 @@
  * be built must leave the editor exactly as it was, never half-configured.
  */
 
-import { readTextFile } from "./fileAccess";
+import { readTextFileForTypes } from "./fileAccess";
 import { typescriptFeature } from "./monacoTsConfig";
 import { extendsPath, parseTsconfig, toMonacoCompilerOptions } from "./projectTsconfig";
 import type { FileNode } from "../components/FileTree";
@@ -70,7 +70,9 @@ export interface SyncHost {
 
 function desktopHost(projectRoot: string): SyncHost {
   return {
-    read: (path) => readTextFile(path, projectRoot),
+    // The mirror's reader, not the editor's: a declaration file over 2 MB is
+    // normal and has to arrive anyway.
+    read: (path) => readTextFileForTypes(path, projectRoot),
     tree: async () => {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<FileNode[]>("list_project_files", { projectPath: projectRoot });
@@ -216,6 +218,111 @@ export function conventionalTypeEntries(manifest: Record<string, unknown>): stri
   return [...new Set(entries)];
 }
 
+/**
+ * The relative paths one declaration file pulls in.
+ *
+ * `next` is the reason this exists: its `index.d.ts` is nineteen lines of
+ * `/// <reference path="./app.d.ts" />` and `export * from './types'`. Registering
+ * the entry alone produces a module that exists and has almost no members, which
+ * is what "Module 'next' has no exported member 'MetadataRoute'" is.
+ */
+const DECLARATION_REFERENCE =
+  /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\(\s*)["']([^"']+)["']|reference\s+path=["']([^"']+)["']/g;
+
+/**
+ * A path with its `.` and `..` segments resolved.
+ *
+ * Not cosmetic. TypeScript asks for `…/next/dist/types.d.ts`; a registration
+ * under `…/next/./dist/types.d.ts` is a different file to the worker, which
+ * answers `fileExists` by name, so the whole chase would be registered and
+ * unreachable at the same time.
+ */
+function normalisePath(path: string): string {
+  const absolute = path.startsWith("/");
+  const parts: string[] = [];
+  for (const part of path.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  return `${absolute ? "/" : ""}${parts.join("/")}`;
+}
+
+/** Where a relative specifier could point, most likely first. */
+function referenceCandidates(directory: string, specifier: string): string[] {
+  const base = specifier.startsWith("/") ? specifier : `${directory}/${specifier}`;
+  const normalised = normalisePath(base);
+  if (/\.(d\.ts|d\.mts|d\.cts|ts|tsx|mts|cts)$/.test(normalised)) return [normalised];
+  return [
+    `${normalised}.d.ts`,
+    `${normalised}.ts`,
+    `${normalised}.tsx`,
+    `${normalised}/index.d.ts`,
+    `${normalised}/index.ts`,
+  ];
+}
+
+/**
+ * The declaration files reachable from an entry, breadth-first.
+ *
+ * Follows what the types actually reference rather than mirroring the whole
+ * package: `next` ships 1490 declaration files and needs a fraction of them,
+ * and reading all of it through IPC would cost seconds per project. Bounded on
+ * both axes, because a generated bundle of types can reference anything.
+ */
+async function chaseDeclarations(
+  host: SyncHost,
+  entries: string[],
+  maxFiles: number,
+  maxBytes: number,
+  /** Where a bare specifier meets the filesystem, for self-references. */
+  projectRoot = "",
+): Promise<string[]> {
+  const found: string[] = [];
+  const seen = new Set<string>();
+  const queue = [...entries];
+  // An entry is never dropped for its size. `lucide-react` ships one declaration
+  // file of ten megabytes, and a budget that refuses it turns a package that used
+  // to resolve into "Cannot find module" — the budget is for the *chase*, not for
+  // the thing the import actually names.
+  const pinned = new Set(entries);
+  let bytes = 0;
+
+  while (queue.length > 0 && found.length < maxFiles && bytes < maxBytes) {
+    const path = queue.shift() as string;
+    if (seen.has(path)) continue;
+    seen.add(path);
+    let content: string;
+    try {
+      content = await host.read(path);
+    } catch {
+      continue; // a candidate that does not exist; the next one may
+    }
+    if (bytes + content.length > maxBytes && !pinned.has(path)) continue;
+    bytes += content.length;
+    found.push(path);
+
+    const directory = path.slice(0, path.lastIndexOf("/"));
+    for (const match of content.matchAll(DECLARATION_REFERENCE)) {
+      const specifier = match[1] ?? match[2];
+      if (!specifier) continue;
+      // `next/font/google` is `export * from 'next/dist/compiled/…'` — a bare
+      // reference to its own package, which nothing relative can reach.
+      const bare = !specifier.startsWith(".") && !specifier.startsWith("/");
+      if (bare && (!projectRoot || specifier.startsWith("node:"))) continue;
+      const from = bare ? `${projectRoot}/node_modules` : directory;
+      for (const candidate of referenceCandidates(from, specifier)) queue.push(candidate);
+    }
+    // A queue built from every candidate of every specifier is bounded by what
+    // it can still do with the budget that is left.
+    if (queue.length > maxFiles * 6) queue.length = maxFiles * 6;
+  }
+  return found;
+}
+
 /** Every `.d.ts` under a directory, bounded and symlink-following. */
 async function collectDeclarations(
   host: SyncHost,
@@ -254,13 +361,17 @@ async function registerFile(
   stampValue: string,
   /** Already-read content, when the caller has it. Saves a second read. */
   content?: string,
+  /** Called with the file's text, for a caller collecting something from it. */
+  onContent?: (content: string) => void,
 ): Promise<boolean> {
   // The URI has to be exactly what the model's is, or the file is a different
   // file to the worker: `@monaco-editor/react` builds models with
   // `Uri.parse(path)`, and our paths are absolute with no scheme.
   const uri = monaco.Uri.parse(path).toString();
   if (registered.get(uri) === stampValue) return false;
-  typescript.typescriptDefaults.addExtraLib(content ?? (await host.read(path)), uri);
+  const text = content ?? (await host.read(path));
+  onContent?.(text);
+  typescript.typescriptDefaults.addExtraLib(text, uri);
   registered.set(uri, stampValue);
   return true;
 }
@@ -271,9 +382,10 @@ async function registerProjectSources(
   monaco: any,
   nodes: FileNode[],
   host: SyncHost,
-): Promise<{ files: number; truncated: boolean }> {
+): Promise<{ files: number; truncated: boolean; specifiers: Set<string> }> {
   const { paths, truncated } = collectProjectSources(nodes);
   const stamps = stampsByPath(nodes);
+  const specifiers = new Set<string>();
   let files = 0;
 
   for (let index = 0; index < paths.length; index += READ_CONCURRENCY) {
@@ -281,7 +393,9 @@ async function registerProjectSources(
     const results = await Promise.all(
       batch.map(async (path) => {
         try {
-          return await registerFile(typescript, monaco, path, host, stamps.get(path) ?? "");
+          return await registerFile(typescript, monaco, path, host, stamps.get(path) ?? "", undefined, (content) =>
+            collectBareSpecifiers(content, specifiers),
+          );
         } catch {
           // Unreadable: binary that slipped through, permissions, a file deleted
           // between the walk and the read. Not a reason to abandon the rest.
@@ -292,7 +406,7 @@ async function registerProjectSources(
     files += results.filter(Boolean).length;
   }
 
-  return { files, truncated };
+  return { files, truncated, specifiers };
 }
 
 /** Stamps by path, so a re-sync can skip what has not changed. Built once. */
@@ -324,6 +438,8 @@ async function registerDependencyTypes(
   monaco: any,
   host: SyncHost,
   projectRoot: string,
+  /** Package names the project's own imports name, declared or not. */
+  imported: Set<string> = new Set(),
 ): Promise<{ files: number; packages: number; declared: number }> {
   let manifest: Record<string, unknown>;
   try {
@@ -342,8 +458,9 @@ async function registerDependencyTypes(
 
   let registeredCount = 0;
   let resolved = 0;
-  const names = [...declared].slice(0, MAX_DEPENDENCIES);
-  const declaredCount = names.length;
+  const importedNames = [...imported].map(packageNameOf).filter(Boolean);
+  const names = [...new Set([...declared, ...importedNames])].slice(0, MAX_DEPENDENCIES);
+  const declaredCount = declared.size;
 
   for (let index = 0; index < names.length; index += READ_CONCURRENCY) {
     const batch = names.slice(index, index + READ_CONCURRENCY);
@@ -351,15 +468,44 @@ async function registerDependencyTypes(
       batch.map(async (name) => {
         for (const candidate of dependencyCandidates(name)) {
           let packageManifest: Record<string, unknown>;
+          let manifestText: string;
           try {
-            packageManifest = JSON.parse(await host.read(candidate)) as Record<string, unknown>;
+            manifestText = await host.read(candidate);
+            packageManifest = JSON.parse(manifestText) as Record<string, unknown>;
           } catch {
             continue;
           }
+          // The manifest itself, because it *is* how TypeScript resolves a
+          // package: `types`, `typings`, or the `exports` map. Without it the
+          // worker falls back to `<pkg>/index.d.ts`, and a package whose entry is
+          // anywhere else — `lucide-react` ships `dist/lucide-react.d.ts` — is an
+          // import it cannot find, in a file that is clean in VS Code. A JSON file
+          // as a program root is inert: measured, no diagnostics.
+          let added = 0;
+          try {
+            if (
+              await registerFile(
+                typescript,
+                monaco,
+                `${projectRoot}/${candidate}`,
+                host,
+                "manifest",
+                manifestText,
+              )
+            ) {
+              added += 1;
+            }
+          } catch {
+            /* a manifest we read but could not register; the entry still counts */
+          }
           const directory = candidate.replace(/\/package\.json$/, "");
-          const declaredEntries = [packageTypeEntry(packageManifest), ...packageSubpathTypes(packageManifest)]
+          const declaredRelative = [
+            packageTypeEntry(packageManifest),
+            ...packageSubpathTypes(packageManifest),
+          ]
             .filter((entry): entry is string => Boolean(entry))
-            .map((entry) => `${projectRoot}/${directory}/${entry.replace(/^\.\//, "")}`);
+            .map((entry) => entry.replace(/^\.\//, ""));
+          const declaredEntries = declaredRelative.map((entry) => `${projectRoot}/${directory}/${entry}`);
           // A package that declares no entry is not a package without types — it
           // is one TypeScript resolves by convention, `index.d.ts` beside
           // `index.js`. Every `@nestjs/*` package is that shape, and so is a
@@ -370,37 +516,25 @@ async function registerDependencyTypes(
             : conventionalTypeEntries(packageManifest).map(
                 (entry) => `${projectRoot}/${directory}/${entry}`,
               );
-          let added = 0;
-          for (const entry of entries) {
+          // The entry, plus everything it references. A package's types are a
+          // graph: `next/index.d.ts` is nineteen lines of references, and a
+          // convention-only package re-exports between its files, so the entry
+          // alone is a module whose members are all `any`.
+          const chased = await chaseDeclarations(
+            host,
+            entries,
+            MAX_CHASE_FILES,
+            MAX_CHASE_BYTES,
+            projectRoot,
+          );
+          for (const path of chased) {
             try {
               // A dependency's stamp is its register-once marker: these files are
               // not in the tree, so there is no metadata to compare, and a changed
               // `node_modules` is a changed install rather than an edit.
-              if (await registerFile(typescript, monaco, entry, host, "dep")) added += 1;
+              if (await registerFile(typescript, monaco, path, host, "dep")) added += 1;
             } catch {
-              /* no entry file at that path; the next candidate may have one */
-            }
-          }
-          // Convention-only packages keep their declarations in a directory and
-          // re-export between them, so the entry alone is a module whose members
-          // are all `any`. They are also small — 593 files, 0.6 MB across every
-          // one of them here — which is what makes this affordable, and why the
-          // packages that *do* declare an entry are deliberately left alone: that
-          // set is 32 MB, and nothing is missing from them.
-          if (added > 0 && declaredEntries.length === 0) {
-            const declarations = await collectDeclarations(
-              host,
-              directory,
-              MAX_PACKAGE_FILES,
-              MAX_PACKAGE_DEPTH,
-            );
-            for (const relative of declarations) {
-              const path = `${projectRoot}/${relative}`;
-              try {
-                if (await registerFile(typescript, monaco, path, host, "dep")) added += 1;
-              } catch {
-                /* unreadable declaration; the rest still stand */
-              }
+              /* unreadable declaration; the rest still stand */
             }
           }
           if (added > 0) return added;
@@ -417,14 +551,91 @@ async function registerDependencyTypes(
   return { files: registeredCount, packages: resolved, declared: declaredCount };
 }
 
+/** The specifiers one source file imports. */
+const IMPORT_SPECIFIER =
+  /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\(\s*)["']([^"']+)["']/g;
+
+/**
+ * Every bare specifier a source file names: `lucide-react`, `next/image`.
+ *
+ * Bare, not just the ones with a path. A package the project imports but does
+ * not list in its manifest — hoisted by another dependency, or reached through a
+ * workspace — is invisible to a pass that reads `package.json`, and the import
+ * is the only thing that says it is wanted.
+ */
+function collectBareSpecifiers(content: string, into: Set<string>): void {
+  for (const match of content.matchAll(IMPORT_SPECIFIER)) {
+    const specifier = match[1];
+    if (!specifier) continue;
+    if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.startsWith("node:")) continue;
+    into.add(specifier);
+  }
+}
+
+/** `@scope/pkg/sub/path` → `@scope/pkg`; `pkg/sub` → `pkg`. */
+function packageNameOf(specifier: string): string {
+  const parts = specifier.split("/");
+  return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
+}
+
+const MAX_SUBPATHS = 300;
+
+/**
+ * The deep imports the project actually makes.
+ *
+ * `next/image` and `next/font/google` are subpaths, and nothing in `next`'s entry
+ * references them — so no amount of following declarations finds them, and the
+ * package publishes no `exports` map to read them from either. The project's own
+ * imports are the only thing that says which ones exist for this codebase, which
+ * is also what keeps this bounded: a project registers the subpaths it uses, not
+ * the thousands a package ships.
+ */
+async function registerImportedSubpaths(
+  typescript: any,
+  monaco: any,
+  host: SyncHost,
+  projectRoot: string,
+  specifiers: Set<string>,
+): Promise<number> {
+  let added = 0;
+  for (const specifier of [...specifiers].slice(0, MAX_SUBPATHS)) {
+    const parts = specifier.split("/");
+    const packageName = specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
+    const subpath = specifier.slice(packageName.length + 1);
+    if (!subpath) continue;
+    const directory = `${projectRoot}/node_modules/${packageName}`;
+    const entries = [
+      `${subpath}.d.ts`,
+      `${subpath}/index.d.ts`,
+      `${subpath}.ts`,
+      `${subpath}/index.ts`,
+    ].map((entry) => `${directory}/${entry}`);
+    const chased = await chaseDeclarations(
+      host,
+      entries,
+      MAX_CHASE_FILES,
+      MAX_CHASE_BYTES,
+      projectRoot,
+    );
+    for (const path of chased) {
+      try {
+        if (await registerFile(typescript, monaco, path, host, "dep")) added += 1;
+      } catch {
+        /* unreadable declaration; the rest still stand */
+      }
+    }
+  }
+  return added;
+}
+
 /** Where TypeScript looks for ambient packages. */
 const TYPES_DIR = "node_modules/@types";
 const MAX_AMBIENT_FILES = 600;
 const MAX_AMBIENT_BYTES = 6 * 1024 * 1024;
 const MAX_AMBIENT_DEPTH = 3;
-/** A convention-only package's declarations: small in practice, bounded anyway. */
-const MAX_PACKAGE_FILES = 400;
-const MAX_PACKAGE_DEPTH = 3;
+/** How far a package's own declaration graph is followed. */
+const MAX_CHASE_FILES = 500;
+const MAX_CHASE_BYTES = 4 * 1024 * 1024;
 
 /**
  * TypeScript's "include every `@types` package" step, done here instead.
@@ -598,13 +809,26 @@ export async function syncProjectFiles(
     try {
       const nodes = await projectTree(projectRoot, host);
       const tsconfig = await applyProjectCompilerOptions(typescript, host);
-      const { files, truncated } = await registerProjectSources(
+      const { files, truncated, specifiers } = await registerProjectSources(
         typescript,
         monaco,
         nodes,
         host,
       );
-      const dependencies = await registerDependencyTypes(typescript, monaco, host, projectRoot);
+      const dependencies = await registerDependencyTypes(
+        typescript,
+        monaco,
+        host,
+        projectRoot,
+        specifiers,
+      );
+      const subpaths = await registerImportedSubpaths(
+        typescript,
+        monaco,
+        host,
+        projectRoot,
+        specifiers,
+      );
       const ambient = await registerAmbientTypes(
         typescript,
         monaco,
@@ -612,7 +836,7 @@ export async function syncProjectFiles(
         projectRoot,
         await projectTypesAllowlist(host),
       );
-      const mirrored = files + dependencies.files + ambient;
+      const mirrored = files + dependencies.files + subpaths + ambient;
 
       // Turn real module errors on only once the worker has enough to judge them.
       //

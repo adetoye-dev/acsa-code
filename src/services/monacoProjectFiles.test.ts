@@ -211,6 +211,10 @@ describe("mirroring a project into the worker", () => {
     // resolution produces an absolute path, and the worker answers `fileExists`
     // from what it was handed.
     expect(calls.libs).toContain(`${root}/node_modules/expo-router/index.d.ts`);
+    // And the manifest itself: TypeScript resolves a package through `types`,
+    // `typings` and `exports`, so without it a package whose entry is anywhere
+    // else is an import the worker cannot find.
+    expect(calls.libs).toContain(`${root}/node_modules/expo-router/package.json`);
 
     // The project's tsconfig, over our default.
     expect(calls.compiler).toMatchObject({ target: 7, moduleResolution: 100 });
@@ -399,7 +403,24 @@ describe("ambient type packages", () => {
         "tsconfig.json",
         '{ "compilerOptions": { "moduleResolution": "bundler", "target": "ES2022" } }',
       );
-      await write("src/app.spec.ts", "describe('x', () => { expect(1).toBe(1); });\n");
+      // The project's own files. Their imports are what name the packages that
+      // no manifest of this project mentions, so the tree has to carry them.
+      const sources: Array<[string, string]> = [
+        ["src/app.spec.ts", "describe('x', () => { expect(1).toBe(1); });\n"],
+        [
+          "src/uses-nest.ts",
+          "import { Test } from '@nestjs/testing';\nexport const t = Test.createTestingModule({});\n",
+        ],
+        [
+          "src/uses-elsewhere.ts",
+          "import { Search } from 'declared-elsewhere';\nexport const s = Search;\n",
+        ],
+        [
+          "src/uses-subpath.ts",
+          "import Image from 'subpath-only/image';\nexport const i = Image;\n",
+        ],
+      ];
+      for (const [relative, content] of sources) await write(relative, content);
       await write("node_modules/@types/jest/package.json", '{ "name": "@types/jest", "types": "index.d.ts" }');
       await write(
         "node_modules/@types/jest/index.d.ts",
@@ -417,10 +438,19 @@ describe("ambient type packages", () => {
         "node_modules/@nestjs/testing/helpers.d.ts",
         "export declare class Helpers { static createTestingModule(m: unknown): unknown; }\n",
       );
+      // Types that are *not* at `index.d.ts`, which is only findable through the
+      // manifest — the `lucide-react` shape.
       await write(
-        "src/uses-nest.ts",
-        "import { Test } from '@nestjs/testing';\nexport const t = Test.createTestingModule({});\n",
+        "node_modules/declared-elsewhere/package.json",
+        '{ "name": "declared-elsewhere", "typings": "dist/index.d.ts" }',
       );
+      await write(
+        "node_modules/declared-elsewhere/dist/index.d.ts",
+        "export declare const Search: unknown;\n",
+      );
+      // A deep subpath the package's entry never mentions — the `next/image` shape.
+      await write("node_modules/subpath-only/package.json", '{ "name": "subpath-only" }');
+      await write("node_modules/subpath-only/image.d.ts", "declare const Image: unknown;\nexport default Image;\n");
 
       const libs: string[] = [];
       const monaco = {
@@ -439,7 +469,20 @@ describe("ambient type packages", () => {
       const host: SyncHost = {
         read: async (path) =>
           fs.readFile(path.startsWith(`${root}/`) ? path : nodePath.join(root, path), "utf8"),
-        tree: async () => [],
+        tree: async () => [
+          {
+            name: "src",
+            path: nodePath.join(root, "src"),
+            is_dir: true,
+            size_bytes: 0,
+            children: sources.map(([relative]) => ({
+              name: nodePath.basename(relative),
+              path: nodePath.join(root, relative),
+              is_dir: false,
+              size_bytes: 32,
+            })),
+          },
+        ],
         list: async (path) => {
           const entries = await fs.readdir(nodePath.join(root, path), { withFileTypes: true });
           return entries.map((entry) => ({ name: entry.name, is_dir: entry.isDirectory() }));
@@ -452,6 +495,8 @@ describe("ambient type packages", () => {
 
       const spec = nodePath.join(root, "src/app.spec.ts");
       const usesNest = nodePath.join(root, "src/uses-nest.ts");
+      const usesElsewhere = nodePath.join(root, "src/uses-elsewhere.ts");
+      const usesSubpath = nodePath.join(root, "src/uses-subpath.ts");
       const options = {
         moduleResolution: ts.ModuleResolutionKind.Bundler,
         target: ts.ScriptTarget.ES2022,
@@ -462,7 +507,7 @@ describe("ambient type packages", () => {
       // What the worker's host answers, and the reason any of this is needed: it
       // knows the files it was handed and nothing else. The compiler's own lib
       // files come through, which is what Monaco does too.
-      const known = new Set([spec, usesNest, ...libs]);
+      const known = new Set([spec, usesNest, usesElsewhere, usesSubpath, ...libs]);
       const isLib = (fileName: string) => /[\\/]lib\.[^\\/]*\.d\.ts$/.test(fileName);
       compilerHost.fileExists = (fileName) => known.has(fileName) || isLib(fileName);
       compilerHost.readFile = (fileName) =>
@@ -470,7 +515,11 @@ describe("ambient type packages", () => {
       compilerHost.getDirectories = () => [];
       compilerHost.readDirectory = () => [];
 
-      const program = ts.createProgram([spec, usesNest, ...libs], options, compilerHost);
+      const program = ts.createProgram(
+        [spec, usesNest, usesElsewhere, usesSubpath, ...libs],
+        options,
+        compilerHost,
+      );
       const messagesFor = (fileName: string) =>
         ts
           .getPreEmitDiagnostics(program)
@@ -480,6 +529,9 @@ describe("ambient type packages", () => {
       // The global from the ambient package, and the module from the bare one.
       expect(messagesFor(spec).filter((m) => m.includes("Cannot find name"))).toEqual([]);
       expect(messagesFor(usesNest).filter((m) => m.includes("Cannot find module"))).toEqual([]);
+      // Types the manifest points at, and a subpath the entry never names.
+      expect(messagesFor(usesElsewhere).filter((m) => m.includes("Cannot find module"))).toEqual([]);
+      expect(messagesFor(usesSubpath).filter((m) => m.includes("Cannot find module"))).toEqual([]);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
