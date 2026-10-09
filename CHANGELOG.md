@@ -17,6 +17,8 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.32] - 2026-10-10
+
 ### Fixed
 
 - **A package that declares no entry point is no longer an import the editor
@@ -702,7 +704,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.31...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.32...dev
+[0.2.32]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.31...v0.2.32
 [0.2.31]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.30...v0.2.31
 [0.2.30]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.29...v0.2.30
 [0.2.29]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.28...v0.2.29
