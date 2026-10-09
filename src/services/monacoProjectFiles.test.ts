@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import type { FileNode } from "../components/FileTree";
 import {
   collectProjectSources,
+  conventionalTypeEntries,
   dependencyCandidates,
   invalidateProjectFiles,
   syncProjectFiles,
@@ -364,7 +365,7 @@ describe("ambient type packages", () => {
    * worker's host has it — and asserts the diagnostic is gone. Remove the
    * ambient registration and this is the test that goes red.
    */
-  it("is enough for the real compiler to resolve the globals", async () => {
+  it("is enough for the real compiler to resolve the globals and the imports", async () => {
     const fs = await import("node:fs/promises");
     const os = await import("node:os");
     const nodePath = await import("node:path");
@@ -376,7 +377,10 @@ describe("ambient type packages", () => {
       return; // no compiler installed here; the checks above still hold
     }
 
-    const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), "acsa-ambient-"));
+    // Canonical, like the app's: the shell canonicalises the project root, and
+    // TypeScript canonicalises again while resolving, so `/var` and `/private/var`
+    // have to be the same string or a resolved file is one we never registered.
+    const root = await fs.realpath(await fs.mkdtemp(nodePath.join(os.tmpdir(), "acsa-ambient-")));
     try {
       const write = async (relative: string, content: string) => {
         const target = nodePath.join(root, relative);
@@ -387,7 +391,10 @@ describe("ambient type packages", () => {
       // (through `ts-jest`, say). Nothing in `package.json` names them, so the
       // declared-dependency route cannot reach the types and a listing is the
       // only thing that can. This is the case that was broken.
-      await write("package.json", '{ "devDependencies": { "ts-jest": "^29.0.0" } }');
+      await write(
+        "package.json",
+        '{ "devDependencies": { "ts-jest": "^29.0.0", "@nestjs/testing": "^11.0.0" } }',
+      );
       await write(
         "tsconfig.json",
         '{ "compilerOptions": { "moduleResolution": "bundler", "target": "ES2022" } }',
@@ -397,6 +404,22 @@ describe("ambient type packages", () => {
       await write(
         "node_modules/@types/jest/index.d.ts",
         "declare var describe: any;\ndeclare var expect: any;\n",
+      );
+      // A package that declares no entry at all, the way every `@nestjs/*`
+      // package publishes: `index.d.ts` beside `index.js`, resolved by
+      // convention, with a second file for the walk to find.
+      await write("node_modules/@nestjs/testing/package.json", '{ "name": "@nestjs/testing" }');
+      await write(
+        "node_modules/@nestjs/testing/index.d.ts",
+        "import { Helpers } from './helpers';\nexport declare class Test extends Helpers {}\n",
+      );
+      await write(
+        "node_modules/@nestjs/testing/helpers.d.ts",
+        "export declare class Helpers { static createTestingModule(m: unknown): unknown; }\n",
+      );
+      await write(
+        "src/uses-nest.ts",
+        "import { Test } from '@nestjs/testing';\nexport const t = Test.createTestingModule({});\n",
       );
 
       const libs: string[] = [];
@@ -425,8 +448,10 @@ describe("ambient type packages", () => {
 
       await syncProjectFiles(monaco, root, host);
       expect(libs.some((uri) => uri.endsWith("@types/jest/index.d.ts"))).toBe(true);
+      expect(libs.some((uri) => uri.endsWith("@nestjs/testing/index.d.ts"))).toBe(true);
 
       const spec = nodePath.join(root, "src/app.spec.ts");
+      const usesNest = nodePath.join(root, "src/uses-nest.ts");
       const options = {
         moduleResolution: ts.ModuleResolutionKind.Bundler,
         target: ts.ScriptTarget.ES2022,
@@ -434,19 +459,58 @@ describe("ambient type packages", () => {
         types: [] as string[],
       };
       const compilerHost = ts.createCompilerHost(options, true);
-      // What the worker's host answers, and the reason any of this is needed.
+      // What the worker's host answers, and the reason any of this is needed: it
+      // knows the files it was handed and nothing else. The compiler's own lib
+      // files come through, which is what Monaco does too.
+      const known = new Set([spec, usesNest, ...libs]);
+      const isLib = (fileName: string) => /[\\/]lib\.[^\\/]*\.d\.ts$/.test(fileName);
+      compilerHost.fileExists = (fileName) => known.has(fileName) || isLib(fileName);
+      compilerHost.readFile = (fileName) =>
+        known.has(fileName) || isLib(fileName) ? ts.sys.readFile(fileName) : undefined;
       compilerHost.getDirectories = () => [];
       compilerHost.readDirectory = () => [];
 
-      const program = ts.createProgram([spec, ...libs], options, compilerHost);
-      const messages = ts
-        .getPreEmitDiagnostics(program)
-        .filter((diagnostic) => diagnostic.file?.fileName === spec)
-        .map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, " "));
+      const program = ts.createProgram([spec, usesNest, ...libs], options, compilerHost);
+      const messagesFor = (fileName: string) =>
+        ts
+          .getPreEmitDiagnostics(program)
+          .filter((diagnostic) => diagnostic.file?.fileName === fileName)
+          .map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, " "));
 
-      expect(messages.filter((message) => message.includes("Cannot find name"))).toEqual([]);
+      // The global from the ambient package, and the module from the bare one.
+      expect(messagesFor(spec).filter((m) => m.includes("Cannot find name"))).toEqual([]);
+      expect(messagesFor(usesNest).filter((m) => m.includes("Cannot find module"))).toEqual([]);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * Where a package's types are when its manifest does not say.
+ *
+ * `@nestjs/testing` publishes no `main`, no `types` and no `exports` — just
+ * `index.d.ts` beside `index.js` — and TypeScript resolves that by convention.
+ * Reading only the declared fields left ten of the sixty-three packages in the
+ * project this was reported from with no types at all, which is what the editor
+ * reported as "Cannot find module '@nestjs/testing'".
+ */
+describe("a package that declares no entry point", () => {
+  it("falls back to the file TypeScript falls back to", () => {
+    expect(conventionalTypeEntries({})).toContain("index.d.ts");
+  });
+
+  it("finds the declaration beside a built entry", () => {
+    expect(conventionalTypeEntries({ main: "dist/index.js" })).toContain("dist/index.d.ts");
+  });
+
+  it("accepts a workspace package that ships its source", () => {
+    expect(conventionalTypeEntries({ main: "src/index.ts" })).toContain("src/index.ts");
+  });
+
+  it("has nothing to offer when the manifest points somewhere real", () => {
+    // The declared path is used instead; this is only a fallback.
+    const entries = conventionalTypeEntries({ types: "./build/index.d.ts" });
+    expect(entries).toContain("index.d.ts");
   });
 });

@@ -192,6 +192,60 @@ export function dependencyCandidates(name: string): string[] {
   ];
 }
 
+/**
+ * Where a package's types are when its manifest does not say.
+ *
+ * TypeScript resolves a bare import through `types`/`typings`, then `exports`,
+ * then `main` — and a manifest that declares none of them falls back to
+ * `index.d.ts` beside `index.js`. `@nestjs/testing` publishes exactly that: no
+ * `main`, no `types`, no `exports`, just the two files. Reading only the declared
+ * fields left ten of the sixty-three packages in the project this was reported
+ * from invisible, and every one of them was an import the editor could not find.
+ */
+export function conventionalTypeEntries(manifest: Record<string, unknown>): string[] {
+  const entries = ["index.d.ts", "index.d.mts", "index.d.cts", "index.ts", "index.tsx"];
+  for (const field of ["main", "module", "browser"]) {
+    const value = manifest[field];
+    if (typeof value !== "string" || !value) continue;
+    if (/\.(c|m)?jsx?$/.test(value)) {
+      entries.push(value.replace(/\.(c|m)?jsx?$/, ".d.ts")); // dist/index.js → dist/index.d.ts
+    } else if (/\.(c|m)?tsx?$/.test(value)) {
+      entries.push(value); // a workspace package that ships its source
+    }
+  }
+  return [...new Set(entries)];
+}
+
+/** Every `.d.ts` under a directory, bounded and symlink-following. */
+async function collectDeclarations(
+  host: SyncHost,
+  directory: string,
+  maxFiles: number,
+  maxDepth: number,
+): Promise<string[]> {
+  const found: string[] = [];
+  const walk = async (current: string, depth: number): Promise<void> => {
+    if (depth > maxDepth || found.length >= maxFiles) return;
+    let entries: Array<{ name: string; is_dir: boolean }>;
+    try {
+      entries = await host.list(current);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (found.length >= maxFiles) return;
+      // A package's own dependencies are separate packages with their own
+      // registration; walking into them would read the whole tree.
+      if (entry.name === "node_modules") continue;
+      const path = `${current}/${entry.name}`;
+      if (entry.is_dir) await walk(path, depth + 1);
+      else if (entry.name.endsWith(".d.ts")) found.push(path);
+    }
+  };
+  await walk(directory, 0);
+  return found;
+}
+
 async function registerFile(
   typescript: { typescriptDefaults: { addExtraLib(content: string, uri?: string): unknown } },
   monaco: { Uri: { parse(value: string): { toString(): string } } },
@@ -303,9 +357,19 @@ async function registerDependencyTypes(
             continue;
           }
           const directory = candidate.replace(/\/package\.json$/, "");
-          const entries = [packageTypeEntry(packageManifest), ...packageSubpathTypes(packageManifest)]
+          const declaredEntries = [packageTypeEntry(packageManifest), ...packageSubpathTypes(packageManifest)]
             .filter((entry): entry is string => Boolean(entry))
             .map((entry) => `${projectRoot}/${directory}/${entry.replace(/^\.\//, "")}`);
+          // A package that declares no entry is not a package without types — it
+          // is one TypeScript resolves by convention, `index.d.ts` beside
+          // `index.js`. Every `@nestjs/*` package is that shape, and so is a
+          // hand-written workspace package: 10 of the 63 in the project this was
+          // reported from, and the ones whose imports were failing.
+          const entries = declaredEntries.length
+            ? declaredEntries
+            : conventionalTypeEntries(packageManifest).map(
+                (entry) => `${projectRoot}/${directory}/${entry}`,
+              );
           let added = 0;
           for (const entry of entries) {
             try {
@@ -315,6 +379,28 @@ async function registerDependencyTypes(
               if (await registerFile(typescript, monaco, entry, host, "dep")) added += 1;
             } catch {
               /* no entry file at that path; the next candidate may have one */
+            }
+          }
+          // Convention-only packages keep their declarations in a directory and
+          // re-export between them, so the entry alone is a module whose members
+          // are all `any`. They are also small — 593 files, 0.6 MB across every
+          // one of them here — which is what makes this affordable, and why the
+          // packages that *do* declare an entry are deliberately left alone: that
+          // set is 32 MB, and nothing is missing from them.
+          if (added > 0 && declaredEntries.length === 0) {
+            const declarations = await collectDeclarations(
+              host,
+              directory,
+              MAX_PACKAGE_FILES,
+              MAX_PACKAGE_DEPTH,
+            );
+            for (const relative of declarations) {
+              const path = `${projectRoot}/${relative}`;
+              try {
+                if (await registerFile(typescript, monaco, path, host, "dep")) added += 1;
+              } catch {
+                /* unreadable declaration; the rest still stand */
+              }
             }
           }
           if (added > 0) return added;
@@ -336,6 +422,9 @@ const TYPES_DIR = "node_modules/@types";
 const MAX_AMBIENT_FILES = 600;
 const MAX_AMBIENT_BYTES = 6 * 1024 * 1024;
 const MAX_AMBIENT_DEPTH = 3;
+/** A convention-only package's declarations: small in practice, bounded anyway. */
+const MAX_PACKAGE_FILES = 400;
+const MAX_PACKAGE_DEPTH = 3;
 
 /**
  * TypeScript's "include every `@types` package" step, done here instead.
@@ -370,22 +459,17 @@ async function registerAmbientTypes(
   }
 
   const files: string[] = [];
-  const walk = async (directory: string, depth: number): Promise<void> => {
-    if (depth > MAX_AMBIENT_DEPTH || files.length >= MAX_AMBIENT_FILES) return;
-    let entries: Array<{ name: string; is_dir: boolean }>;
-    try {
-      entries = await host.list(directory);
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      if (files.length >= MAX_AMBIENT_FILES) return;
-      const path = `${directory}/${entry.name}`;
-      if (entry.is_dir) await walk(path, depth + 1);
-      else if (entry.name.endsWith(".d.ts")) files.push(path);
-    }
-  };
-  for (const directory of packages) await walk(directory, 0);
+  for (const directory of packages) {
+    if (files.length >= MAX_AMBIENT_FILES) break;
+    files.push(
+      ...(await collectDeclarations(
+        host,
+        directory,
+        MAX_AMBIENT_FILES - files.length,
+        MAX_AMBIENT_DEPTH,
+      )),
+    );
+  }
 
   let added = 0;
   let bytes = 0;

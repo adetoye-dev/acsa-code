@@ -17,6 +17,20 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A package that declares no entry point is no longer an import the editor
+  cannot find.** Every `@nestjs/*` package publishes the same way: no `main`, no
+  `types`, no `exports` — just `index.d.ts` beside `index.js`, which TypeScript
+  resolves by convention. The editor only read the declared fields, so ten of the
+  sixty-three packages in the reported project had no types at all and every import
+  of one came back *"Cannot find module '@nestjs/testing'"*, in a file that is
+  clean in VS Code. It now falls back to the file TypeScript falls back to — and
+  reads the package's whole set of declarations, because a convention-only package
+  re-exports between them and its entry alone has members that are all `any`.
+  Neither is done for packages that *do* declare an entry: that set is 32 MB
+  against 0.6 MB for these.
+
 ## [0.2.31] - 2026-10-09
 
 ### Fixed
