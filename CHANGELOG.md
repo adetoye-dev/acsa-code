@@ -17,6 +17,22 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A test file stops reporting that its test runner's types are missing.** A
+  NestJS spec file said *"Cannot find name 'describe'. Do you need to install type
+  definitions for a test runner?"* in a project where they were installed, in a
+  file that is clean in VS Code. The editor's TypeScript worker has no filesystem,
+  so TypeScript's own "include every `@types` package" step — a directory scan —
+  found nothing, and only the `@types` counterpart of a *declared* dependency was
+  ever handed over. A package arriving transitively, through `ts-jest` say, was
+  invisible. The app now lists `node_modules/@types` itself and hands over every
+  declaration in each package, respects a project's own `types` list when it has
+  one, and registers a dependency's types under an absolute path — which is what a
+  bare import actually resolves to. Verified against the real compiler: the
+  diagnostic appears when the listing is taken away and disappears when the same
+  files are handed over.
+
 ## [0.2.30] - 2026-10-07
 
 ### Fixed

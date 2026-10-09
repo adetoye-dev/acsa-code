@@ -290,6 +290,40 @@ fn list_project_files(project_path: String) -> Result<Vec<FileNode>, String> {
     Ok(build_file_tree(&path, MAX_TREE_DEPTH, &mut visited))
 }
 
+/// One name in a directory, for the one caller that needs a listing.
+#[derive(Debug, Clone, Serialize)]
+pub struct DirEntry {
+    pub name: String,
+    pub is_dir: bool,
+}
+
+/// The names in one directory, following symlinks.
+///
+/// The renderer needs exactly one directory listing: `node_modules/@types`. The
+/// TypeScript worker has no filesystem, so TypeScript's own "include every
+/// `@types` package" step — which is a directory scan — finds nothing inside it,
+/// and a project's test globals (`describe`, `expect`) come out undefined while
+/// the same file is clean in VS Code.
+///
+/// Symlinks are followed on purpose: pnpm's `node_modules/@types/*` entries are
+/// links, and `DirEntry::file_type` would report them as neither file nor
+/// directory.
+#[tauri::command]
+fn list_directory(path: String, project_root: String) -> Result<Vec<DirEntry>, String> {
+    let target = resolve_project_path(&project_root, &path)?;
+    let entries = std::fs::read_dir(&target)
+        .map_err(|e| format!("Could not list {}: {}", path, e))?;
+    let mut items: Vec<DirEntry> = entries
+        .flatten()
+        .map(|entry| DirEntry {
+            name: entry.file_name().to_string_lossy().to_string(),
+            is_dir: std::fs::metadata(entry.path()).map(|m| m.is_dir()).unwrap_or(false),
+        })
+        .collect();
+    items.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(items)
+}
+
 #[tauri::command]
 fn read_file_content(file_path: String, project_root: String) -> Result<String, String> {
     let path = resolve_project_path(&project_root, &file_path)?;
@@ -4300,6 +4334,7 @@ fn main() {
             system_cleanup,
             list_project_files,
             read_file_content,
+            list_directory,
             read_file_base64,
             write_file_content,
             create_file_or_folder,

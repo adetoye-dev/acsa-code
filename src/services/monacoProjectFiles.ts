@@ -64,6 +64,8 @@ export interface SyncResult {
 export interface SyncHost {
   read(path: string): Promise<string>;
   tree(): Promise<FileNode[]>;
+  /** Names in one directory. Only `node_modules/@types` needs this. */
+  list(path: string): Promise<Array<{ name: string; is_dir: boolean }>>;
 }
 
 function desktopHost(projectRoot: string): SyncHost {
@@ -72,6 +74,13 @@ function desktopHost(projectRoot: string): SyncHost {
     tree: async () => {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<FileNode[]>("list_project_files", { projectPath: projectRoot });
+    },
+    list: async (path) => {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<Array<{ name: string; is_dir: boolean }>>("list_directory", {
+        path,
+        projectRoot,
+      });
     },
   };
 }
@@ -189,14 +198,15 @@ async function registerFile(
   path: string,
   host: SyncHost,
   stampValue: string,
+  /** Already-read content, when the caller has it. Saves a second read. */
+  content?: string,
 ): Promise<boolean> {
   // The URI has to be exactly what the model's is, or the file is a different
   // file to the worker: `@monaco-editor/react` builds models with
   // `Uri.parse(path)`, and our paths are absolute with no scheme.
   const uri = monaco.Uri.parse(path).toString();
   if (registered.get(uri) === stampValue) return false;
-  const content = await host.read(path);
-  typescript.typescriptDefaults.addExtraLib(content, uri);
+  typescript.typescriptDefaults.addExtraLib(content ?? (await host.read(path)), uri);
   registered.set(uri, stampValue);
   return true;
 }
@@ -247,11 +257,19 @@ function stampsByPath(nodes: FileNode[]): Map<string, string> {
   return stamps;
 }
 
-/** The type entry of every package the project declares. */
+/**
+ * The type entry of every package the project declares.
+ *
+ * Absolute paths, like the project's own files. The worker resolves a bare
+ * import to an absolute path — `<project>/node_modules/@nestjs/testing/…` — and
+ * answers `fileExists` from the files it was handed, so a registration under a
+ * relative name is a file it cannot find: the import stays "Cannot find module".
+ */
 async function registerDependencyTypes(
   typescript: any,
   monaco: any,
   host: SyncHost,
+  projectRoot: string,
 ): Promise<{ files: number; packages: number; declared: number }> {
   let manifest: Record<string, unknown>;
   try {
@@ -287,7 +305,7 @@ async function registerDependencyTypes(
           const directory = candidate.replace(/\/package\.json$/, "");
           const entries = [packageTypeEntry(packageManifest), ...packageSubpathTypes(packageManifest)]
             .filter((entry): entry is string => Boolean(entry))
-            .map((entry) => `${directory}/${entry.replace(/^\.\//, "")}`);
+            .map((entry) => `${projectRoot}/${directory}/${entry.replace(/^\.\//, "")}`);
           let added = 0;
           for (const entry of entries) {
             try {
@@ -311,6 +329,110 @@ async function registerDependencyTypes(
   }
 
   return { files: registeredCount, packages: resolved, declared: declaredCount };
+}
+
+/** Where TypeScript looks for ambient packages. */
+const TYPES_DIR = "node_modules/@types";
+const MAX_AMBIENT_FILES = 600;
+const MAX_AMBIENT_BYTES = 6 * 1024 * 1024;
+const MAX_AMBIENT_DEPTH = 3;
+
+/**
+ * TypeScript's "include every `@types` package" step, done here instead.
+ *
+ * The worker's host cannot list a directory, so TypeScript's own scan of
+ * `node_modules/@types` finds nothing and none of the globals those packages
+ * declare — `describe`, `expect`, `beforeEach` — exist in it. The editor then
+ * reports "Cannot find name 'describe'" and suggests installing types that are
+ * already installed, in a file that is clean in VS Code. Reproduced against the
+ * real compiler with the listing stubbed out: the error appears with it removed
+ * and disappears when the same files are handed over.
+ *
+ * Whole packages, not their entry file. `@types/node` is dozens of declarations
+ * that reference one another, and a package read one file deep is a package the
+ * worker only half sees.
+ */
+async function registerAmbientTypes(
+  typescript: any,
+  monaco: any,
+  host: SyncHost,
+  projectRoot: string,
+  allowlist: string[] | null,
+): Promise<number> {
+  let packages: string[];
+  try {
+    packages = (await host.list(TYPES_DIR))
+      .filter((entry) => entry.is_dir && (!allowlist || allowlist.includes(entry.name)))
+      .map((entry) => `${TYPES_DIR}/${entry.name}`);
+  } catch {
+    // No `@types` at all, or a `node_modules` this reader cannot see.
+    return 0;
+  }
+
+  const files: string[] = [];
+  const walk = async (directory: string, depth: number): Promise<void> => {
+    if (depth > MAX_AMBIENT_DEPTH || files.length >= MAX_AMBIENT_FILES) return;
+    let entries: Array<{ name: string; is_dir: boolean }>;
+    try {
+      entries = await host.list(directory);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (files.length >= MAX_AMBIENT_FILES) return;
+      const path = `${directory}/${entry.name}`;
+      if (entry.is_dir) await walk(path, depth + 1);
+      else if (entry.name.endsWith(".d.ts")) files.push(path);
+    }
+  };
+  for (const directory of packages) await walk(directory, 0);
+
+  let added = 0;
+  let bytes = 0;
+  for (let index = 0; index < files.length; index += READ_CONCURRENCY) {
+    const batch = files.slice(index, index + READ_CONCURRENCY);
+    const results = await Promise.all(
+      batch.map(async (relative) => {
+        try {
+          const content = await host.read(relative);
+          if (bytes + content.length > MAX_AMBIENT_BYTES) return false;
+          bytes += content.length;
+          return await registerFile(
+            typescript,
+            monaco,
+            `${projectRoot}/${relative}`,
+            host,
+            "ambient",
+            content,
+          );
+        } catch {
+          return false;
+        }
+      }),
+    );
+    added += results.filter(Boolean).length;
+  }
+  return added;
+}
+
+/**
+ * The project's own `types` list, when it has one.
+ *
+ * A `types` field is a filter, not a hint: a project that lists `["node"]` has
+ * deliberately excluded every other ambient package, and handing the worker all
+ * of `@types` would make the editor accept globals the build does not.
+ */
+async function projectTypesAllowlist(host: SyncHost): Promise<string[] | null> {
+  try {
+    const document = parseTsconfig(await host.read("tsconfig.json"));
+    const types = (document.compilerOptions as Record<string, unknown> | undefined)?.types;
+    if (Array.isArray(types)) {
+      return types.filter((entry): entry is string => typeof entry === "string");
+    }
+  } catch {
+    /* no tsconfig, or one that cannot be read: TypeScript would include the lot */
+  }
+  return null;
 }
 
 /** Apply the project's own compiler options over our defaults. */
@@ -398,8 +520,15 @@ export async function syncProjectFiles(
         nodes,
         host,
       );
-      const dependencies = await registerDependencyTypes(typescript, monaco, host);
-      const mirrored = files + dependencies.files;
+      const dependencies = await registerDependencyTypes(typescript, monaco, host, projectRoot);
+      const ambient = await registerAmbientTypes(
+        typescript,
+        monaco,
+        host,
+        projectRoot,
+        await projectTypesAllowlist(host),
+      );
+      const mirrored = files + dependencies.files + ambient;
 
       // Turn real module errors on only once the worker has enough to judge them.
       //
