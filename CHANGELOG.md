@@ -17,6 +17,28 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Aliased imports resolve, and so do packages whose types are `.d.mts`.** Two
+  more shapes, found by running the mirror over the project that reported them and
+  asking the real compiler what was left:
+  - **`paths` aliases.** `"@/*": ["./*"]` is relative to the file that declares it,
+    and the worker has no such file — it has a virtual current directory — so every
+    aliased import in the project was *"Cannot find module"* while the file it
+    named was open in the editor. Targets are absolute now, with a `baseUrl` of the
+    project root.
+  - **`.d.mts` and `.d.cts`, and every declaration an `exports` map names.** A
+    package that maps `import` to `./esm/index.mjs` keeps its types in
+    `index.d.mts`; `pg` and `@prisma/adapter-pg` both do, and the mirror only knew
+    `.d.ts`. `@prisma/adapter-pg` maps `require` and `import` to *different*
+    declarations and its top-level `types` points at neither, so one was never
+    enough.
+
+  Measured on the files in the last report: five "Cannot find module" errors
+  across them before, **none** after. The two diagnostics that remain are not
+  resolution failures — one follows from the Prisma client not being generated in
+  the checkout used to test, the other is an untyped callback parameter.
+
 ## [0.2.34] - 2026-10-10
 
 ### Fixed

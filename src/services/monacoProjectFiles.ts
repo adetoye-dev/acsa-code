@@ -171,7 +171,7 @@ export function packageSubpathTypes(manifest: Record<string, unknown>): string[]
   for (const [key, value] of Object.entries(exports)) {
     if (found.length >= MAX_SUBPATHS_PER_PACKAGE) break;
     if (key === "." || key.startsWith("..")) continue;
-    if (typeof value === "string" && value.endsWith(".d.ts")) {
+    if (typeof value === "string" && isDeclarationFile(value)) {
       found.push(value);
       continue;
     }
@@ -179,6 +179,31 @@ export function packageSubpathTypes(manifest: Record<string, unknown>): string[]
     if (entry) found.push(entry);
   }
   return found;
+}
+
+/**
+ * Every `types` path an `exports` map names, at any depth.
+ *
+ * Which one TypeScript picks depends on the conditions it is resolving under —
+ * `@prisma/adapter-pg` maps `require` to one declaration and `import` to another,
+ * and the top-level `types` points at neither. Registering them all is what the
+ * reader has in every other editor; guessing the condition is what left this
+ * package unresolved while its `.d.ts` was sitting in the worker.
+ */
+export function exportsTypePaths(manifest: Record<string, unknown>): string[] {
+  const found: string[] = [];
+  const walk = (value: unknown, depth: number): void => {
+    if (depth > 4 || !value || typeof value !== "object") return;
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      if (key === "types" || key === "typings") {
+        if (typeof entry === "string" && isDeclarationFile(entry)) found.push(entry);
+        continue;
+      }
+      walk(entry, depth + 1);
+    }
+  };
+  walk(manifest.exports, 0);
+  return [...new Set(found)];
 }
 
 /** `<name>` → the `@types` package that carries it, scoped names included. */
@@ -258,9 +283,13 @@ function referenceCandidates(directory: string, specifier: string): string[] {
   if (/\.(d\.ts|d\.mts|d\.cts|ts|tsx|mts|cts)$/.test(normalised)) return [normalised];
   return [
     `${normalised}.d.ts`,
+    `${normalised}.d.mts`,
+    `${normalised}.d.cts`,
     `${normalised}.ts`,
     `${normalised}.tsx`,
+    `${normalised}.mts`,
     `${normalised}/index.d.ts`,
+    `${normalised}/index.d.mts`,
     `${normalised}/index.ts`,
   ];
 }
@@ -324,6 +353,21 @@ async function chaseDeclarations(
 }
 
 /** Every `.d.ts` under a directory, bounded and symlink-following. */
+/**
+ * Is this a declaration file?
+ *
+ * `.d.mts` and `.d.cts` are declarations too, and that is not a detail: a package
+ * whose `exports` maps `import` to `./esm/index.mjs` has its types in
+ * `index.d.mts`, and TypeScript resolves to exactly that under `bundler` or
+ * `nodenext`. `pg` and `@prisma/adapter-pg` both do this, and a mirror that only
+ * knows `.d.ts` reports them as "Cannot find module" while every other editor is
+ * happy.
+ */
+function isDeclarationFile(name: string): boolean {
+  return /\.d\.(ts|mts|cts)$/.test(name);
+}
+
+/** Every declaration under a directory, bounded and symlink-following. */
 async function collectDeclarations(
   host: SyncHost,
   directory: string,
@@ -346,7 +390,7 @@ async function collectDeclarations(
       if (entry.name === "node_modules") continue;
       const path = `${current}/${entry.name}`;
       if (entry.is_dir) await walk(path, depth + 1);
-      else if (entry.name.endsWith(".d.ts")) found.push(path);
+      else if (isDeclarationFile(entry.name)) found.push(path);
     }
   };
   await walk(directory, 0);
@@ -500,11 +544,16 @@ async function registerDependencyTypes(
           }
           const directory = candidate.replace(/\/package\.json$/, "");
           const declaredRelative = [
-            packageTypeEntry(packageManifest),
-            ...packageSubpathTypes(packageManifest),
-          ]
-            .filter((entry): entry is string => Boolean(entry))
-            .map((entry) => entry.replace(/^\.\//, ""));
+            ...new Set(
+              [
+                packageTypeEntry(packageManifest),
+                ...packageSubpathTypes(packageManifest),
+                ...exportsTypePaths(packageManifest),
+              ]
+                .filter((entry): entry is string => Boolean(entry))
+                .map((entry) => entry.replace(/^\.\//, "")),
+            ),
+          ];
           const declaredEntries = declaredRelative.map((entry) => `${projectRoot}/${directory}/${entry}`);
           // A package that declares no entry is not a package without types — it
           // is one TypeScript resolves by convention, `index.d.ts` beside
@@ -606,7 +655,10 @@ async function registerImportedSubpaths(
     const directory = `${projectRoot}/node_modules/${packageName}`;
     const entries = [
       `${subpath}.d.ts`,
+      `${subpath}.d.mts`,
+      `${subpath}.d.cts`,
       `${subpath}/index.d.ts`,
+      `${subpath}/index.d.mts`,
       `${subpath}.ts`,
       `${subpath}/index.ts`,
     ].map((entry) => `${directory}/${entry}`);
@@ -730,10 +782,34 @@ async function projectTypesAllowlist(host: SyncHost): Promise<string[] | null> {
   return null;
 }
 
+/**
+ * `paths` targets made absolute, with a `baseUrl` to anchor them.
+ *
+ * The targets are relative to the file that declares them, and the worker has no
+ * such file — it has a virtual current directory — so `"@/*": ["./*"]` resolved
+ * against nothing and every aliased import in the project was "Cannot find
+ * module". Absolute targets and a `baseUrl` of the project root say the same
+ * thing without needing to know where the config lives.
+ */
+export function absolutisePaths(paths: unknown, projectRoot: string): Record<string, unknown> {
+  if (!paths || typeof paths !== "object") return {};
+  const absolute: Record<string, string[]> = {};
+  for (const [alias, targets] of Object.entries(paths as Record<string, unknown>)) {
+    const list = Array.isArray(targets) ? targets : [targets];
+    absolute[alias] = list
+      .filter((target): target is string => typeof target === "string")
+      .map((target) =>
+        target.startsWith(".") ? `${projectRoot}/${target.replace(/^\.\//, "")}` : target,
+      );
+  }
+  return { paths: absolute, baseUrl: projectRoot };
+}
+
 /** Apply the project's own compiler options over our defaults. */
 async function applyProjectCompilerOptions(
   typescript: any,
   host: SyncHost,
+  projectRoot: string,
 ): Promise<boolean> {
   const read = async (relative: string) => {
     try {
@@ -769,6 +845,8 @@ async function applyProjectCompilerOptions(
 
   const merged: Record<string, unknown> = {};
   for (const layer of layers.reverse()) Object.assign(merged, layer);
+
+  if (merged.paths !== undefined) Object.assign(merged, absolutisePaths(merged.paths, projectRoot));
 
   const defaults = typescript.typescriptDefaults.getCompilerOptions?.() ?? {};
   typescript.typescriptDefaults.setCompilerOptions({ ...defaults, ...merged });
@@ -808,7 +886,7 @@ export async function syncProjectFiles(
     if (!typescript) return empty;
     try {
       const nodes = await projectTree(projectRoot, host);
-      const tsconfig = await applyProjectCompilerOptions(typescript, host);
+      const tsconfig = await applyProjectCompilerOptions(typescript, host, projectRoot);
       const { files, truncated, specifiers } = await registerProjectSources(
         typescript,
         monaco,

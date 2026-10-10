@@ -9,9 +9,11 @@
 import { describe, expect, it } from "vitest";
 import type { FileNode } from "../components/FileTree";
 import {
+  absolutisePaths,
   collectProjectSources,
   conventionalTypeEntries,
   dependencyCandidates,
+  exportsTypePaths,
   invalidateProjectFiles,
   syncProjectFiles,
   type SyncHost,
@@ -564,5 +566,48 @@ describe("a package that declares no entry point", () => {
     // The declared path is used instead; this is only a fallback.
     const entries = conventionalTypeEntries({ types: "./build/index.d.ts" });
     expect(entries).toContain("index.d.ts");
+  });
+});
+
+/**
+ * The two shapes that were left, both found with the real compiler against the
+ * project that reported them.
+ */
+describe("paths a project and a package each declare", () => {
+  it("anchors tsconfig path aliases to the project", () => {
+    // `"@/*": ["./*"]` is relative to the file that declares it, and the worker
+    // has no such file — so every aliased import in the project was "Cannot find
+    // module" while the file it named sat open in the editor.
+    expect(absolutisePaths({ "@/*": ["./*"], "~/*": ["src/*"] }, "/work/app")).toEqual({
+      // `./*` is relative to the config file and has to be made absolute; `src/*`
+      // is not, and the `baseUrl` beside it anchors it to the same place.
+      paths: { "@/*": ["/work/app/*"], "~/*": ["src/*"] },
+      baseUrl: "/work/app",
+    });
+  });
+
+  it("leaves an absolute target alone", () => {
+    const result = absolutisePaths({ x: ["/already/here/*"] }, "/work/app");
+    expect((result.paths as Record<string, string[]>).x).toEqual(["/already/here/*"]);
+  });
+
+  it("takes every declaration an exports map names, not just the first", () => {
+    // `@prisma/adapter-pg` maps `require` to one file and `import` to another, and
+    // its top-level `types` points at neither. Registering one of them leaves
+    // "Cannot find module" for whichever condition TypeScript resolved under.
+    const manifest = {
+      types: "./dist/index.d.ts",
+      exports: {
+        ".": {
+          require: { types: "./dist/index.d.ts", default: "./dist/index.js" },
+          import: { types: "./dist/index.d.mts", default: "./dist/index.mjs" },
+        },
+      },
+    };
+    expect(exportsTypePaths(manifest)).toEqual(["./dist/index.d.ts", "./dist/index.d.mts"]);
+  });
+
+  it("has nothing to say about a package with no exports", () => {
+    expect(exportsTypePaths({ types: "./index.d.ts" })).toEqual([]);
   });
 });
