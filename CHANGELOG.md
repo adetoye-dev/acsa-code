@@ -17,6 +17,8 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.34] - 2026-10-10
+
 ### Fixed
 
 - **JSX elements stop being `any` in every `.tsx` file.** The editor declared
@@ -747,7 +749,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.33...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.34...dev
+[0.2.34]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.33...v0.2.34
 [0.2.33]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.32...v0.2.33
 [0.2.32]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.31...v0.2.32
 [0.2.31]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.30...v0.2.31
