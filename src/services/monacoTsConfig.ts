@@ -142,19 +142,21 @@ export function configureMonacoTypeScript(monaco: any, projectRoot = ""): void {
     noSyntaxValidation: false,
   });
 
-  // The automatic JSX runtime lives in a node_modules subpath Monaco cannot
-  // resolve, so declare it just enough for type checking of .tsx files.
-  for (const runtimeModule of ["react/jsx-runtime", "react/jsx-dev-runtime"]) {
-    typescript.typescriptDefaults.addExtraLib(
-      `declare module "${runtimeModule}" {
-  export const Fragment: any;
-  export const jsx: any;
-  export const jsxs: any;
-  export const jsxDEV: any;
-}`,
-      `acsa-shim-${runtimeModule.replace(/\//g, "-")}.d.ts`
-    );
-  }
+  // The JSX runtime is *not* declared here, and it used to be.
+  //
+  // There was an ambient `declare module "react/jsx-runtime"` for the two subpaths
+  // Monaco could not resolve. It worked, until React 19's types: those live in
+  // `@types/react/jsx-runtime.d.ts` and that file is where `namespace JSX` — and
+  // `IntrinsicElements` — is now declared, since React 19 removed the *global*
+  // `JSX` namespace that used to make the shim harmless. An ambient module
+  // declaration wins over the real file, so the shim replaced the JSX namespace
+  // with nothing and every element in every `.tsx` file became `any`:
+  // "JSX element implicitly has type 'any' because no interface
+  // 'JSX.IntrinsicElements' exists", ninety-two times in one page.
+  //
+  // The subpaths resolve now — the mirror registers the project's `@types` and its
+  // packages — so the real declarations are what the worker sees. `EXTRA_LIBS`
+  // above still names them for the case where nothing else has.
 
   void loadAmbientTypes(typescript, projectRoot);
 }

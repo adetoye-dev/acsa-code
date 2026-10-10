@@ -27,7 +27,10 @@ function featureStub(calls: Record<string, unknown>) {
       setCompilerOptions: (o: unknown) => (calls.compiler = o),
       setDiagnosticsOptions: (o: unknown) => (calls.diagnostics = o),
       setEagerModelSync: (v: boolean) => (calls.eager = v),
-      addExtraLib: () => undefined,
+      addExtraLib: (content: string, uri?: string) => {
+        const libs = (calls.libs ??= []) as Array<{ content: string; uri?: string }>;
+        libs.push({ content, uri });
+      },
     },
     javascriptDefaults: {
       setCompilerOptions: () => undefined,
@@ -73,6 +76,25 @@ describe("applying the configuration", () => {
     expect(compiler?.jsx).toBe(4);
     // Monaco's enum does not name Bundler; the number is what TypeScript reads.
     expect(compiler?.moduleResolution).toBe(100);
+  });
+
+  it("does not declare the JSX runtime for the project", () => {
+    // It used to, and React 19 made that fatal. The runtime's types live in
+    // `@types/react/jsx-runtime.d.ts`, which is where `namespace JSX` and
+    // `IntrinsicElements` are declared now — an ambient `declare module` for the
+    // same specifier wins over that file, so the shim replaced the JSX namespace
+    // with nothing and every element in every `.tsx` became `any`
+    // (7026, ninety-two times in one page of the project this came from).
+    const calls: Record<string, unknown> = {};
+    configureMonacoTypeScript({ typescript: featureStub(calls) }, "/proj/jsx");
+
+    const libs = (calls.libs ?? []) as Array<{ content: string }>;
+    const declaresRuntime = libs.filter(
+      (lib) =>
+        lib.content.includes('module "react/jsx-runtime"') ||
+        lib.content.includes("module 'react/jsx-runtime'"),
+    );
+    expect(declaresRuntime).toEqual([]);
   });
 
   it("still works on the older location, so a version bump either way is safe", () => {

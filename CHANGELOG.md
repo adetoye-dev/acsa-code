@@ -17,6 +17,20 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+### Fixed
+
+- **JSX elements stop being `any` in every `.tsx` file.** The editor declared
+  `react/jsx-runtime` itself — a four-line ambient module — because Monaco could
+  not resolve that subpath. React 19's types moved `namespace JSX`, and with it
+  `IntrinsicElements`, into `@types/react/jsx-runtime.d.ts`, and removed the
+  *global* namespace the shim used to sit harmlessly behind. An ambient
+  `declare module` wins over the real file, so the shim replaced the JSX namespace
+  with nothing: *"JSX element implicitly has type 'any' because no interface
+  'JSX.IntrinsicElements' exists"*, on `<div>`, `<html>`, `<svg>` and every other
+  tag — 92 times in a single page of the project this was reported from. The
+  subpaths resolve now, so the shim is gone and the worker is given the real
+  declarations. Measured in that project: 92 elements reported → 0.
+
 ## [0.2.33] - 2026-10-10
 
 ### Fixed
