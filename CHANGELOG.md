@@ -17,6 +17,8 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.33] - 2026-10-10
+
 ### Fixed
 
 - **Package imports resolve in the editor the way they do in VS Code.** Four gaps
@@ -731,7 +733,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.32...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.33...dev
+[0.2.33]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.32...v0.2.33
 [0.2.32]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.31...v0.2.32
 [0.2.31]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.30...v0.2.31
 [0.2.30]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.29...v0.2.30
