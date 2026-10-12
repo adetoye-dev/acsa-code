@@ -184,6 +184,18 @@ const NO_CHANGES: PendingFileChange[] = [];
  */
 const REVEAL_ATTEMPTS = 90;
 
+/**
+ * How tall the composer can be dragged.
+ *
+ * The floor is a couple of comfortable lines; the ceiling is a long prompt with
+ * room to see it. Beyond that the transcript is what should be scrolling, not the
+ * box you are typing in.
+ */
+const COMPOSER_MIN_HEIGHT = 72;
+const COMPOSER_MAX_HEIGHT = 420;
+/** What the first drag starts from, when no height has been chosen yet. */
+const COMPOSER_DEFAULT_HEIGHT = 96;
+
 export function cleanThoughtText(raw?: string): string {
   if (!raw) return "";
   return raw
@@ -305,7 +317,7 @@ const ChatTranscript = memo(function ChatTranscript({
 
             {/* Message Bubble */}
             <div
-              className={`max-w-[95%] p-3.5 rounded-2xl text-xs leading-relaxed transition-all ${
+              className={`min-w-0 max-w-[95%] p-3.5 rounded-2xl text-xs leading-relaxed transition-all ${
                 msg.role === "user"
                   ? "bg-zinc-800/80 border border-zinc-700/60 text-zinc-100 rounded-tr-sm shadow-sm"
                   : msg.error
@@ -533,7 +545,7 @@ const ChatTranscript = memo(function ChatTranscript({
               </span>
             </div>
 
-            <div className="max-w-[95%] p-3.5 rounded-2xl text-xs leading-relaxed bg-zinc-900/90 border border-purple-500/30 text-zinc-100 rounded-tl-sm w-full shadow-lg">
+            <div className="min-w-0 max-w-[95%] p-3.5 rounded-2xl text-xs leading-relaxed bg-zinc-900/90 border border-purple-500/30 text-zinc-100 rounded-tl-sm w-full shadow-lg">
               {/* Live Thinking Accordion (auto-collapses when summary arrives) */}
               <ThinkingAccordion
                 steps={agentSteps}
@@ -812,6 +824,67 @@ export function AiAssistantChat({
 
   // Multimodal image attachment state
   const [attachedImages, setAttachedImages] = useState<string[]>([]);
+  /**
+   * The composer's height, once the reader has dragged it.
+   *
+   * `null` means "whatever `rows` says", so someone who never touches the handle
+   * gets exactly the composer they had before. A number makes the textarea that
+   * tall with its own scrollbar — the difference between editing a long prompt in
+   * a two-line box and in the space it needs.
+   */
+  const [composerHeight, setComposerHeight] = useState<number | null>(() => {
+    try {
+      const saved = localStorage.getItem("acsa_composer_height");
+      if (saved) {
+        const parsed = parseInt(saved, 10);
+        if (!isNaN(parsed) && parsed >= COMPOSER_MIN_HEIGHT && parsed <= COMPOSER_MAX_HEIGHT) {
+          return parsed;
+        }
+      }
+    } catch {}
+    return null;
+  });
+  const composerHeightRef = useRef(composerHeight);
+  composerHeightRef.current = composerHeight;
+  const [isResizingComposer, setIsResizingComposer] = useState(false);
+
+  const startResizingComposer = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizingComposer(true);
+
+    const startY = e.clientY;
+    const startHeight = composerHeightRef.current ?? COMPOSER_DEFAULT_HEIGHT;
+    const prevCursor = document.body.style.cursor;
+    const prevUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = "row-resize";
+    document.body.style.userSelect = "none";
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      // The handle is on the top edge, so dragging *up* makes it taller.
+      const next = Math.max(
+        COMPOSER_MIN_HEIGHT,
+        Math.min(COMPOSER_MAX_HEIGHT, startHeight + (startY - moveEvent.clientY)),
+      );
+      setComposerHeight(next);
+      composerHeightRef.current = next;
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingComposer(false);
+      document.body.style.cursor = prevCursor;
+      document.body.style.userSelect = prevUserSelect;
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+      try {
+        if (composerHeightRef.current !== null) {
+          localStorage.setItem("acsa_composer_height", String(composerHeightRef.current));
+        }
+      } catch {}
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+  }, []);
   /**
    * Files folded into the next message. Chips above the input, text in the prompt —
    * see services/chatAttachments.ts for what a large file does to the budget.
@@ -1451,9 +1524,32 @@ export function AiAssistantChat({
       if (performance.now() < followLockUntil.current) return;
       followingTail.current = isFollowingBottom(el);
     };
+    /**
+     * The reader's own scroll, which outranks the lock we hold.
+     *
+     * `followLockUntil` exists so a *smooth* scroll we started is not mistaken for
+     * someone scrolling away. During a stream the follow effect fires many times a
+     * second, so the lock was effectively always held — and the listener above
+     * ignored the one thing it exists to notice. The next token then pulled the
+     * view back down, which is a chat you cannot read while the agent is talking.
+     *
+     * A wheel or a touch is unambiguous: no scroll we start produces one.
+     */
+    const onUserScroll = (event: Event) => {
+      const away = event.type !== "wheel" || (event as WheelEvent).deltaY < 0;
+      if (!away) return;
+      followingTail.current = false;
+      followLockUntil.current = 0;
+    };
     onScroll();
     el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
+    el.addEventListener("wheel", onUserScroll, { passive: true });
+    el.addEventListener("touchmove", onUserScroll, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      el.removeEventListener("wheel", onUserScroll);
+      el.removeEventListener("touchmove", onUserScroll);
+    };
   }, []);
 
   /**
@@ -2172,7 +2268,14 @@ Click to re-index project.`}
       </div>
 
       {/* ── Main Scroll Area ────────────────────────────────────────────── */}
-      <div ref={transcriptScrollRef} className="flex-1 overflow-y-auto p-4 font-sans">
+      {/* `select-text` because the panel turns selection off for its chrome — see
+          the root — and a reply is the one thing here a reader has to copy by
+          hand: a line out of a stack trace, a path, half a snippet. */}
+      <div
+        ref={transcriptScrollRef}
+        data-testid="chat-transcript"
+        className="flex-1 overflow-y-auto p-4 font-sans select-text"
+      >
         {/* ── 1. Chat Mode Content ──────────────────────────────────────── */}
         <>
           {/* Empty State / Welcome Screen */}
@@ -2201,7 +2304,22 @@ Click to re-index project.`}
                   </div>
 
                   {/* Centered Floating Hero Omnibar Card */}
-                  <div className="relative rounded-2xl bg-[#1c1c24]/95 backdrop-blur-xl border border-zinc-700/60 shadow-2xl p-4 space-y-3">
+                  <div
+                    onDragOver={handleImageDragOver}
+                    onDragLeave={handleImageDragLeave}
+                    onDrop={handleComposerDrop}
+                    className={`relative rounded-2xl bg-[#1c1c24]/95 backdrop-blur-xl border shadow-2xl p-4 space-y-3 transition-colors ${
+                      isImageDragOver ? "border-purple-500/70 ring-2 ring-purple-500/25" : "border-zinc-700/60"
+                    }`}
+                  >
+                    <div
+                      role="presentation"
+                      onMouseDown={startResizingComposer}
+                      title="Drag to resize the composer"
+                      className={`absolute -top-0.5 left-0 right-0 h-1.5 cursor-row-resize rounded-t-2xl transition-colors hover:bg-purple-500/30 ${
+                        isResizingComposer ? "bg-purple-500/40" : ""
+                      }`}
+                    />
                     {renderFileContext()}
                     {/* Attached Image Previews */}
                     {attachedImages.length > 0 && (
@@ -2257,9 +2375,6 @@ Click to re-index project.`}
                         if (e.target.value.endsWith("@")) setIsFilePickerOpen(true);
                       }}
                       onPaste={handlePaste}
-                      onDragOver={handleImageDragOver}
-                      onDragLeave={handleImageDragLeave}
-                      onDrop={handleComposerDrop}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && !e.shiftKey) {
                           e.preventDefault();
@@ -2276,6 +2391,11 @@ Click to re-index project.`}
                           : "Ask anything, / for commands, @ for context (Enter to send)"
                       }
                       rows={3}
+                      style={
+                        composerHeight
+                          ? { height: `${composerHeight}px`, overflowY: "auto" }
+                          : undefined
+                      }
                       className={`w-full bg-transparent border-0 text-sm text-zinc-100 placeholder-zinc-500 outline-none resize-none font-sans leading-relaxed focus:ring-0 p-1 ${
                         isImageDragOver ? "rounded-lg ring-2 ring-purple-500/50 bg-purple-500/5" : ""
                       }`}
@@ -2694,7 +2814,30 @@ Click to re-index project.`}
             )}
 
             {/* Unified Omnibar Input Card */}
-            <div className="relative rounded-2xl bg-zinc-900/90 border border-zinc-800/90 focus-within:border-purple-500/50 focus-within:ring-1 focus-within:ring-purple-500/20 p-2.5 transition-all shadow-lg">
+            {/* The whole card is the drop target, not the textarea inside it. A file
+                dragged in lands where the reader is pointing — over the chips, over
+                the buttons, over the padding — and a drop that only worked on the
+                text itself read as drag-and-drop not working at all. */}
+            <div
+              onDragOver={handleImageDragOver}
+              onDragLeave={handleImageDragLeave}
+              onDrop={handleComposerDrop}
+              className={`relative rounded-2xl bg-zinc-900/90 border p-2.5 transition-all shadow-lg ${
+                isImageDragOver
+                  ? "border-purple-500/70 ring-2 ring-purple-500/25"
+                  : "border-zinc-800/90 focus-within:border-purple-500/50 focus-within:ring-1 focus-within:ring-purple-500/20"
+              }`}
+            >
+              {/* The reader's one control over how much room they get to type
+                  in, on the edge everyone already drags to resize a panel. */}
+              <div
+                role="presentation"
+                onMouseDown={startResizingComposer}
+                title="Drag to resize the composer"
+                className={`absolute -top-0.5 left-0 right-0 h-1.5 cursor-row-resize rounded-t-2xl transition-colors hover:bg-purple-500/30 ${
+                  isResizingComposer ? "bg-purple-500/40" : ""
+                }`}
+              />
               {renderFileContext()}
               {/* Attached Image Previews */}
               {attachedImages.length > 0 && (
@@ -2748,9 +2891,6 @@ Click to re-index project.`}
                   if (e.target.value.endsWith("@")) setIsFilePickerOpen(true);
                 }}
                 onPaste={handlePaste}
-                onDragOver={handleImageDragOver}
-                onDragLeave={handleImageDragLeave}
-                onDrop={handleComposerDrop}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
@@ -2765,6 +2905,11 @@ Click to re-index project.`}
                     : `Ask ${selectedModelItem?.model || "AI"} anything… (Shift+Enter for new line)`
                 }
                 rows={2}
+                style={
+                  composerHeight
+                    ? { height: `${composerHeight}px`, overflowY: "auto" }
+                    : undefined
+                }
                 className={`w-full bg-transparent border-0 text-xs text-zinc-100 placeholder-zinc-500 outline-none resize-none font-sans leading-relaxed focus:ring-0 p-0.5 ${
                   isImageDragOver ? "rounded-lg ring-2 ring-purple-500/50 bg-purple-500/5" : ""
                 }`}
@@ -3414,7 +3559,11 @@ const CodeBlock = memo(function CodeBlock({ language, code }: { language: string
   };
 
   return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-950 overflow-hidden my-2 font-mono text-2xs">
+    // `min-w-0` is what makes the `<pre>` scroll instead of being cut off: in a
+    // flex column a block's width is `auto`, so a long line pushed the whole
+    // bubble past the panel and the panel clipped it — a code block wider than the
+    // window with no scrollbar anywhere to reach the rest of it.
+    <div className="min-w-0 max-w-full rounded-xl border border-zinc-800 bg-zinc-950 overflow-hidden my-2 font-mono text-2xs">
       <div className="flex items-center justify-between px-3 py-1.5 bg-zinc-900 border-b border-zinc-800/80 text-zinc-400">
         <span className="text-3xs font-semibold uppercase">{language}</span>
         <button

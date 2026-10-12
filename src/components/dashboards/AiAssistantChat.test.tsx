@@ -768,3 +768,75 @@ describe("a file attached to a chat turn", () => {
     expect(screen.getByText("explain this file")).toBeTruthy();
   });
 });
+
+/**
+ * Four things a reader hit at once, in the composer and the transcript.
+ */
+describe("the composer and the transcript", () => {
+  const dragPath = (path: string) => ({ types: ["text/plain"], files: [], getData: () => path });
+
+  it("accepts a drop anywhere on the composer, not only on the text field", async () => {
+    // A file dragged in lands wherever the reader is pointing — over the buttons,
+    // over the padding. A drop target that was only the textarea made the whole
+    // gesture look broken.
+    render(<AiAssistantChat {...baseProps} />);
+
+    fireEvent.drop(screen.getByTitle(/Add Context/), {
+      dataTransfer: dragPath("/work/acsa-code/src/index.tsx"),
+    });
+
+    const chip = await screen.findByTestId("attached-file");
+    expect(chip.getAttribute("title")).toBe("/work/acsa-code/src/index.tsx");
+  });
+
+  it("keeps files in the order they were attached", async () => {
+    render(<AiAssistantChat {...baseProps} />);
+
+    for (const path of ["/work/acsa-code/src/b.ts", "/work/acsa-code/src/a.ts"]) {
+      fireEvent.drop(screen.getByTitle(/Add Context/), { dataTransfer: dragPath(path) });
+    }
+
+    const chips = screen.getAllByTestId("attached-file");
+    expect(chips.map((chip) => chip.getAttribute("title"))).toEqual([
+      "/work/acsa-code/src/b.ts",
+      "/work/acsa-code/src/a.ts",
+    ]);
+  });
+
+  it("resizes from its top edge, and remembers the height", () => {
+    render(<AiAssistantChat {...baseProps} />);
+
+    // Dragging the top edge *up* makes it taller, like every other divider here.
+    fireEvent.mouseDown(screen.getByTitle("Drag to resize the composer"), { clientY: 500 });
+    fireEvent.mouseMove(window, { clientY: 400 });
+    fireEvent.mouseUp(window);
+
+    const box = screen.getByRole("textbox") as HTMLTextAreaElement;
+    expect(Number.parseInt(box.style.height, 10)).toBeGreaterThan(96);
+    expect(localStorage.getItem("acsa_composer_height")).toBe(box.style.height.replace("px", ""));
+  });
+
+  it("lets the reader scroll a stream, and stops following when they do", () => {
+    // The follow effect fires many times a second while streaming, and the lock it
+    // holds made the scroll listener ignore every scroll event — so the next token
+    // pulled the view back down and the transcript could not be read.
+    const scrollIntoView = vi.spyOn(Element.prototype, "scrollIntoView");
+    const { rerender } = render(
+      <AiAssistantChat {...baseProps} status="running" streamingAnswer="one" />,
+    );
+
+    fireEvent.wheel(screen.getByTestId("chat-transcript"), { deltaY: -120 });
+    scrollIntoView.mockClear();
+
+    rerender(<AiAssistantChat {...baseProps} status="running" streamingAnswer="one two" />);
+
+    expect(scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it("keeps a reply selectable, because a reader copies lines by hand", () => {
+    // The panel turns selection off for its chrome; a stack trace, a path or half
+    // a snippet is exactly what someone needs to lift out of it.
+    render(<AiAssistantChat {...baseProps} />);
+    expect(screen.getByTestId("chat-transcript").className).toContain("select-text");
+  });
+});

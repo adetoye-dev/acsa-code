@@ -17,6 +17,26 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The chat scrolls while the agent is streaming.** The follow-the-tail effect
+  fires many times a second, and the lock it holds — so its own smooth scroll is
+  not mistaken for the reader's — made the scroll listener ignore *every* event
+  during a stream. The next token then pulled the view back down, which is a reply
+  you cannot read while it arrives. A wheel or a touch is unambiguous and now
+  breaks the follow immediately; scrolling back to the bottom resumes it.
+- **A file can be dropped anywhere on the composer**, not only on the text field —
+  over the chips, over the buttons, over the padding — and the card lights up while
+  a drag is over it. Files keep the order they were attached in.
+- **The composer can be dragged taller** from its top edge, like every other
+  divider here, and remembers the height.
+- **A reply can be selected, and its code blocks scrolled.** The panel turns
+  selection off for its chrome, which also made the assistant's answers
+  unselectable — a line out of a stack trace or half a snippet could not be copied
+  by hand, only the whole block through the button. And a code block with a long
+  line was pushed past the panel by a missing `min-w-0`, so it was clipped with no
+  scrollbar anywhere to reach the rest of it.
+
 ## [0.2.35] - 2026-10-12
 
 ### Fixed
