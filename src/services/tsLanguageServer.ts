@@ -122,6 +122,16 @@ interface Session {
   timers: Map<string, ReturnType<typeof setTimeout>>;
   /** Per-model content subscriptions, keyed the same way as `open`. */
   watchers: Map<string, { dispose(): void }>;
+  /**
+   * What the server sent for a completion, by the Monaco item handed back.
+   *
+   * `completionItem/resolve` is not a nicety here. Measured against the real
+   * server: a list item is `{label, kind, sortText, data}` and nothing else, and the
+   * detail, the documentation *and the auto-import edit* only arrive when that
+   * `data` is sent back. Without this, accepting an unimported symbol inserts its
+   * name and no import — an identifier that is not defined.
+   */
+  resolutions: WeakMap<object, unknown>;
   disposables: Array<{ dispose(): void }>;
   unlisten: Array<() => void>;
   logs: string[];
@@ -472,7 +482,43 @@ function registerProviders(current: Session, capabilities: any): void {
             endColumn: position.column,
           },
         });
+
+        // Keep the server's own item, so `resolve` can be asked about this one
+        // later. Only items that carry `data` can be resolved — that is what the
+        // protocol gives the field for — and they are the ones with more to say.
+        const items = Array.isArray(result) ? result : (result?.items ?? []);
+        suggestions.forEach((suggestion, index) => {
+          const original = items[index];
+          if (original?.data !== undefined) current.resolutions.set(suggestion, original);
+        });
+
         return { suggestions };
+      },
+      resolveCompletionItem: async (item) => {
+        const original = current.resolutions.get(item) as Record<string, unknown> | undefined;
+        if (!original) return item;
+
+        const resolved = await request(current, "completionItem/resolve", original);
+        if (!resolved) return item;
+
+        const documentation = documentationText(resolved.documentation ?? resolved.detail);
+        return {
+          ...item,
+          // The insert text and range are already right — resolved from the item's
+          // own label and the word being replaced — so this only carries what the
+          // list could not say: the signature, the docs, and the import.
+          ...(resolved.detail ? { detail: String(resolved.detail) } : {}),
+          ...(documentation ? { documentation: { value: documentation } } : {}),
+          ...(resolved.additionalTextEdits?.length
+            ? {
+                additionalTextEdits: resolved.additionalTextEdits.map((edit: any) => ({
+                  range: toMonacoRange(edit.range),
+                  text: String(edit.newText ?? ""),
+                })),
+              }
+            : {}),
+          ...(resolved.sortText ? { sortText: String(resolved.sortText) } : {}),
+        };
       },
     }),
     monaco.languages.registerHoverProvider(languages, {
@@ -523,6 +569,7 @@ export async function startLanguageServer(
     open: new Map(),
     timers: new Map(),
     watchers: new Map(),
+    resolutions: new WeakMap(),
     disposables: [],
     unlisten: [],
     logs: [],

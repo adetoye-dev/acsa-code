@@ -123,3 +123,21 @@ node scripts/check_lsp.mjs     # speaks LSP to a scratch project; exits 0 if the
 `check_lsp.mjs` asserts the three things the old mirror got wrong: a `paths` alias
 resolves, a type error is reported at the right line with the compiler's own code,
 and a completion offers the symbol behind the aliased import.
+
+## completionItem/resolve is not optional
+
+Measured against the real server, a completion list item is `{label, kind, sortText,
+data}` and nothing else — no `textEdit`, no `insertText`, no detail, no
+documentation. Everything else arrives when that `data` is sent back to
+`completionItem/resolve`:
+
+| resolve gives | |
+|---|---|
+| `detail` | `Auto import from './lib'\nfunction greetName(who: string): string` |
+| `documentation` | the doc comment |
+| `additionalTextEdits` | `import { greetName } from "./lib";` |
+
+So a client that skips resolve inserts `greetName` with no import — an identifier
+that is not defined — and shows a list of bare names with no signatures. The editor
+resolves every item that carries `data`, which is the protocol's own signal that
+there is more to fetch.

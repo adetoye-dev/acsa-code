@@ -407,3 +407,85 @@ describe("IntelliSense over the wire", () => {
     for (const provider of monaco.providers) expect(provider.disposed).toBe(true);
   });
 });
+
+describe("resolving a completion", () => {
+  async function runningWithList() {
+    const model = makeModel(FILE, "const a = greetNa;\n");
+    const monaco = makeMonaco([model]);
+    const starting = server.startLanguageServer(monaco, ROOT);
+    await vi.waitFor(() => expect(sent().some((m) => m.method === "initialize")).toBe(true));
+    deliver({
+      jsonrpc: "2.0",
+      id: sent().find((m) => m.method === "initialize").id,
+      result: { capabilities: { completionProvider: {} } },
+    });
+    await starting;
+    await sentMethod("textDocument/didOpen");
+
+    const provider = monaco.providers.find((p: any) => p.kind === "completion");
+    const pending = provider.provider.provideCompletionItems(model, { lineNumber: 1, column: 16 });
+    let id: number | undefined;
+    await vi.waitFor(() => {
+      id = sent().find((m) => m.method === "textDocument/completion")?.id;
+      expect(id).toBeDefined();
+    });
+    // The bare shape the real server sends: measured, a list item is exactly this.
+    deliver({
+      jsonrpc: "2.0",
+      id,
+      result: { isIncomplete: false, items: [{ label: "greetName", kind: 3, sortText: "11", data: { cacheId: 3 } }] },
+    });
+    const { suggestions } = await pending;
+    return { provider, suggestion: suggestions[0] };
+  }
+
+  it("asks the server, and carries back the signature, the docs and the import", async () => {
+    const { provider, suggestion } = await runningWithList();
+    // Nothing in the list itself: no detail, no documentation, and no import —
+    // accepting this would insert a name that is not defined anywhere.
+    expect(suggestion.detail).toBeUndefined();
+    expect(suggestion.additionalTextEdits).toBeUndefined();
+
+    const pending = provider.provider.resolveCompletionItem(suggestion, { isCancellationRequested: false });
+    let id: number | undefined;
+    await vi.waitFor(() => {
+      id = sent().find((m) => m.method === "completionItem/resolve")?.id;
+      expect(id).toBeDefined();
+    });
+    // And it is asked with the server's own item, `data` and all — that is what the
+    // field is for, and what the answer is keyed on.
+    expect(sent().find((m) => m.method === "completionItem/resolve").params).toMatchObject({
+      label: "greetName",
+      data: { cacheId: 3 },
+    });
+
+    deliver({
+      jsonrpc: "2.0",
+      id,
+      result: {
+        label: "greetName",
+        detail: "Auto import from './lib'\nfunction greetName(who: string): string",
+        documentation: { kind: "markdown", value: "Says hello." },
+        additionalTextEdits: [
+          { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, newText: 'import { greetName } from "./lib";\n\n' },
+        ],
+      },
+    });
+
+    const resolved = await pending;
+    expect(resolved.additionalTextEdits[0].text).toContain('from "./lib"');
+    expect(resolved.documentation.value).toContain("Says hello");
+    expect(resolved.detail).toContain("greetName(who: string)");
+    // The insert text and range are left alone: they were already right.
+    expect(resolved.insertText).toBe("greetName");
+    expect(resolved.range).toMatchObject({ startLineNumber: 1, endLineNumber: 1 });
+  });
+
+  it("does not ask about an item the server gave nothing to resolve with", async () => {
+    const { provider } = await runningWithList();
+    const plain = { label: "answer", kind: 4, insertText: "answer", range: {} };
+    const result = await provider.provider.resolveCompletionItem(plain as any, { isCancellationRequested: false });
+    expect(result).toBe(plain);
+    expect(sent().some((m) => m.method === "completionItem/resolve")).toBe(false);
+  });
+});

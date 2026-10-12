@@ -198,8 +198,18 @@ try {
     position: { line: 4, character: "export const doubled = ".length + 1 },
   });
   const items = Array.isArray(completion.result) ? completion.result : (completion.result?.items ?? []);
-  const labels = items.map((i) => i.label);
+  const labels = items.map((i) => (typeof i.label === "string" ? i.label : i.label?.label));
   check("completion includes the imported symbol", labels.includes("answer"), `${items.length} items in ${completion.ms}ms`);
+
+  // The shape the editor's converter reads. A completion is a *range*, not a word,
+  // and the format decides whether it is inserted as a snippet — so the editor needs
+  // one of these on every item, and getting `undefined` here would apply every
+  // completion at the cursor instead of over the identifier it replaces.
+  const imported = items.find((i) => (typeof i.label === "string" ? i.label : i.label?.label) === "answer");
+  check("an item carries an edit, or text to insert", Boolean(imported?.textEdit?.newText ?? imported?.insertText), JSON.stringify(imported?.textEdit?.range ?? null));
+  check("the default edit range is not hoisted away without a fallback",
+    Boolean(imported?.textEdit?.range ?? completion.result?.itemDefaults?.editRange ?? imported?.insertText),
+    `itemDefaults: ${JSON.stringify(completion.result?.itemDefaults ?? null)}`);
 } catch (error) {
   failures.push(String(error?.message ?? error));
   console.error(` FAIL  ${error?.message ?? error}`);

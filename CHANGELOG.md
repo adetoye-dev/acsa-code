@@ -41,8 +41,9 @@ for them, not which file moved.
 
 - **Completions and hover come from the same place.** Monaco's own providers are
   switched off while a language server runs, so the editor has one source of
-  IntelliSense rather than two disagreeing — including auto-imports, which arrive as
-  a second edit at the top of the file and are applied as one. With it, the project
+  IntelliSense rather than two disagreeing. The list is fetched from the server, and
+  then each item is *resolved*, which is where the signature, the docs and — measured
+  — the auto-import edit live: skipping it would insert an unimported name. With it, the project
   mirror the editor used to build for its worker is deleted: 953 lines of
   approximation, the tsconfig mapped field by field, and the two shell commands that
   existed only to feed it. Note the honest half: with no server, the worker has no
