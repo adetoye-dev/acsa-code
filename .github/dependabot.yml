@@ -10,11 +10,20 @@
 #
 # There is deliberately no pip entry: the engine is stdlib-only, and the frozen
 # sidecar is built from it, so there is no Python dependency file to watch.
+#
+# `target-branch: dev` on all three. Without it Dependabot opens against the
+# *default* branch, which here is `main` — and `main` only moves when a release is
+# merged into it, so the pull requests sat against a branch nobody was updating,
+# went red as `dev` moved on, and piled up: fourteen open at the last count, most of
+# them red for reasons that had nothing to do with the bump. `dev` is where every
+# change is made and verified, so it is where a dependency change belongs; the
+# release merge carries it to `main` with everything else.
 version: 2
 
 updates:
   - package-ecosystem: npm
     directory: "/"
+    target-branch: dev
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -60,15 +69,23 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "@eslint/js"
         update-types: ["version-update:semver-major"]
+      # vite 8 cannot install yet: `@vitejs/plugin-react` does not list ^8 in its
+      # peer range, so `npm ci` dies with ERESOLVE at `Install dependencies` before
+      # a single test runs. It is the vite upgrade plus the plugins that have to
+      # move with it, not a bump.
+      - dependency-name: "vite"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: cargo
     directory: "/.tauri"
+    target-branch: dev
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
 
   - package-ecosystem: github-actions
     directory: "/"
+    target-branch: dev
     schedule:
       interval: weekly
     open-pull-requests-limit: 3

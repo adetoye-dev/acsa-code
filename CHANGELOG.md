@@ -28,6 +28,17 @@ for them, not which file moved.
 
 ### Fixed
 
+- **Editor AI reaches the provider you configured.** Review, inline edit and
+  completions resolved their model through the same walk, which gated a cloud
+  provider on `apiKey` — a field the app deliberately never fills in, because
+  credentials are write-only and the engine resolves them. Every one of those
+  calls fell through to the local worker however the provider page was set up.
+- **Dependency updates are opened against `dev`.** Dependabot had no
+  `target-branch`, so it opened against the default branch, `main` — which only
+  moves when a release is merged into it. The pull requests sat against a branch
+  nobody was updating and went red as `dev` moved on: fourteen open, most red for
+  reasons unrelated to the bump. `vite`'s next major is now ignored in the same
+  place, with the reason, rather than arriving as a permanently red pull request.
 - **The chat scrolls while the agent is streaming.** The follow-the-tail effect
   fires many times a second, and the lock it holds — so its own smooth scroll is
   not mistaken for the reader's — made the scroll listener ignore *every* event
