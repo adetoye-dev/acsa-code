@@ -92,13 +92,15 @@ jobs:
             libglib2.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev librsvg2-dev libxdo-dev
           # `tauri::generate_context!()` refuses to expand while any
-          # `bundle.resources` path is missing, and two of them are gitignored
-          # build output: `engine/` (the ~22 MB Python freeze) and
-          # `engine-codex/` (a ~212 MB download). The macro only stats the path,
-          # so an empty directory satisfies it — and building them for real here
-          # would put a PyInstaller freeze and a 212 MB fetch on the critical
-          # path of every push, which is the `sidecar` job's work, not this one's.
-          mkdir -p .tauri/engine .tauri/engine-codex
+          # `bundle.resources` path is missing, and three of them are gitignored
+          # build output: `engine/` (the ~22 MB Python freeze), `engine-codex/`
+          # (a ~212 MB download) and `lsp/` (Node plus the language server, ~50 MB).
+          # The macro only stats the path, so an empty directory satisfies it — and
+          # building them for real here would put a PyInstaller freeze and two large
+          # fetches on the critical path of every push, which is the `sidecar` job's
+          # work, not this one's. The `desktop` job fetches all three for real and
+          # asserts the bundle contains them.
+          mkdir -p .tauri/engine .tauri/engine-codex .tauri/lsp
           # `--all-targets` also compiles the `#[cfg(test)]` module in main.rs,
           # which is the only place the shell's 43 tests live. Without it a
           # test-only break waited for a PR or a tag, since `cargo test` is in
@@ -221,6 +223,11 @@ jobs:
           # user needs no Codex install. Losing it leaves an app that opens a chat
           # and cannot run an agent, which no other assertion here would catch.
           test -x "$APP/Contents/Resources/engine-codex/codex"
+          # The language server, with the Node it runs on. Losing it leaves the
+          # editor on the built-in engine — which works, and is exactly why nothing
+          # else here would notice.
+          test -x "$APP/Contents/Resources/lsp/node/bin/node"
+          test -f "$APP/Contents/Resources/lsp/server/node_modules/typescript-language-server/lib/cli.mjs"
           # MIT needs the notice to accompany the binary, and OFL needs the font
           # licence to travel with the font. Both live inside the bundle.
           test -f "$APP/Contents/Resources/LICENSE"
