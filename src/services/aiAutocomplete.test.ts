@@ -274,12 +274,15 @@ describe("completionContext", () => {
  * stop requests, and it ships on.
  */
 describe("the inline completion switch", () => {
+  /** Counts registrations, so "once for the workbench" is assertable. */
   function fakeMonaco() {
     let provider: any = null;
+    let registered = 0;
     return {
       languages: {
         registerInlineCompletionsProvider: (_language: string, p: any) => {
           provider = p;
+          registered++;
           return { dispose: () => {} };
         },
       },
@@ -291,6 +294,9 @@ describe("the inline completion switch", () => {
       get provider() {
         return provider;
       },
+      get registered() {
+        return registered;
+      },
     } as any;
   }
 
@@ -301,16 +307,24 @@ describe("the inline completion switch", () => {
       getLineMaxColumn: () => text.length + 1,
     }) as any;
 
-  async function complete(settings: Record<string, unknown>) {
-    const monaco = fakeMonaco();
-    registerAiInlineCompletions(monaco, () => settings as any);
-    return monaco.provider.provideInlineCompletions(
+  // One registration for the whole file, the way the workbench has one for the whole
+  // app; the settings are swapped underneath it.
+  const workbench = fakeMonaco();
+  let currentSettings: Record<string, unknown> = {
+    provider: "ollama",
+    model: "qwen2.5-coder:7b",
+    apiKey: "",
+    baseUrl: "",
+  };
+  registerAiInlineCompletions(workbench, () => currentSettings as any);
+
+  const complete = () =>
+    workbench.provider.provideInlineCompletions(
       model("const user = await db.user.findUnique({ where: {"),
       { lineNumber: 1, column: 1 },
       {},
       { isCancellationRequested: false },
     );
-  }
 
   beforeEach(() => {
     engineCalls.length = 0;
@@ -323,23 +337,56 @@ describe("the inline completion switch", () => {
     vi.useRealTimers();
   });
 
+  it("registers one provider for the workbench, not one per editor", () => {
+    // Monaco asks *every* provider registered for the model, so a second tab
+    // registering its own would offer the same suggestion twice over — and, since
+    // the debounce and the in-flight request are one per module, a keystroke in one
+    // pane would abort the request another pane was waiting on.
+    const secondTab = fakeMonaco();
+    const handle = registerAiInlineCompletions(secondTab, () => currentSettings as any);
+
+    expect(secondTab.registered).toBe(0);
+    expect(workbench.registered).toBe(1);
+
+    // And closing that tab must not take ghost text out of the workbench.
+    handle.dispose();
+    expect(workbench.registered).toBe(1);
+  });
+
   it("asks nobody at all when it is off", async () => {
-    const result = await complete({
+    currentSettings = {
       provider: "ollama",
       model: "qwen2.5-coder:7b",
       apiKey: "",
       baseUrl: "",
       inlineCompletion: false,
-    });
+    };
+    const result = await complete();
     expect(result.items).toEqual([]);
     expect(engineCalls).toHaveLength(0);
   });
 
   it("offers ghost text when it is on, which is how it ships", async () => {
+    currentSettings = { provider: "ollama", model: "qwen2.5-coder:7b", apiKey: "", baseUrl: "" };
     vi.useFakeTimers();
-    const pending = complete({ provider: "ollama", model: "qwen2.5-coder:7b", apiKey: "", baseUrl: "" });
+    const pending = complete();
     await vi.advanceTimersByTimeAsync(300);
     const result = await pending;
     expect(result.items[0].insertText).toBe("email },");
+  });
+
+  it("does not spawn a process per pause when nothing can complete", async () => {
+    // The settings page says why. Asking anyway would cost a Python process on
+    // every pause to collect a refusal from a model that cannot fill in the middle.
+    currentSettings = {
+      provider: "ollama",
+      model: "qwen2.5-coder:7b",
+      apiKey: "",
+      baseUrl: "",
+      completionsUnavailable: "no-insertion-model",
+    };
+    const result = await complete();
+    expect(result.items).toEqual([]);
+    expect(engineCalls).toHaveLength(0);
   });
 });

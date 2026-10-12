@@ -227,9 +227,9 @@ export function SettingsModal({
    */
   const completionModel = useMemo(() => {
     try {
-      return resolveCompletionAiConfig(settings).model || "the active model";
+      return resolveCompletionAiConfig(settings);
     } catch {
-      return "the active model";
+      return null;
     }
   }, [settings]);
 
@@ -1027,9 +1027,13 @@ export function SettingsModal({
                         />
                       </div>
                       <p className="text-2xs text-zinc-500 mt-1">
-                        {inlineCompletion
-                          ? `Ghost text appears as you pause. Written by ${completionModel}. Turn it off to stop the requests.`
-                          : "Off — no completions are requested, so nothing is spent on them."}
+                        {!inlineCompletion
+                          ? "Off — no completions are requested, so nothing is spent on them."
+                          : completionModel?.completionsUnavailable === "no-insertion-model"
+                            ? "None of the models installed can fill in the middle, so nothing will be suggested. Install one built for it (qwen2.5-coder, codestral…), or connect a cloud provider."
+                            : completionModel?.completionsUnavailable === "no-provider"
+                              ? "No local model is installed and no cloud provider is connected, so nothing will be suggested yet."
+                              : `Ghost text appears as you pause. Written by ${completionModel?.model || "the active model"}. Tab accepts all of it, ⌘→ one word. Turn it off to stop the requests.`}
                       </p>
                     </div>
                   </div>

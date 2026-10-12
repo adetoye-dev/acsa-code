@@ -31,9 +31,19 @@ for them, not which file moved.
   a file whose interface sits 75 lines above the cursor, the near-only window
   produced `name: raw.name` and `updatedAt: raw.updatedAt` — fields that do not
   exist — and the stitched one produced the interface's own fields, in less time.
+- **Settings says when completions cannot work.** The switch ships on, so on a
+  machine whose installed models can neither fill in the middle nor reach a cloud
+  provider it produced nothing at all, and that looked the same as a model having
+  nothing to say. Settings → Editor now names the reason, and nothing is asked of
+  the engine meanwhile — that was a process per pause to collect a refusal.
 
 ### Fixed
 
+- **One completion provider for the workbench**, not one per open editor. Monaco
+  asks every provider registered for a language, so each tab registering its own
+  offered the same suggestion several times over, and — because the debounce and
+  the in-flight request are one per module — a keystroke in one pane aborted the
+  request another pane was waiting on.
 - **Editor AI reaches the provider you configured.** Review, inline edit and
   completions resolved their model through the same walk, which gated a cloud
   provider on `apiKey` — a field the app deliberately never fills in, because

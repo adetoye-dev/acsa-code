@@ -32,6 +32,11 @@ export interface EditorAiSettings {
    * costs the user nothing to have on. Absent means on.
    */
   inlineCompletion?: boolean;
+  /**
+   * Set when nothing can produce a completion. Asking anyway costs a process per
+   * pause and returns a refusal, so it is not asked. See `resolveCompletionAiConfig`.
+   */
+  completionsUnavailable?: "no-insertion-model" | "no-provider";
 }
 
 let activeAbortController: AbortController | null = null;
@@ -125,11 +130,36 @@ export function sanitizeCompletion(raw: string, prefix: string, suffix: string):
   return text;
 }
 
+/**
+ * One provider for the app, however many editors are open.
+ *
+ * `registerInlineCompletionsProvider` registers against a *language*, not against an
+ * editor, and Monaco asks every provider registered for the model
+ * (`inlineCompletionsProvider.all(model)`). Registering from each editor tab — which
+ * is what this did, once per mounted tab — therefore meant N identical providers
+ * answering one cursor: the same suggestion offered N times as it becomes the "next"
+ * one, and, worse, a keystroke in one pane aborting the request another pane was
+ * waiting on, because the debounce and the in-flight request are one per module.
+ *
+ * Every editor is handed the same settings record, so a single registration reads
+ * the same thing N of them did. The getter is replaced on each mount instead, so the
+ * newest reader is the one consulted and an unmount costs nothing.
+ *
+ * The returned disposable is deliberately inert: the registration outlives any one
+ * tab, and a tab closing must not take ghost text out of the workbench.
+ */
+let appRegistration: MonacoType.IDisposable | null = null;
+let readSettings: (() => EditorAiSettings) | null = null;
+const INERT: MonacoType.IDisposable = { dispose: () => {} };
+
 export function registerAiInlineCompletions(
   monaco: typeof MonacoType,
   getSettings: () => EditorAiSettings
 ): MonacoType.IDisposable {
-  return monaco.languages.registerInlineCompletionsProvider("*", {
+  readSettings = getSettings;
+  if (appRegistration) return INERT;
+
+  appRegistration = monaco.languages.registerInlineCompletionsProvider("*", {
     provideInlineCompletions: async (model, position, _context, token) => {
       // Abort previous in-flight completion if user keeps typing
       if (activeAbortController) {
@@ -149,8 +179,12 @@ export function registerAiInlineCompletions(
         return { items: [] };
       }
 
-      const settings = getSettings();
+      const settings = readSettings?.();
+      if (!settings) return { items: [] };
       if (settings.inlineCompletion === false) {
+        return { items: [] };
+      }
+      if (settings.completionsUnavailable) {
         return { items: [] };
       }
 
@@ -250,6 +284,8 @@ export function registerAiInlineCompletions(
     },
     disposeInlineCompletions: () => {},
   });
+
+  return INERT;
 }
 
 export interface FetchParams {

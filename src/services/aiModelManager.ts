@@ -614,6 +614,14 @@ export interface EditorAiConfig {
   source: "selected" | "configured" | "settings" | "local";
   /** Carried through for completions only; absent means on. See `aiAutocomplete`. */
   inlineCompletion?: boolean;
+  /**
+   * Why no ghost text can be produced, when that is the case.
+   *
+   * Set by `resolveCompletionAiConfig` only. Without it the feature ships on and
+   * silently produces nothing on a machine whose models cannot fill in the middle,
+   * which reads as broken rather than as not set up.
+   */
+  completionsUnavailable?: "no-insertion-model" | "no-provider";
 }
 
 /**
@@ -749,7 +757,20 @@ export function resolveCompletionAiConfig(
     };
   }
 
-  return { ...resolveEditorAiConfig(settings), ...choice };
+  const resolved = resolveEditorAiConfig(settings);
+  // A cloud provider is a real answer to this question — the engine sends the
+  // completion the same way it sends a review. Landing on the local worker is not:
+  // that model was chosen for its tools, and a model without a FIM template answers
+  // 400, so the honest thing is to say so where the switch is rather than to spawn a
+  // process per pause to collect the refusal.
+  if (resolved.provider !== "ollama") return { ...resolved, ...choice };
+
+  const installed = (all.ollama?.availableModels || []).filter(Boolean).length;
+  return {
+    ...resolved,
+    ...choice,
+    completionsUnavailable: installed > 0 ? "no-insertion-model" : "no-provider",
+  };
 }
 
 export const LOCAL_WORKER_KEY = "acsa_local_worker_model";

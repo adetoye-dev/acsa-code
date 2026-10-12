@@ -395,4 +395,39 @@ describe("the model that writes inline completions", () => {
     expect(cfg.provider).toBe("deepseek");
     expect(cfg.source).not.toBe("local");
   });
+
+  it("says so when nothing installed can fill in the middle", async () => {
+    // The switch ships on, so this is the difference between a feature that is
+    // visibly not set up and one that quietly does nothing.
+    models.rememberModelCapabilities("ollama", [
+      { name: "tiny-chat:latest", capabilities: ["completion", "tools"] },
+    ]);
+    rows.ollama.availableModels = ["tiny-chat:latest"];
+    rows.deepseek.hasApiKey = false;
+    await models.hydrateProviders();
+
+    const cfg = models.resolveCompletionAiConfig(null);
+    expect(cfg.provider).toBe("ollama");
+    expect(cfg.completionsUnavailable).toBe("no-insertion-model");
+  });
+
+  it("says the other thing when there is nothing to complete with at all", async () => {
+    models.rememberModelCapabilities("ollama", [
+      { name: "tiny-chat:latest", capabilities: ["completion", "tools"] },
+    ]);
+    rows.ollama.availableModels = ["tiny-chat:latest"];
+    rows.deepseek.hasApiKey = false;
+    await models.hydrateProviders();
+    models.syncOllamaModels([]); // the probe found nothing installed
+
+    const cfg = models.resolveCompletionAiConfig(null);
+    expect(cfg.completionsUnavailable).toBe("no-provider");
+  });
+
+  it("says nothing when a provider can do it", async () => {
+    rows.deepseek.hasApiKey = true;
+    await models.hydrateProviders();
+    const cfg = models.resolveCompletionAiConfig(null);
+    expect(cfg.completionsUnavailable).toBeUndefined();
+  });
 });
