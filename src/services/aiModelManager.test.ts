@@ -377,4 +377,22 @@ describe("the model that writes inline completions", () => {
     expect(cfg.source).toBe("local");
     expect(cfg.model).toBe("qwen2.5-coder:7b");
   });
+
+  it("does not hand completions to a daemon that is not running", async () => {
+    // The probe found nothing installed. `availableModels` still holds the
+    // registry's starting list, so a preference for "local" would have to be told
+    // apart from a preference for "a local model that exists" — and on a machine
+    // with a cloud provider configured, guessing wrong means no ghost text at all.
+    models.rememberModelCapabilities("ollama", [
+      { name: "qwen2.5-coder:7b", capabilities: ["completion", "tools", "insert"] },
+    ]);
+    // No re-hydration afterwards: hydration resets a local provider to the
+    // registry's starting state, which is exactly the stale "connected" the probe
+    // exists to correct.
+    models.syncOllamaModels([]);
+
+    const cfg = models.resolveCompletionAiConfig(null);
+    expect(cfg.provider).toBe("deepseek");
+    expect(cfg.source).not.toBe("local");
+  });
 });

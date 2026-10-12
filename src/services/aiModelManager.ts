@@ -732,6 +732,11 @@ export function resolveCompletionAiConfig(
   const choice = { inlineCompletion: settings?.inlineCompletion };
 
   const all = loadAllProviders();
+  // The probe's list, not the registry's starting list: `syncOllamaModels` empties
+  // it when the daemon reports nothing installed, in the same call that marks the
+  // provider disconnected. So an empty list means there is no daemon to ask, and a
+  // preference for "local" must not take completions away from a provider the user
+  // configured in order to talk to one that is not running.
   const insertionModel = autoSelectInsertionModel(all.ollama?.availableModels || []);
   if (insertionModel) {
     return {
