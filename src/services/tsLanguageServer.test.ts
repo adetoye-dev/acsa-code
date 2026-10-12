@@ -889,3 +889,49 @@ describe("signature help", () => {
     expect(help.activeSignature).toBe(0);
   });
 });
+
+describe("a language server that dies", () => {
+  async function starting() {
+    const model = makeModel(FILE, "const a = 1;\n");
+    const monaco = makeMonaco([model]);
+    void server.startLanguageServer(monaco, ROOT);
+    await vi.waitFor(() => expect(sent().some((m) => m.method === "initialize")).toBe(true));
+    return monaco;
+  }
+
+  it("says it stopped, with the last thing it said, instead of waiting forever", async () => {
+    await starting();
+    expect(server.languageServerState().status).toBe("starting");
+
+    handlers.get("lsp:log")?.({
+      payload: { session: 7, line: "Fatal process out of memory: Failed to reserve virtual memory for CodeRange" },
+    });
+    handlers.get("lsp:exit")?.({ payload: { session: 7 } });
+
+    // This is the whole point: 0.2.36 left the badge on "starting…" indefinitely,
+    // because a child that dies mid-handshake simply never answers.
+    expect(server.languageServerState().status).toBe("failed");
+    expect(server.languageServerState().detail).toContain("CodeRange");
+  });
+
+  it("gives up on a handshake that is never answered", async () => {
+    vi.useFakeTimers();
+    try {
+      void server.startLanguageServer(makeMonaco([makeModel(FILE, "const a = 1;\n")]), ROOT);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(server.languageServerState().status).toBe("starting");
+
+      await vi.advanceTimersByTimeAsync(21_000);
+      expect(server.languageServerState().status).toBe("failed");
+      expect(server.languageServerState().detail).toContain("did not answer");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores an exit from a session that is not the current one", async () => {
+    await starting();
+    handlers.get("lsp:exit")?.({ payload: { session: 99 } });
+    expect(server.languageServerState().status).toBe("starting");
+  });
+});

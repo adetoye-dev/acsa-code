@@ -201,15 +201,28 @@ try {
   const labels = items.map((i) => (typeof i.label === "string" ? i.label : i.label?.label));
   check("completion includes the imported symbol", labels.includes("answer"), `${items.length} items in ${completion.ms}ms`);
 
-  // The shape the editor's converter reads. A completion is a *range*, not a word,
-  // and the format decides whether it is inserted as a snippet — so the editor needs
-  // one of these on every item, and getting `undefined` here would apply every
-  // completion at the cursor instead of over the identifier it replaces.
+  // The shape the editor's converter reads. Measured: this server sends
+  // `{label, kind, sortText, data}` with no `textEdit` and no `insertText` — the
+  // client inserts the *label* over the word at the cursor — and everything else
+  // (the signature, the docs, the auto-import edit) only arrives from
+  // `completionItem/resolve`, which needs that `data` to ask about.
   const imported = items.find((i) => (typeof i.label === "string" ? i.label : i.label?.label) === "answer");
-  check("an item carries an edit, or text to insert", Boolean(imported?.textEdit?.newText ?? imported?.insertText), JSON.stringify(imported?.textEdit?.range ?? null));
-  check("the default edit range is not hoisted away without a fallback",
-    Boolean(imported?.textEdit?.range ?? completion.result?.itemDefaults?.editRange ?? imported?.insertText),
-    `itemDefaults: ${JSON.stringify(completion.result?.itemDefaults ?? null)}`);
+  check("every item carries a label to insert", items.every((i) => typeof i.label === "string" || typeof i.label?.label === "string"));
+  check(
+    "the item for the imported symbol is resolvable",
+    Boolean(imported?.data),
+    imported ? `keys: ${Object.keys(imported).join(",")}` : "not in the list",
+  );
+
+  if (imported?.data) {
+    // `request` hands back `{ result, ms }` — the payload is one level down.
+    const { result: resolved } = await request("completionItem/resolve", { ...imported });
+    check(
+      "resolving it returns the signature and the import",
+      typeof resolved?.detail === "string" && resolved.detail.length > 0,
+      String(resolved?.detail ?? "").slice(0, 80).replace(/\n/g, " "),
+    );
+  }
 } catch (error) {
   failures.push(String(error?.message ?? error));
   console.error(` FAIL  ${error?.message ?? error}`);

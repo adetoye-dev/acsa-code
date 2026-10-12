@@ -17,6 +17,23 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.37] - 2026-10-12
+
+### Fixed
+
+- **The language server ran at all on a signed build.** The release step re-signs
+  every binary inside the app, and it did so *without* entitlements — which replaces
+  whatever the binary had. The Node runtime the language server runs on ships with
+  `com.apple.security.cs.allow-jit`; stripped of it, V8 cannot reserve its code range
+  and dies on launch, so the editor waited for an answer from a process that was
+  already gone and sat on "TS starting…" indefinitely. Reproduced by signing the same
+  bundle by hand (the crash is `Failed to reserve virtual memory for CodeRange`) and
+  fixed by signing nested binaries with the app's own entitlements. The frozen
+  engine's `disable-library-validation` was being dropped the same way.
+- **A language server that dies says so.** The shell now reports when the child's
+  output ends, with the last thing it wrote, and the handshake is bounded — a
+  failure is a sentence on the badge instead of a spinner with no end.
+
 ## [0.2.36] - 2026-10-12
 
 ### Added
@@ -873,7 +890,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.36...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.37...dev
+[0.2.37]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.36...v0.2.37
 [0.2.36]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.35...v0.2.36
 [0.2.35]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.34...v0.2.35
 [0.2.34]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.33...v0.2.34

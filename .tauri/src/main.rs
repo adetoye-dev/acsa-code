@@ -2765,6 +2765,17 @@ struct LspLog {
     line: String,
 }
 
+/// A language server's stdout closed, which means the process is gone.
+///
+/// Without this the page waits for a reply that will never come, and the editor's
+/// "starting…" is indistinguishable from a slow start. That is exactly what 0.2.36
+/// shipped: a Node runtime whose signature had lost its JIT entitlement died before
+/// answering `initialize`, and the badge sat there forever.
+#[derive(Clone, serde::Serialize)]
+struct LspExit {
+    session: u64,
+}
+
 /// Start a language server for a project and stream its messages.
 ///
 /// Returns the session id the caller tags every `lsp_send` with. A second call for
@@ -2831,6 +2842,10 @@ async fn lsp_start(
                 let _ = message_handle.emit("lsp:message", LspFrame { session, message });
             }
         }
+
+        // stdout is closed: the child has exited (or been killed). Say so, rather
+        // than letting the page wait for an answer from a process that is gone.
+        let _ = message_handle.emit("lsp:exit", LspExit { session });
     });
 
     state

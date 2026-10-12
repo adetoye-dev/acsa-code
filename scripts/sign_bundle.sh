@@ -50,12 +50,31 @@ signed=0
 while IFS= read -r -d '' file; do
   # Only real Mach-O binaries; `.so`/`.dylib` from PyInstaller count, JSON does not.
   if file -b "$file" | grep -q "Mach-O"; then
-    codesign --force --options runtime "${TIMESTAMP_ARGS[@]}" --sign "$IDENTITY" "$file"
+    # `--entitlements` is not optional here, and leaving it out is what shipped a
+    # broken 0.2.36. Re-signing a binary *replaces* its entitlements; without this
+    # flag every nested binary ends up with none, and the one that matters is the
+    # Node runtime the editor's language server runs on. Node ships with
+    # `com.apple.security.cs.allow-jit`; strip it and V8 cannot reserve its code
+    # range and the process dies on startup with
+    #
+    #   Fatal process out of memory: Failed to reserve virtual memory for CodeRange
+    #
+    # — which the editor saw as a language server that never answered a word, so it
+    # sat on "TS starting…" forever. The engine's `disable-library-validation` is
+    # the same kind of requirement (it loads its own libpython), and it was being
+    # dropped here too.
+    #
+    # These are the app's own entitlements, so a nested binary cannot end up with
+    # something the notary would refuse: `--preserve-metadata=entitlements` would
+    # keep Node's exactly, including `get-task-allow`, which a Developer ID
+    # signature is not allowed to carry.
+    codesign --force --options runtime "${TIMESTAMP_ARGS[@]}" \
+      --entitlements "$ENTITLEMENTS" --sign "$IDENTITY" "$file"
     signed=$((signed + 1))
   fi
 done < <(find "$APP/Contents/Resources" -type f -print0)
 
-echo "Signed $signed nested binaries."
+echo "Signed $signed nested binaries, with the app's entitlements."
 
 # The main executable carries the entitlements, then the bundle seals everything.
 codesign --force --options runtime "${TIMESTAMP_ARGS[@]}" \

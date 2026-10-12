@@ -37,6 +37,17 @@ export interface LanguageServerState {
 const MARKER_OWNER = "acsa-typescript";
 const WORKER_MARKER_OWNERS = ["typescript", "javascript"];
 
+/**
+ * How long the handshake may take before the session is written off.
+ *
+ * A language server on a large project takes about a second to initialize, so this
+ * is not a performance bound — it is the difference between "still starting" and
+ * "never going to", which the editor cannot otherwise tell apart. 0.2.36 shipped a
+ * runtime that died on launch and left the badge on "TS starting…" indefinitely, and
+ * this is the backstop for that; the exit event below is the honest detector.
+ */
+const INITIALIZE_TIMEOUT_MS = 20_000;
+
 /** How long typing settles before the server is told. Its own debounce is ~250ms. */
 const SYNC_DEBOUNCE_MS = 250;
 
@@ -1008,6 +1019,18 @@ export async function startLanguageServer(
     }),
   );
   current.unlisten.push(
+    // The child is gone. Report it rather than waiting for an answer that is not
+    // coming: the last thing it said is usually the reason.
+    await listen<{ session: number }>("lsp:exit", (event) => {
+      if (event.payload?.session !== current.id || session !== current) return;
+      const last = [...current.logs].reverse().find((line) => line.trim());
+      setState({
+        status: "failed",
+        detail: last ? `the language server stopped — ${last}` : "the language server stopped.",
+      });
+    }),
+  );
+  current.unlisten.push(
     await listen<{ session: number; line: string }>("lsp:log", (event) => {
       if (event.payload?.session !== current.id) return;
       current.logs.push(event.payload.line);
@@ -1020,7 +1043,8 @@ export async function startLanguageServer(
 
   let serverCapabilities: any = {};
   try {
-    const initialized = await request(current, "initialize", {
+    const initialized = await Promise.race([
+      request(current, "initialize", {
       processId: null,
       rootUri: new URL(`file://${projectRoot}`).toString(),
       workspaceFolders: [{ uri: new URL(`file://${projectRoot}`).toString(), name: "workspace" }],
@@ -1034,8 +1058,15 @@ export async function startLanguageServer(
         workspace: { configuration: false, workspaceFolders: false },
         window: { workDoneProgress: false },
       },
-      initializationOptions: {},
-    });
+        initializationOptions: {},
+      }),
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`the language server did not answer within ${INITIALIZE_TIMEOUT_MS / 1000}s`)),
+          INITIALIZE_TIMEOUT_MS,
+        ),
+      ),
+    ]) as any;
     if (initialized?.capabilities === undefined && initialized?.error) {
       throw new Error(String(initialized.message ?? "initialize failed"));
     }
