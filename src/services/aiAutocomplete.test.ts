@@ -1,11 +1,31 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  fetchCompletion,
-  fimSuffix,
-  registerAiInlineCompletions,
-  sanitizeCompletion,
-} from "./aiAutocomplete";
-import { rememberModelCapabilities } from "./aiModelManager";
+import { fetchCompletion, registerAiInlineCompletions, sanitizeCompletion } from "./aiAutocomplete";
+
+/**
+ * The engine is the only thing this module talks to now.
+ *
+ * The direct requests are gone — the webview's CSP refuses a fetch to Ollama on
+ * 127.0.0.1:11434, and the page never holds a cloud credential — so the transport
+ * is mocked here and the payload is what these tests read. The daemon's own
+ * behaviour (Ollama's FIM template, the `insert` capability, the newline an empty
+ * suffix needs) is measured and pinned next to the engine that sends it, in
+ * `tests/test_ai_complete.py`.
+ */
+const engineCalls: Array<Record<string, any>> = [];
+let engineReply: { status: number; body: unknown } = { status: 200, body: { ok: true, completion: "" } };
+let holdOpen = false;
+const releases: Array<(res: Response) => void> = [];
+
+vi.mock("./aiClient", () => ({
+  aiFetch: async (_path: string, init?: RequestInit) => {
+    engineCalls.push(init?.body ? JSON.parse(String(init.body)) : {});
+    if (holdOpen) return new Promise<Response>((resolve) => releases.push(resolve));
+    return new Response(JSON.stringify(engineReply.body), {
+      status: engineReply.status,
+      headers: { "Content-Type": "application/json" },
+    });
+  },
+}));
 
 /**
  * The fixture is the request that exposed the bug, not a made-up one.
@@ -73,129 +93,83 @@ describe("sanitizeCompletion", () => {
   });
 });
 
-/** A `fetch` that answers with the bodies a real daemon would send. */
-function stubFetch(handler: (url: string, body: any) => Response) {
-  const calls: Array<{ url: string; body: any }> = [];
-  vi.stubGlobal("fetch", async (url: string, init: any) => {
-    const body = init?.body ? JSON.parse(init.body) : undefined;
-    calls.push({ url, body });
-    return handler(url, body);
+
+const ask = (settings: Record<string, unknown> = {}) =>
+  fetchCompletion({
+    prefix: PREFIX,
+    suffix: SUFFIX,
+    settings: { provider: "ollama", model: "qwen2.5-coder:7b", apiKey: "", baseUrl: "", ...settings } as any,
+    signal: new AbortController().signal,
   });
-  return calls;
-}
 
-function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
-
-const ask = (settings: any) =>
-  fetchCompletion({ prefix: PREFIX, suffix: SUFFIX, settings, signal: new AbortController().signal });
-
-describe("fetchCompletion dialects", () => {
+describe("fetchCompletion", () => {
   beforeEach(() => {
-    vi.unstubAllGlobals();
-    // The flags Ollama itself reports on this machine, so the branch under test is
-    // the one the daemon would actually take.
-    rememberModelCapabilities("ollama", [
-      { name: "qwen2.5-coder:7b", capabilities: ["completion", "tools", "insert"] },
-      { name: "deepseek-coder:6.7b", capabilities: ["completion"] },
-    ]);
-  });
-  afterEach(() => {
-    vi.unstubAllGlobals();
+    engineCalls.length = 0;
+    releases.length = 0;
+    holdOpen = false;
+    engineReply = { status: 200, body: { ok: true, completion: "email }," } };
   });
 
-  it("asks Ollama the FIM way first, and holds the model in memory", async () => {
-    const calls = stubFetch(() => json({ response: "email }," }));
-    const out = await ask({ provider: "ollama", model: "qwen2.5-coder:7b", baseUrl: "", apiKey: "" });
-
-    expect(calls).toHaveLength(1);
-    expect(calls[0].url).toBe("http://127.0.0.1:11434/api/generate");
-    expect(calls[0].body.suffix).toBe(SUFFIX);
-    expect(calls[0].body.prompt).toBe(PREFIX);
-    expect(calls[0].body.prompt).not.toContain("<|fim_prefix|>");
-    // A cold load measured 2s against 105ms warm; unloading between keystrokes
-    // is the difference between a suggestion and an interruption.
-    expect(calls[0].body.keep_alive).toBe("30m");
-    expect(out).toBe("email },");
+  it("sends the text either side of the cursor to the engine", async () => {
+    expect(await ask()).toBe("email },");
+    expect(engineCalls).toHaveLength(1);
+    expect(engineCalls[0]).toMatchObject({
+      provider: "ollama",
+      model: "qwen2.5-coder:7b",
+      prefix: PREFIX,
+      suffix: SUFFIX,
+    });
   });
 
-  it("never sends an empty suffix, which takes the model out of FIM mode", async () => {
-    // Measured: with nothing after the cursor the model answered as a chat bot
-    // ("It looks like you're trying to find a user…") and took ~4s. A newline
-    // put it back to code in 257ms.
-    expect(fimSuffix("")).toBe("\n");
-    expect(fimSuffix(" },\n    });")).toBe(" },\n    });");
-
-    const calls = stubFetch(() => json({ response: "\n  });\n}" }));
-    const out = await fetchCompletion({
+  it("passes an empty suffix through rather than inventing one", async () => {
+    // An empty suffix is what the end of a file looks like. The newline it needs is
+    // the engine's business — that is the side that sends the request.
+    await fetchCompletion({
       prefix: PREFIX,
       suffix: "",
       settings: { provider: "ollama", model: "qwen2.5-coder:7b", apiKey: "", baseUrl: "" },
       signal: new AbortController().signal,
     });
-    expect(calls[0].body.suffix).toBe("\n");
-    expect(out).toBe("\n  });\n}");
+    expect(engineCalls[0].suffix).toBe("");
   });
 
-  it("asks a model that cannot insert nothing at all", async () => {
-    // The `insert` capability is Ollama saying the template has a FIM section.
-    // deepseek-coder:6.7b has none: measured, `suffix` answers HTTP 400 and the
-    // hand-rolled `<|fim_prefix|>` prompt came back as a paragraph of prose that
-    // would be typed into the file. Asking anyway is not free either — the daemon
-    // loads the model to refuse, and a 9B took 15.9s to say no.
-    const calls = stubFetch(() => json({ response: "The function you provided is a…" }));
-    const out = await ask({ provider: "ollama", model: "deepseek-coder:6.7b", baseUrl: "", apiKey: "" });
-
-    expect(calls).toHaveLength(0);
-    expect(out).toBe("");
+  it("takes the engine's silence as silence, not as an invitation to invent", async () => {
+    // "def handler():" is a prefix the old offline synthesizer answered with a
+    // docstring stub — a deterministic completion wearing the model's clothes.
+    engineReply = { status: 200, body: { ok: true, completion: "" } };
+    expect(await fetchCompletion({
+      prefix: "def handler():",
+      suffix: "",
+      settings: { provider: "ollama", model: "qwen2.5-coder:7b", apiKey: "", baseUrl: "" },
+      signal: new AbortController().signal,
+    })).toBe("");
   });
 
-  it("still asks a model whose capabilities we have not been told", async () => {
-    // Guessing "cannot" would silently disable the feature for every model the
-    // engine has not reported on yet.
-    const calls = stubFetch(() => json({ response: "email }," }));
-    const out = await ask({ provider: "ollama", model: "unreported:latest", baseUrl: "", apiKey: "" });
-
-    expect(calls).toHaveLength(1);
-    expect(out).toBe("email },");
+  it("offers nothing when there is no backend to ask", async () => {
+    // What a plain browser gets: the desktop-required answer, and a keystroke is no
+    // place to raise it.
+    engineReply = { status: 501, body: { ok: false, error: "needs the desktop app" } };
+    expect(await ask()).toBe("");
   });
 
-  it("speaks the OpenAI dialect for every other cloud provider", async () => {
-    // Groq, DeepSeek, xAI, NVIDIA, Google, Moonshot, Together, OpenRouter all
-    // serve /chat/completions from their own base URL. Naming only `openai`
-    // here left completion silently dead for all of them.
-    for (const provider of ["groq", "deepseek", "xai", "nvidia", "google", "moonshot", "together", "openrouter"]) {
-      const calls = stubFetch(() => json({ choices: [{ message: { content: "email }," } }] }));
-      const out = await ask({
-        provider,
-        model: "some-model",
-        baseUrl: `https://${provider}.example/v1`,
-        apiKey: "k-123456",
-      });
-      expect(calls[0].url, provider).toBe(`https://${provider}.example/v1/chat/completions`);
-      expect(calls[0].body.model, provider).toBe("some-model");
-      expect(out, provider).toBe("email },");
-      vi.unstubAllGlobals();
-    }
+  it("offers nothing when the engine reports a failure", async () => {
+    engineReply = { status: 200, body: { ok: false, completion: "", reason: "no API key" } };
+    expect(await ask({ provider: "groq", model: "openai/gpt-oss-120b" })).toBe("");
   });
 
-  it("uses the Cohere dialect, which is not OpenAI-compatible", async () => {
-    const calls = stubFetch(() => json({ text: "email }," }));
-    const out = await ask({ provider: "cohere", model: "command-r", baseUrl: "", apiKey: "k-123456" });
+  it("does not start a second request behind one that is still out", async () => {
+    // Each engine call is a process. An answer that arrives for text which has
+    // since moved is worse than no answer, so the second request gets nothing.
+    holdOpen = true;
+    const first = ask();
+    await vi.waitFor(() => expect(releases).toHaveLength(1));
+    const second = ask();
+    holdOpen = false;
+    releases[0](new Response(JSON.stringify({ ok: true, completion: "email }," }), { status: 200 }));
 
-    expect(calls[0].url).toBe("https://api.cohere.ai/v1/chat");
-    expect(calls[0].body.preamble).toContain("ONLY the code to insert");
-    expect(out).toBe("email },");
-  });
-
-  it("falls back to the offline synthesizer rather than calling out without a key", async () => {
-    const calls = stubFetch(() => json({}));
-    expect(await ask({ provider: "openai", model: "gpt-4o-mini", baseUrl: "", apiKey: "" })).toBe("");
-    expect(calls).toHaveLength(0);
+    expect(await first).toBe("email },");
+    expect(await second).toBe("");
+    expect(engineCalls).toHaveLength(1);
   });
 });
 
@@ -231,9 +205,9 @@ describe("the inline completion switch", () => {
       getLineMaxColumn: () => text.length + 1,
     }) as any;
 
-  async function ask(settings: any) {
+  async function complete(settings: Record<string, unknown>) {
     const monaco = fakeMonaco();
-    registerAiInlineCompletions(monaco, () => settings);
+    registerAiInlineCompletions(monaco, () => settings as any);
     return monaco.provider.provideInlineCompletions(
       model("const user = await db.user.findUnique({ where: {"),
       { lineNumber: 1, column: 1 },
@@ -242,13 +216,19 @@ describe("the inline completion switch", () => {
     );
   }
 
+  beforeEach(() => {
+    engineCalls.length = 0;
+    releases.length = 0;
+    holdOpen = false;
+    engineReply = { status: 200, body: { ok: true, completion: "email }," } };
+  });
+
   afterEach(() => {
-    vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   it("asks nobody at all when it is off", async () => {
-    const calls = stubFetch(() => json({ response: "email }," }));
-    const result = await ask({
+    const result = await complete({
       provider: "ollama",
       model: "qwen2.5-coder:7b",
       apiKey: "",
@@ -256,24 +236,14 @@ describe("the inline completion switch", () => {
       inlineCompletion: false,
     });
     expect(result.items).toEqual([]);
-    expect(calls).toHaveLength(0);
+    expect(engineCalls).toHaveLength(0);
   });
 
   it("offers ghost text when it is on, which is how it ships", async () => {
     vi.useFakeTimers();
-    try {
-      stubFetch(() => json({ response: "email }," }));
-      const pending = ask({
-        provider: "ollama",
-        model: "qwen2.5-coder:7b",
-        apiKey: "",
-        baseUrl: "",
-      });
-      await vi.advanceTimersByTimeAsync(300);
-      const result = await pending;
-      expect(result.items[0].insertText).toBe("email },");
-    } finally {
-      vi.useRealTimers();
-    }
+    const pending = complete({ provider: "ollama", model: "qwen2.5-coder:7b", apiKey: "", baseUrl: "" });
+    await vi.advanceTimersByTimeAsync(300);
+    const result = await pending;
+    expect(result.items[0].insertText).toBe("email },");
   });
 });

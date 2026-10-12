@@ -33,6 +33,12 @@ for them, not which file moved.
   provider on `apiKey` — a field the app deliberately never fills in, because
   credentials are write-only and the engine resolves them. Every one of those
   calls fell through to the local worker however the provider page was set up.
+- **Ghost text can reach the daemon it was written for.** The completion code
+  fetched Ollama on `127.0.0.1:11434` straight from the page, and the packaged
+  app's Content-Security-Policy allows `connect-src` only `'self'` plus one
+  loopback dev port — so local completions could not have worked in the build that
+  ships, while looking fine in the dev preview. Both local and cloud now go through
+  the engine, which is the side that can reach the daemon and holds the credential.
 - **Dependency updates are opened against `dev`.** Dependabot had no
   `target-branch`, so it opened against the default branch, `main` — which only
   moves when a release is merged into it. The pull requests sat against a branch

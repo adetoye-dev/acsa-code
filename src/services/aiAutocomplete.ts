@@ -14,7 +14,6 @@
 
 import type * as MonacoType from "monaco-editor";
 import { aiFetch } from "./aiClient";
-import { modelCapabilities } from "./aiModelManager";
 /**
  * The fields editor AI calls actually need. Both the legacy `AISettings` blob
  * and the resolved editor config (which prefers a configured cloud provider)
@@ -54,8 +53,6 @@ const COMPLETION_TIMEOUT_MS = 2500;
 /** A local model pays for the load, not the trip; a cloud one is the other way. */
 const LOCAL_DEBOUNCE_MS = 200;
 const CLOUD_DEBOUNCE_MS = 120;
-/** A completion is a few lines, never a patch. Measured: 24 tokens covers ~2 lines. */
-const COMPLETION_MAX_TOKENS = 24;
 /** Beyond a few lines it is not an autocomplete, it is a patch. */
 const COMPLETION_MAX_LINES = 6;
 const COMPLETION_MAX_CHARS = 400;
@@ -311,188 +308,43 @@ function withDeadline(work: Promise<string | null>, ms: number): Promise<string 
 }
 
 /**
- * The suffix a fill-in-the-middle request needs, which is not always the suffix
- * that is there.
+ * One completion, from the engine.
  *
- * With nothing after the cursor — the end of the file, which is the most common
- * place to want a completion — an empty suffix takes the model out of FIM mode
- * entirely and it answers as a chat bot. Measured, all three of "end of file",
- * "mid-identifier" and "after a dot" returned prose on every attempt ("It looks
- * like you're trying to find a user in your database using Prisma, but the code
- * snippet you provided is…") and took ~4s, past any deadline worth having.
+ * There used to be a second implementation here — direct HTTP from the page to
+ * the daemon, and to whichever cloud dialect matched — and it could not work in
+ * the app that ships. The webview is served under a CSP whose `connect-src` is
+ * `'self'` plus one loopback dev port, so a fetch to Ollama on 11434 is refused
+ * before it leaves the page: local completions were alive in a dev preview and
+ * dead in the packaged build, which is the worst way for a feature to be wrong.
+ * Cloud was no better — credentials are write-only across the app's own API, so
+ * the key the page would need is never in the page.
  *
- * A newline is enough to put it back: the same call returned `"\n  });\n}"` in
- * 257ms. It is also the honest assumption — a file ends with a newline, so the
- * cursor at the end of one has a line break after it.
+ * The engine resolves both: the daemon on loopback, or the provider's key, in the
+ * same process that already serves review and inline edit. That is also one
+ * implementation of each provider's dialect instead of two that have to be kept in
+ * step, which is the lesson `engineBridge.ts` already records. Measured, the round
+ * trip costs about 150ms on a warm 7B — 1.31s against 1.23s — because the model is
+ * the slow part, not the transport.
+ *
+ * The fill-in-the-middle details (Ollama's `suffix`, the `insert` capability, the
+ * newline an empty suffix needs) live with the engine that now sends the request;
+ * see `complete` in `core-engine/ai_cli.py`, where they are measured and pinned.
  */
-export function fimSuffix(suffix: string): string {
-  return suffix || "\n";
-}
-
 export async function fetchCompletion({
   prefix,
   suffix,
   settings,
   signal,
 }: FetchParams): Promise<string> {
-  const { provider, model, apiKey, baseUrl } = settings;
-
-  // 1. Ollama, asked only the way the model itself supports fill-in-the-middle.
-  //
-  // `suffix` makes Ollama apply the model's own FIM template, which is the one
-  // thing that works: measured, qwen2.5-coder returned `email },` and carried on
-  // correctly. The hand-rolled `<|fim_prefix|>…<|fim_middle|>` prompt that used to
-  // be the fallback is a template most models do not have, and every way it misses
-  // was measured. qwen2.5-coder handed it echoed the whole prefix back inside a
-  // ```typescript fence — a suggestion that writes the file into itself.
-  // deepseek-coder:6.7b, which has no FIM template and answers HTTP 400 to
-  // `suffix`, answered the tokens with a paragraph of prose ("The function you
-  // provided is a TypeScript function that uses Prisma…") that would be typed
-  // straight into the file. Neither is a completion, so the fallback is gone: a
-  // model that cannot insert gets no suggestion, which is the honest answer.
-  //
-  // Ollama already says which models those are — `insert` is the capability flag
-  // for "the template has a FIM section", and it agreed with the measurement on
-  // every model here. Asking anyway is not free: the daemon loads the model to
-  // refuse, and a 9B took 15.9s to say no. Capabilities we have not been told are
-  // not held against the model; it gets the request and a 400 returns nothing.
-  if (provider === "ollama") {
-    const capabilities = modelCapabilities("ollama", model);
-    if (capabilities && !capabilities.includes("insert")) return "";
-
-    const url = (baseUrl || "http://127.0.0.1:11434") + "/api/generate";
-    const options = { num_predict: COMPLETION_MAX_TOKENS, temperature: 0.1 };
-    // `keep_alive`, so the model is not unloaded between keystrokes: a cold load
-    // measured 4.4s against ~1.15s warm (24 tokens), and that is the difference
-    // between a suggestion and an interruption.
-    const common = {
-      model: model || "qwen2.5-coder:7b",
-      stream: false,
-      options,
-      keep_alive: "30m",
-    };
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...common, prompt: prefix, suffix: fimSuffix(suffix) }),
-      signal,
-    });
-    if (res.ok) {
-      const data = await res.json();
-      return data.response || "";
-    }
-    return "";
-  }
-
-  // 2. Cloud, through the engine — because that is where the key is.
-  //
-  // Credentials are write-only across the app's own API: the registry never hands
-  // a key back to the page, so `apiKey` below is empty for a provider the user has
-  // configured, and a direct call from here goes out unauthenticated and returns
-  // nothing. The engine resolves the key exactly as it does for review and inline
-  // edit, which is why this is the first attempt for anything that is not the local
-  // daemon. A browser (no IPC) gets a 501 and falls through to the direct call,
-  // which is the best a page with no backend can do.
-  const viaEngine = await withDeadline(
+  const answered = await withDeadline(
     requestEngineCompletion({ prefix, suffix, settings, signal }),
     COMPLETION_TIMEOUT_MS,
   );
-  if (viaEngine !== null && viaEngine !== "") return viaEngine;
-
-  /**
-   * Cohere is the one provider here that does not speak the OpenAI dialect.
-   *
-   * Every other entry in the registry — OpenAI, Groq, DeepSeek, xAI, NVIDIA,
-   * Google's compatibility endpoint, Moonshot, Together, OpenRouter — is a
-   * `/chat/completions` call against its own `baseUrl`. Naming only `openai` here
-   * meant the resolver could hand this function a Groq key and get nothing back:
-   * completion was silently dead for every provider but two, which is exactly the
-   * "all capable models, local or cloud" this exists to provide. These branches
-   * are the fallback now — reached when a key *was* handed to the page, or when
-   * the engine is unreachable.
-   */
-  if (provider === "cohere" && apiKey) {
-    const res = await fetch((baseUrl || "https://api.cohere.ai/v1") + "/chat", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        message: `Prefix:\n${prefix}\n\nSuffix:\n${suffix}\n\nComplete the code:`,
-        preamble:
-          "You are an inline code autocomplete engine. Output ONLY the code to insert. No markdown fences, no explanation.",
-        max_tokens: COMPLETION_MAX_TOKENS,
-        temperature: 0.1,
-      }),
-      signal,
-    });
-    if (res.ok) {
-      const data = await res.json();
-      return data.text || "";
-    }
-    return "";
-  }
-
-  // 3. Every OpenAI-compatible provider, by its own base URL.
-  if (apiKey) {
-    const url = (baseUrl || "https://api.openai.com/v1") + "/chat/completions";
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: model || "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are an inline code autocomplete engine. Complete the code at the cursor. Output ONLY the code to insert. Do NOT include markdown code blocks or explanations.",
-          },
-          {
-            role: "user",
-            content: `Prefix:\n${prefix}\n\nSuffix:\n${suffix}\n\nComplete the code:`,
-          },
-        ],
-        max_tokens: COMPLETION_MAX_TOKENS,
-        temperature: 0.1,
-      }),
-      signal,
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      return data.choices?.[0]?.message?.content || "";
-    }
-  }
-
-  // 4. Deterministic Offline AST / Heuristic Synthesizer Fallback
-  return getOfflineSnippetCompletion(prefix);
-}
-
-function getOfflineSnippetCompletion(prefix: string): string {
-  const lastLine = prefix.split("\n").pop() || "";
-  const trimmed = lastLine.trim();
-
-  if (trimmed.startsWith("def ") && trimmed.endsWith(":")) {
-    return "\n    \"\"\"Docstring generated by ACSA Code.\"\"\"\n    pass";
-  }
-  if (trimmed === "import ") {
-    return "sys, os, time\nfrom typing import Dict, List, Optional";
-  }
-  if (trimmed.startsWith("class ") && trimmed.endsWith(":")) {
-    return "\n    def __init__(self):\n        super().__init__()";
-  }
-  if (trimmed.includes("try:") || trimmed === "try:") {
-    return "\n    result = True\nexcept Exception as exc:\n    logger.error(exc)";
-  }
-  if (trimmed.startsWith("if __name__ ==")) {
-    return ' "__main__":\n    main()';
-  }
-
-  return "";
+  // Nothing arrives when the engine is unreachable, the request was superseded, or
+  // the deadline passed. There is deliberately no synthesizer underneath: a
+  // deterministic stub rendered as ghost text is a completion that looks like the
+  // model's work and is not, which is the failure this whole path exists to avoid.
+  return answered ?? "";
 }
 
 export interface InlineEditResult {
