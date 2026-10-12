@@ -25,6 +25,12 @@ for them, not which file moved.
   can fill in the middle (free, private, and ~1.2s warm on a 7B), and otherwise on
   the configured cloud provider, through the engine — the only side that can see a
   credential.
+  Tab accepts the whole suggestion, `⌘→` accepts one word, `Esc` dismisses it, and
+  the toolbar over the text offers "Accept Word" and "Accept Line". The prompt
+  carries the head of the file as well as the lines around the cursor: measured on
+  a file whose interface sits 75 lines above the cursor, the near-only window
+  produced `name: raw.name` and `updatedAt: raw.updatedAt` — fields that do not
+  exist — and the stitched one produced the interface's own fields, in less time.
 
 ### Fixed
 

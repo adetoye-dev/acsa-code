@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fetchCompletion, registerAiInlineCompletions, sanitizeCompletion } from "./aiAutocomplete";
+import {
+  completionContext,
+  fetchCompletion,
+  registerAiInlineCompletions,
+  sanitizeCompletion,
+} from "./aiAutocomplete";
 
 /**
  * The engine is the only thing this module talks to now.
@@ -170,6 +175,97 @@ describe("fetchCompletion", () => {
     expect(await first).toBe("email },");
     expect(await second).toBe("");
     expect(engineCalls).toHaveLength(1);
+  });
+});
+
+/**
+ * A text model that answers ranges the way Monaco does, so the stitched prefix can
+ * be read back as lines rather than guessed at.
+ */
+function textModel(text: string) {
+  const lines = text.split("\n");
+  return {
+    getLineCount: () => lines.length,
+    getLineMaxColumn: (n: number) => (lines[n - 1] ?? "").length + 1,
+    getValueInRange: ({
+      startLineNumber,
+      startColumn,
+      endLineNumber,
+      endColumn,
+    }: {
+      startLineNumber: number;
+      startColumn: number;
+      endLineNumber: number;
+      endColumn: number;
+    }) => {
+      if (startLineNumber === endLineNumber) {
+        return (lines[startLineNumber - 1] ?? "").slice(startColumn - 1, endColumn - 1);
+      }
+      const out = [(lines[startLineNumber - 1] ?? "").slice(startColumn - 1)];
+      for (let i = startLineNumber; i < endLineNumber - 1; i++) out.push(lines[i] ?? "");
+      out.push((lines[endLineNumber - 1] ?? "").slice(0, endColumn - 1));
+      return out.join("\n");
+    },
+  } as any;
+}
+
+/**
+ * An interface near the top, then enough unrelated work that it falls outside the
+ * window above the cursor — which is the case that was measured, and the one where
+ * the model invented fields it had never been shown.
+ */
+function fileWithTypeAwayFromCursor() {
+  const head = ["interface UserRecord {", "  id: string;", "  email: string;", "}"];
+  const padding = Array.from({ length: 120 }, (_, i) => `export const helper${i} = ${i};`);
+  const tail = ["export function toRecord(raw: any): UserRecord {", "  return {", "    id: raw.id,"];
+  // 127 lines: the cursor sits 50 lines in, well past the head's 40.
+  return { text: [...head, ...padding, ...tail].join("\n"), cursorLine: 127 };
+}
+
+describe("completionContext", () => {
+  it("carries the head of the file, not only the cursor's neighbours", () => {
+    // Measured: without the interface in the prompt the model invented fields
+    // ("name: raw.name", "updatedAt"), and a confident wrong field is what gets
+    // inserted. The fifty lines above the cursor do not contain it.
+    const { text, cursorLine } = fileWithTypeAwayFromCursor();
+    // Column 16 is the end of `    id: raw.id,` — the cursor at the end of the buffer.
+    const { prefix } = completionContext(textModel(text), { lineNumber: cursorLine, column: 16 });
+
+    expect(prefix).toContain("interface UserRecord");
+    expect(prefix).toContain("// …");
+    expect(prefix).toContain("id: raw.id,");
+    // The head's own lines, and the tail's, are both there …
+    expect(prefix).toContain("helper1 = 1");
+    expect(prefix).toContain("helper100 = 100");
+    // … and the middle that neither window covers is skipped, not sent twice.
+    expect(prefix).not.toContain("helper50 = 50");
+  });
+
+  it("reads one contiguous block when the windows would overlap", () => {
+    // A short file, or a cursor near the top: the head is already inside the tail,
+    // and sending it twice would be worse than either.
+    const text = "const a = 1;\nconst b = 2;\nconst c = 3;";
+    const { prefix } = completionContext(textModel(text), { lineNumber: 3, column: 13 });
+
+    expect(prefix).toBe(text);
+    expect(prefix).not.toContain("// …");
+  });
+
+  it("does not stitch a marker into text that is contiguous anyway", () => {
+    // Lines 1..40 and 41..cursor are adjacent: a marker between them would be a
+    // lie about the file's contents.
+    const lines = Array.from({ length: 200 }, (_, i) => `const v${i} = ${i};`);
+    const { prefix } = completionContext(textModel(lines.join("\n")), { lineNumber: 91, column: 5 });
+
+    expect(prefix).not.toContain("// …");
+    expect(prefix.split("\n")).toHaveLength(91);
+    expect(prefix.startsWith("const v0 = 0;")).toBe(true);
+  });
+
+  it("sends the code after the cursor, which is what closes it", () => {
+    const text = "function f() {\n  return {\n  };\n}\n";
+    const { suffix } = completionContext(textModel(text), { lineNumber: 2, column: 11 });
+    expect(suffix).toBe("\n  };\n}\n");
   });
 });
 

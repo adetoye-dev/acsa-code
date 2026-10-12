@@ -42,14 +42,17 @@ let pendingResolver: ((value: any) => void) | null = null;
  * A suggestion that arrives after the reader typed on is worse than none, so the
  * wait is bounded and a late answer is dropped.
  *
- * The bound has to clear the floor, though. Measured on a warm 7B local model: 24
- * tokens in ~1.15s, 48 in ~2.3s — generation dominates, at roughly 48ms a token, and
- * a first call that has to load the model measured 4.4s. So the cap sits above the
- * steady state and deliberately drops the cold-load case: `keep_alive` below makes
- * that a one-per-session cost rather than one per keystroke. A tighter cap does not
- * make local completions arrive sooner, it only makes sure they never arrive.
+ * The bound has to clear the floor, though, and there are two of those. Ollama
+ * reuses the prompt it has already evaluated, so a pause that continues the last
+ * one is cheap — measured ~0.9s warm. A pause after an edit elsewhere in the file
+ * is not: the prompt is evaluated from scratch, and measured 2.5s for the 287-token
+ * window this used to send, 2.9s for the 470-token one it sends now. At 2.5s the
+ * second case was dropped every time, which is the reader's most useful pause
+ * disappearing. So the cap sits above it. Beyond that it really is too late, and
+ * the cold-load case is still deliberately dropped: `keep_alive` makes that a
+ * once-per-session cost rather than one per keystroke.
  */
-const COMPLETION_TIMEOUT_MS = 2500;
+const COMPLETION_TIMEOUT_MS = 3500;
 /** A local model pays for the load, not the trip; a cloud one is the other way. */
 const LOCAL_DEBOUNCE_MS = 200;
 const CLOUD_DEBOUNCE_MS = 120;
@@ -151,20 +154,10 @@ export function registerAiInlineCompletions(
         return { items: [] };
       }
 
-      // Extract context around cursor
-      const textBeforeCursor = model.getValueInRange({
-        startLineNumber: Math.max(1, position.lineNumber - 50),
-        startColumn: 1,
-        endLineNumber: position.lineNumber,
-        endColumn: position.column,
-      });
-
-      const textAfterCursor = model.getValueInRange({
-        startLineNumber: position.lineNumber,
-        startColumn: position.column,
-        endLineNumber: Math.min(model.getLineCount(), position.lineNumber + 30),
-        endColumn: model.getLineMaxColumn(Math.min(model.getLineCount(), position.lineNumber + 30)),
-      });
+      const { prefix: textBeforeCursor, suffix: textAfterCursor } = completionContext(
+        model,
+        position
+      );
 
       // Avoid suggesting if cursor is on whitespace-only and text before is empty
       if (!textBeforeCursor.trim() && !textAfterCursor.trim()) {
@@ -305,6 +298,81 @@ function withDeadline(work: Promise<string | null>, ms: number): Promise<string 
     work,
     new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
   ]);
+}
+
+/** The head of the file: its imports, its types, its top-level constants. */
+const CONTEXT_HEAD_LINES = 40;
+/** The flow that leads to the cursor, and the code that follows it. */
+const CONTEXT_BEFORE_LINES = 50;
+const CONTEXT_AFTER_LINES = 30;
+/** Marks where the stitched pieces skip from, so the jump is visible to the model. */
+const CONTEXT_GAP = "// …";
+
+/**
+ * The text a completion is asked for, which is more than the cursor's neighbours.
+ *
+ * Measured on a realistic case — an interface declared near the top of a 253-line
+ * file, the cursor ~75 lines later in a function that must return exactly its
+ * fields — sending the 50 lines above the cursor produced `name: raw.name` and
+ * `updatedAt: raw.updatedAt`: fields that do not exist. The interface was simply
+ * not in the prompt, so the model guessed what a user record looks like, and a
+ * confident wrong field is what gets inserted.
+ *
+ * Sending the whole file fixed it (email, displayName, createdAt — exactly right)
+ * and was not slower, but a real file is not 253 lines. So the head and the tail
+ * are stitched: the head carries the declarations, the tail carries the flow, and
+ * the prompt stays bounded however long the file grows. The same answer, at 470
+ * prompt tokens against 4748 for the whole file.
+ *
+ * When the two windows meet, they are one contiguous read instead — a duplicated
+ * copy of the file in the prompt would be worse than either.
+ */
+export function completionContext(
+  model: MonacoType.editor.ITextModel,
+  position: MonacoType.IPosition
+): { prefix: string; suffix: string } {
+  const lineCount = model.getLineCount();
+  const line = position.lineNumber;
+
+  const headEnd = Math.min(CONTEXT_HEAD_LINES, lineCount);
+  const tailStart = Math.max(1, line - CONTEXT_BEFORE_LINES);
+
+  // Contiguous from line 1 when the windows would otherwise overlap or touch: for
+  // a short file, or a cursor near the top, that is the whole file up to the
+  // cursor, and it already contains the head.
+  const prefix =
+    tailStart <= headEnd + 1
+      ? model.getValueInRange({
+          startLineNumber: 1,
+          startColumn: 1,
+          endLineNumber: line,
+          endColumn: position.column,
+        })
+      : [
+          model.getValueInRange({
+            startLineNumber: 1,
+            startColumn: 1,
+            endLineNumber: headEnd,
+            endColumn: model.getLineMaxColumn(headEnd),
+          }),
+          CONTEXT_GAP,
+          model.getValueInRange({
+            startLineNumber: tailStart,
+            startColumn: 1,
+            endLineNumber: line,
+            endColumn: position.column,
+          }),
+        ].join("\n");
+
+  const afterEnd = Math.min(lineCount, line + CONTEXT_AFTER_LINES);
+  const suffix = model.getValueInRange({
+    startLineNumber: line,
+    startColumn: position.column,
+    endLineNumber: afterEnd,
+    endColumn: model.getLineMaxColumn(afterEnd),
+  });
+
+  return { prefix, suffix };
 }
 
 /**
