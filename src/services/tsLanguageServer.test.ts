@@ -28,7 +28,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 const workerDiagnostics: boolean[] = [];
 vi.mock("./monacoTsConfig", () => ({
-  setWorkerDiagnosticsEnabled: (_monaco: unknown, enabled: boolean) => workerDiagnostics.push(enabled),
+  setWorkerFeaturesEnabled: (_monaco: unknown, enabled: boolean) => workerDiagnostics.push(enabled),
 }));
 
 const server = await import("./tsLanguageServer");
@@ -55,6 +55,13 @@ function makeModel(path: string, text: string, languageId = "typescript") {
     },
     getLanguageId: () => languageId,
     isDisposed: () => false,
+    /** Monaco's own: the word ending at the cursor, which is the fallback range. */
+    getWordUntilPosition: (position: { lineNumber: number; column: number }) => {
+      const line = value.split("\n")[position.lineNumber - 1] ?? "";
+      const before = line.slice(0, position.column - 1);
+      const word = /[A-Za-z0-9_$]*$/.exec(before)?.[0] ?? "";
+      return { word, startColumn: before.length - word.length + 1, endColumn: before.length + 1 };
+    },
     /** Stand in for the user typing. */
     type: (next: string) => {
       value = next;
@@ -67,8 +74,23 @@ function makeMonaco(models: any[]) {
   const created: Array<(m: any) => void> = [];
   const disposed: Array<(m: any) => void> = [];
   const markers = new Map<string, any[]>();
+  const providers: Array<{ kind: string; languages: string[]; provider: any; disposed: boolean }> = [];
   return {
     MarkerSeverity: { Hint: 1, Info: 2, Warning: 4, Error: 8 },
+    languages: {
+      CompletionItemKind: { Method: 0, Function: 1, Class: 5, Variable: 4, Text: 18, Snippet: 28, Property: 9 },
+      CompletionItemInsertTextRule: { InsertAsSnippet: 4 },
+      registerCompletionItemProvider: (langs: string[], provider: any) => {
+        const entry = { kind: "completion", languages: langs, provider, disposed: false };
+        providers.push(entry);
+        return { dispose: () => (entry.disposed = true) };
+      },
+      registerHoverProvider: (langs: string[], provider: any) => {
+        const entry = { kind: "hover", languages: langs, provider, disposed: false };
+        providers.push(entry);
+        return { dispose: () => (entry.disposed = true) };
+      },
+    },
     editor: {
       getModels: () => models,
       setModelMarkers: (model: any, owner: string, next: any[]) =>
@@ -85,6 +107,7 @@ function makeMonaco(models: any[]) {
     markers,
     created,
     disposed,
+    providers,
   } as any;
 }
 
@@ -273,3 +296,114 @@ describe("a running session", () => {
   });
 });
 
+
+describe("IntelliSense over the wire", () => {
+  async function running() {
+    const model = makeModel(FILE, "const answer: number = 42;\n");
+    const monaco = makeMonaco([model]);
+    const starting = server.startLanguageServer(monaco, ROOT);
+    await vi.waitFor(() => expect(sent().some((m) => m.method === "initialize")).toBe(true));
+    deliver({
+      jsonrpc: "2.0",
+      id: sent().find((m) => m.method === "initialize").id,
+      result: { capabilities: { completionProvider: { triggerCharacters: [".", "'"] } } },
+    });
+    await starting;
+    await sentMethod("textDocument/didOpen");
+    return { monaco, model };
+  }
+
+  /** The shell's reader thread handing a *reply* to a request the page made. */
+  async function answer(method: string, result: unknown) {
+    let id: number | undefined;
+    await vi.waitFor(() => {
+      id = sent().find((m) => m.method === method)?.id;
+      expect(id).toBeDefined();
+    });
+    deliver({ jsonrpc: "2.0", id, result });
+  }
+
+  const position = { lineNumber: 1, column: 21 };
+
+  it("maps the server's completion kinds onto Monaco's, which are different lists", () => {
+    // LSP's `Class` is 7 and Monaco's is 5; LSP's `Snippet` is 15 and Monaco's is 28.
+    const model = makeModel(FILE, "const answer: number = 42;\n");
+    const monaco = makeMonaco([model]);
+    const suggestions = server.toMonacoCompletions(
+      monaco,
+      {
+        isIncomplete: false,
+        items: [
+          { label: "answer", kind: 7, detail: "const answer: number" },
+          { label: "snippet", kind: 15, insertTextFormat: 2 },
+        ],
+      },
+      { model, position: { lineNumber: 1, column: 21 } },
+    );
+
+    expect(suggestions[0].kind).toBe(monaco.languages.CompletionItemKind.Class);
+    expect(suggestions[0].detail).toBe("const answer: number");
+    expect(suggestions[1].kind).toBe(monaco.languages.CompletionItemKind.Snippet);
+    expect(suggestions[1].insertTextRules).toBe(monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet);
+  });
+
+  it("keeps an auto-import, which is a second edit at the top of the file", async () => {
+    const { monaco } = await running();
+    const provider = monaco.providers.find((p: any) => p.kind === "completion");
+    const pending = provider.provider.provideCompletionItems(
+      makeModel(FILE, "readFile()"),
+      position,
+    );
+
+    await answer("textDocument/completion", {
+      isIncomplete: false,
+      itemDefaults: { editRange: { start: { line: 0, character: 8 }, end: { line: 0, character: 16 } } },
+      items: [
+        {
+          label: "readFile",
+          kind: 3,
+          textEdit: { range: { start: { line: 0, character: 8 }, end: { line: 0, character: 16 } }, newText: "readFile" },
+          additionalTextEdits: [
+            { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, newText: 'import { readFile } from "node:fs";\n' },
+          ],
+        },
+      ],
+    });
+
+    const { suggestions } = await pending;
+    // Dropping the second edit inserts an identifier that is not imported.
+    expect(suggestions[0].additionalTextEdits).toHaveLength(1);
+    expect(suggestions[0].additionalTextEdits[0].text).toContain("node:fs");
+    expect(suggestions[0].range).toMatchObject({ startColumn: 9, endColumn: 17 });
+  });
+
+  it("answers hover with markdown, including the fenced shape", async () => {
+    const { monaco } = await running();
+    const provider = monaco.providers.find((p: any) => p.kind === "hover");
+    const pending = provider.provider.provideHover(makeModel(FILE, "answer"), { lineNumber: 1, column: 1 });
+
+    await answer("textDocument/hover", {
+      contents: { kind: "markdown", value: "```ts\nconst answer: number\n```" },
+    });
+
+    const hover = await pending;
+    expect(hover.contents[0].value).toContain("const answer: number");
+    expect(server.toHoverMarkdown([{ language: "ts", value: "const a = 1" }])).toBe("```ts\nconst a = 1\n```");
+    expect(server.toHoverMarkdown("plain")).toBe("plain");
+  });
+
+  it("takes the server's trigger characters rather than guessing", async () => {
+    const { monaco } = await running();
+    const provider = monaco.providers.find((p: any) => p.kind === "completion");
+    expect(provider.languages).toContain("typescriptreact");
+    expect(provider.provider.triggerCharacters).toEqual([".", "'"]);
+  });
+
+  it("puts the worker's features back when the session stops", async () => {
+    const { monaco } = await running();
+    expect(workerDiagnostics.at(-1)).toBe(false);
+    await server.stopLanguageServer();
+    expect(workerDiagnostics.at(-1)).toBe(true);
+    for (const provider of monaco.providers) expect(provider.disposed).toBe(true);
+  });
+});

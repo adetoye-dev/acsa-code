@@ -20,7 +20,7 @@
  */
 
 import type * as MonacoType from "monaco-editor";
-import { setWorkerDiagnosticsEnabled } from "./monacoTsConfig";
+import { setWorkerFeaturesEnabled } from "./monacoTsConfig";
 
 export type LanguageServerStatus = "off" | "starting" | "running" | "unavailable" | "failed";
 
@@ -292,6 +292,203 @@ function handleMessage(current: Session, message: any): void {
   }
 }
 
+/**
+ * LSP's `CompletionItemKind` and Monaco's are different lists with the same names —
+ * LSP starts at `Text = 1` and Monaco at `Method = 0` — so every kind has to be
+ * mapped by hand. Indexing one with the other's number is the kind of bug that shows
+ * up as "the icons are subtly wrong", which nobody reports.
+ *
+ * `Issue` and `Tool` have no LSP equivalent and are absent here on purpose.
+ */
+const COMPLETION_KINDS: Record<number, number> = {
+  1: 18, // Text
+  2: 0, // Method
+  3: 1, // Function
+  4: 2, // Constructor
+  5: 3, // Field
+  6: 4, // Variable
+  7: 5, // Class
+  8: 7, // Interface
+  9: 8, // Module
+  10: 9, // Property
+  11: 12, // Unit
+  12: 13, // Value
+  13: 15, // Enum
+  14: 17, // Keyword
+  15: 28, // Snippet
+  16: 19, // Color
+  17: 20, // File
+  18: 21, // Reference
+  19: 23, // Folder
+  20: 16, // EnumMember
+  21: 14, // Constant
+  22: 6, // Struct
+  23: 10, // Event
+  24: 11, // Operator
+  25: 24, // TypeParameter
+};
+
+/** One LSP range as Monaco's, both 1-based on the Monaco side. */
+export function toMonacoRange(range: any): any {
+  return {
+    startLineNumber: range.start.line + 1,
+    startColumn: range.start.character + 1,
+    endLineNumber: range.end.line + 1,
+    endColumn: range.end.character + 1,
+  };
+}
+
+/** A completion's documentation, in either of the two shapes the protocol allows. */
+function documentationText(documentation: any): string {
+  if (!documentation) return "";
+  if (typeof documentation === "string") return documentation;
+  return String(documentation.value ?? "");
+}
+
+/**
+ * The edit a completion applies.
+ *
+ * `textEdit` is the protocol's real answer and it is a *range*, not a word: an
+ * auto-import rewrites the import line as well as inserting the name, and Monaco has
+ * to be told the range or the name lands in the wrong place. `itemDefaults.editRange`
+ * is the shared range the server may hoist out of every item, so it is the fallback
+ * before the cursor's own word.
+ */
+function completionEdit(monaco: typeof MonacoType, item: any, defaults: any, position: any) {
+  const edit = item.textEdit;
+  if (edit?.newText !== undefined) {
+    // `InsertReplaceEdit` carries both ranges; the replace one is the superset.
+    const range = edit.range ?? edit.replace ?? edit.insert;
+    if (range) return { text: String(edit.newText), range: toMonacoRange(range) };
+    return { text: String(edit.newText), range: wordRange(monaco, position) };
+  }
+  if (defaults?.editRange) {
+    const range = defaults.editRange.replace ?? defaults.editRange;
+    return { text: String(item.insertText ?? labelOf(item.label)), range: toMonacoRange(range) };
+  }
+  return { text: String(item.insertText ?? labelOf(item.label)), range: wordRange(monaco, position) };
+}
+
+/** The word under the cursor, as the last resort for a completion's range. */
+function wordRange(_monaco: typeof MonacoType, position: any): any {
+  const model = position.model as MonacoType.editor.ITextModel | undefined;
+  if (!model) return position.range;
+  const word = model.getWordUntilPosition(position.position);
+  return {
+    startLineNumber: position.position.lineNumber,
+    startColumn: word.startColumn,
+    endLineNumber: position.position.lineNumber,
+    endColumn: word.endColumn,
+  };
+}
+
+const labelOf = (label: any): string => (typeof label === "string" ? label : String(label?.label ?? ""));
+
+/** One completion list, as Monaco's. Exported because the mapping is the testable part. */
+export function toMonacoCompletions(monaco: typeof MonacoType, result: any, position: any): any[] {
+  const items: any[] = Array.isArray(result) ? result : (result?.items ?? []);
+  const defaults = Array.isArray(result) ? {} : (result?.itemDefaults ?? {});
+  const snippet = (item: any) =>
+    (item.insertTextFormat ?? defaults.insertTextFormat) === 2;
+
+  return items.map((item) => {
+    const edit = completionEdit(monaco, item, defaults, position);
+    const documentation = documentationText(item.documentation ?? item.detail);
+    return {
+      label: labelOf(item.label),
+      kind: COMPLETION_KINDS[item.kind ?? 1] ?? monaco.languages.CompletionItemKind.Text,
+      insertText: edit.text,
+      range: edit.range,
+      ...(snippet(item) ? { insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet } : {}),
+      ...(item.detail ? { detail: String(item.detail) } : {}),
+      ...(documentation ? { documentation: { value: documentation } } : {}),
+      ...(item.sortText ? { sortText: String(item.sortText) } : {}),
+      ...(item.filterText ? { filterText: String(item.filterText) } : {}),
+      ...(item.preselect ? { preselect: true } : {}),
+      // Auto-imports arrive this way: the completion inserts a name *and* an import
+      // at the top of the file. Dropping it inserts an undefined identifier.
+      ...(item.additionalTextEdits?.length
+        ? {
+            additionalTextEdits: item.additionalTextEdits.map((editItem: any) => ({
+              range: toMonacoRange(editItem.range),
+              text: String(editItem.newText ?? ""),
+            })),
+          }
+        : {}),
+    };
+  });
+}
+
+/** Hover text, in whatever shape the protocol used, as markdown. */
+export function toHoverMarkdown(contents: any): string {
+  if (!contents) return "";
+  if (typeof contents === "string") return contents;
+  if (Array.isArray(contents)) return contents.map(toHoverMarkdown).filter(Boolean).join("\n\n");
+  if (typeof contents.value === "string") {
+    // A `MarkedString` is a fenced block with a language; `MarkupContent` is markdown
+    // already, and its `kind` says which.
+    return contents.language
+      ? `\`\`\`${contents.language}\n${contents.value}\n\`\`\``
+      : contents.value;
+  }
+  return "";
+}
+
+/**
+ * Hand Monaco's IntelliSense to the server.
+ *
+ * Registered only while a session is up: with no server the worker still answers,
+ * which is the whole point of the handover being reversible. Monaco merges the
+ * providers it is given, so the worker's are switched off in the same breath
+ * (`setWorkerFeaturesEnabled`) — two providers answering one keystroke is how a
+ * completion list ends up with every symbol twice.
+ */
+function registerProviders(current: Session, capabilities: any): void {
+  const monaco = current.monaco;
+  const languages = [
+    "typescript",
+    "typescriptreact",
+    "javascript",
+    "javascriptreact",
+  ];
+
+  const documentUri = (model: any) => model.uri.toString();
+
+  current.disposables.push(
+    monaco.languages.registerCompletionItemProvider(languages, {
+      triggerCharacters: capabilities?.completionProvider?.triggerCharacters ?? ["."],
+      provideCompletionItems: async (model, position) => {
+        const result = await request(current, "textDocument/completion", {
+          textDocument: { uri: documentUri(model) },
+          position: { line: position.lineNumber - 1, character: position.column - 1 },
+        });
+        const suggestions = toMonacoCompletions(monaco, result, {
+          model,
+          position,
+          range: {
+            startLineNumber: position.lineNumber,
+            startColumn: position.column,
+            endLineNumber: position.lineNumber,
+            endColumn: position.column,
+          },
+        });
+        return { suggestions };
+      },
+    }),
+    monaco.languages.registerHoverProvider(languages, {
+      provideHover: async (model, position) => {
+        const result = await request(current, "textDocument/hover", {
+          textDocument: { uri: documentUri(model) },
+          position: { line: position.lineNumber - 1, character: position.column - 1 },
+        });
+        const value = toHoverMarkdown(result?.contents);
+        if (!value) return null;
+        return { contents: [{ value }], ...(result?.range ? { range: toMonacoRange(result.range) } : {}) };
+      },
+    }),
+  );
+}
+
 /** Start a session for a project, or leave the running one alone. */
 export async function startLanguageServer(
   monaco: typeof MonacoType,
@@ -350,6 +547,7 @@ export async function startLanguageServer(
     }),
   );
 
+  let serverCapabilities: any = {};
   try {
     const initialized = await request(current, "initialize", {
       processId: null,
@@ -370,6 +568,7 @@ export async function startLanguageServer(
     if (initialized?.capabilities === undefined && initialized?.error) {
       throw new Error(String(initialized.message ?? "initialize failed"));
     }
+    serverCapabilities = initialized?.capabilities ?? {};
   } catch (error) {
     await stopLanguageServer();
     setState({ status: "failed", detail: String((error as Error)?.message ?? error) });
@@ -377,6 +576,7 @@ export async function startLanguageServer(
   }
 
   notify(current, "initialized", {});
+  registerProviders(current, serverCapabilities);
 
   for (const model of monaco.editor.getModels()) openDocument(current, model);
   current.disposables.push(
@@ -390,7 +590,7 @@ export async function startLanguageServer(
 
   // Hand the diagnostics over. Only now, with the server answering: turning the
   // worker off before this would leave the editor with no type checking at all.
-  setWorkerDiagnosticsEnabled(monaco, false);
+  setWorkerFeaturesEnabled(monaco, false);
   clearWorkerMarkers(monaco);
 }
 
@@ -406,7 +606,7 @@ export async function stopLanguageServer(): Promise<void> {
   clearServerMarkers(current);
   // The worker gets its diagnostics back, so a stopped server is never a silently
   // unchecked editor.
-  setWorkerDiagnosticsEnabled(current.monaco, true);
+  setWorkerFeaturesEnabled(current.monaco, true);
   setState({ status: "off", typescript: "", detail: "" });
 
   try {

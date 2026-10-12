@@ -39,6 +39,15 @@ for them, not which file moved.
 
 ### Fixed
 
+- **Completions and hover come from the same place.** Monaco's own providers are
+  switched off while a language server runs, so the editor has one source of
+  IntelliSense rather than two disagreeing — including auto-imports, which arrive as
+  a second edit at the top of the file and are applied as one. With it, the project
+  mirror the editor used to build for its worker is deleted: 953 lines of
+  approximation, the tsconfig mapped field by field, and the two shell commands that
+  existed only to feed it. Note the honest half: with no server, the worker has no
+  project files any more, so the fallback reports syntax and the bundled libraries
+  and little else — which is why the editor says which engine is checking.
 - **Type checking comes from your project's own TypeScript.** The editor used to
   ask Monaco's bundled compiler, which runs in a Web Worker with no filesystem and
   therefore only sees a mirror of your project that the app built by hand — so path

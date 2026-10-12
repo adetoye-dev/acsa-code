@@ -41,12 +41,13 @@ const EXTRA_LIBS = [
 /**
  * 2307 = cannot find module; 2792 = cannot find module (did you mean ...).
  *
- * A fallback, not a policy. Once `monacoProjectFiles` has mirrored the project
- * into the worker these are cleared, because resolution works and an unresolved
- * import is then a real finding — the whole point of building the filesystem
- * rather than hiding the two codes that report it. They stay here for the case
- * where there is nothing to mirror: the browser preview has no filesystem behind
- * it at all, and a wall of unfixable red is not a useful way to say so.
+ * A fallback, and only for the worker. With a language server running these codes
+ * are the server's to report, and it reports them accurately — a misspelled import
+ * is visible again, which it was not while the mirror existed and this list hid it
+ * along with the noise. They remain here for the case the worker is all there is:
+ * a source checkout that has not fetched the toolchain, or a browser preview with
+ * no filesystem behind it at all, where a wall of unfixable red is not a useful way
+ * to say so.
  */
 const DIAGNOSTIC_CODES_TO_IGNORE = [2307, 2792];
 
@@ -162,19 +163,42 @@ export function configureMonacoTypeScript(monaco: any, projectRoot = ""): void {
 }
 
 /**
- * Hand type checking over to the language server, or take it back.
+ * Hand everything the worker does for TypeScript over to the language server, or
+ * take it back.
  *
- * The worker's diagnostics are a mirror's approximation of a project it cannot see
- * (`monacoProjectFiles.ts`), and the language server's are the project's own
- * compiler reading the project. They cannot both be on: two sets of squiggles on one
- * word, disagreeing, which is the state this whole arrangement replaces.
+ * The worker answers from a mirror of the project that this app used to build for
+ * it (now deleted — it was 950 lines of approximation with file and package
+ * budgets), and the language server answers with the project's own compiler reading
+ * the project. They cannot both be on: two completion providers answering one
+ * keystroke gives every symbol twice, and two sets of squiggles disagree with each
+ * other on the same word.
  *
  * So the worker is switched off only once the server is *answering*, and switched
- * back on when it stops — a stopped server must never mean an unchecked editor.
- * The worker keeps everything else it does (completions, hover) until those are
- * served over LSP too.
+ * back on when it stops — a stopped server must never mean an editor that has
+ * quietly stopped checking.
+ *
+ * `setModeConfiguration` is the switch that covers the rest: completion items,
+ * hovers, definitions, references, highlights, symbols, rename, signature help, code
+ * actions, inlay hints and formatting. It is set in full rather than field by field
+ * so that a feature nobody listed here cannot stay on and duplicate the server's.
  */
-export function setWorkerDiagnosticsEnabled(monaco: any, enabled: boolean): void {
+const WORKER_FEATURES = [
+  "completionItems",
+  "hovers",
+  "documentSymbols",
+  "definitions",
+  "references",
+  "documentHighlights",
+  "rename",
+  "diagnostics",
+  "documentRangeFormattingEdits",
+  "signatureHelp",
+  "onTypeFormattingEdits",
+  "codeActions",
+  "inlayHints",
+] as const;
+
+export function setWorkerFeaturesEnabled(monaco: any, enabled: boolean): void {
   const typescript = typescriptFeature(monaco);
   if (!typescript) return;
 
@@ -190,6 +214,17 @@ export function setWorkerDiagnosticsEnabled(monaco: any, enabled: boolean): void
     noSemanticValidation: true,
     noSyntaxValidation: !enabled,
   });
+
+  // Written out in full in both directions, because `setModeConfiguration` stores
+  // `modeConfiguration || Object.create(null)` — so passing `undefined` to mean
+  // "back to how it was" sets an *empty* object, and every feature the worker has is
+  // gated on a truthy flag in it. The first version of this did exactly that, which
+  // would have left completions and hover permanently dead after the first time a
+  // language server stopped. `WORKER_FEATURES` is the same list Monaco ships as its
+  // default, so switching back on is switching back to the editor as it was.
+  const mode = Object.fromEntries(WORKER_FEATURES.map((feature) => [feature, enabled]));
+  typescript.typescriptDefaults?.setModeConfiguration?.(mode);
+  typescript.javascriptDefaults?.setModeConfiguration?.(mode);
 }
 
 async function loadAmbientTypes(

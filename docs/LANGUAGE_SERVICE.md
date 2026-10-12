@@ -91,12 +91,26 @@ So the policy, once TS 7 adoption appears:
 | 7.x (no `tsserver.js`) | TS 7's native server — parity **and** 20–40× faster startup |
 | none installed | the bundled JS server + the pinned TypeScript |
 
-## What this removes
+## What this removed
 
-`monacoProjectFiles.ts` (~950 lines of mirror and its budgets), the compiler options
-mapping in `projectTsConfig.ts`, `DIAGNOSTIC_CODES_TO_IGNORE`, and Monaco's
-`ts.worker` (6.7 MB of web assets). What replaces them is a dependency that every
-editor already relies on, and no approximation of a filesystem.
+`monacoProjectFiles.ts` (953 lines of mirror, with file, byte, package and subpath
+budgets), `projectTsConfig.ts` (the tsconfig mapped field by field into compiler
+options, including `extends` by package name, which was recorded as a gap), the
+`read_file_for_types` and `list_directory` shell commands that existed only to feed
+the mirror, and their tests. Thirty-six of this repository's tests were the mirror's
+own; they are gone with it, and what replaces them is sixteen tests around the
+handshake, the framing and the protocol conversions.
+
+Completions and hover are served over LSP as well, so the worker's own providers are
+switched off with `setModeConfiguration` while a server runs. Monaco still bundles
+`ts.worker` (6.7 MB) — removing the worker outright is a separate step, and it needs
+care: the fallback path is the worker.
+
+**The fallback is weaker than it was.** With no language server, the worker has no
+project files — the mirror that gave it some is what was deleted — so it reports
+syntax errors and the libraries it is bundled with, and not much else. That is why
+the editor says which engine is checking, and why the toolchain ships inside the
+bundle rather than being optional.
 
 ## Checking it
 

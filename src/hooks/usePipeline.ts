@@ -15,7 +15,6 @@ import type { OpenFileTab } from "../types/workbench";
 import type { AISettings } from "../components/SettingsModal";
 import type { PipelineOutputLine, PipelineStatus } from "../types/telemetry";
 import { DESKTOP_REQUIRED_MESSAGE } from "../services/engineBridge";
-import { invalidateProjectFiles } from "../services/monacoProjectFiles";
 import type { AgentStep } from "../services/aiChatService";
 import {
   getActiveSelectedModel,
@@ -1765,7 +1764,6 @@ export function usePipeline(): UsePipelineReturn {
         // changes. Dropped here rather than inside the editor, so a file created by
         // an agent run is visible to the next import that resolves — the editor
         // re-mirrors on its next mount, and the walk is cached until then.
-        invalidateProjectFiles(activeProject.path);
         setProjectFiles(nodes);
         return nodes;
       } catch (err) {

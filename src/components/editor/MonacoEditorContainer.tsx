@@ -24,7 +24,6 @@ import { reviewFile, isReviewableFile, type ReviewIssue } from "../../services/a
 import { configureMonacoTypeScript } from "../../services/monacoTsConfig";
 import { useRemeasureOnLayout } from "../../hooks/useRemeasureOnLayout";
 import { PANE_EDITOR_OPTIONS } from "../../services/monacoPaneOptions";
-import { syncProjectFiles } from "../../services/monacoProjectFiles";
 import { applyMonacoTheme } from "../../services/themeManager";
 import { getAutoSelectedLocalWorker, resolveCompletionAiConfig, resolveEditorAiConfig } from "../../services/aiModelManager";
 import {
@@ -882,7 +881,6 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
     // Then give the worker the project, so an import resolves to a real file
     // instead of being reported as missing. Deliberately not awaited: the editor
     // is usable while it lands, and it is cached per project.
-    void syncProjectFiles(monaco, projectRoot);
 
     editorRef.current = editor;
     monacoRef.current = monaco;
@@ -1021,7 +1019,7 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
             languageServer.status === "running"
               ? `Type checking comes from ${languageServer.typescript || "the project's TypeScript"}, read from your project the way your own tsc reads it.`
               : languageServer.status === "unavailable"
-                ? "The TypeScript language server is not installed, so checking falls back to the built-in engine. Run scripts/fetch_lsp_sidecar.sh."
+                ? "The TypeScript language server is not installed, so checking falls back to the built-in engine — which does not read your project. Run scripts/fetch_lsp_sidecar.sh."
                 : languageServer.status === "starting"
                   ? "Starting the TypeScript language server…"
                   : `The TypeScript language server did not start: ${languageServer.detail}`

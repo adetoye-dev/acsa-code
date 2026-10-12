@@ -297,53 +297,7 @@ pub struct DirEntry {
     pub is_dir: bool,
 }
 
-/// The names in one directory, following symlinks.
-///
-/// The renderer needs exactly one directory listing: `node_modules/@types`. The
-/// TypeScript worker has no filesystem, so TypeScript's own "include every
-/// `@types` package" step — which is a directory scan — finds nothing inside it,
-/// and a project's test globals (`describe`, `expect`) come out undefined while
-/// the same file is clean in VS Code.
-///
-/// Symlinks are followed on purpose: pnpm's `node_modules/@types/*` entries are
-/// links, and `DirEntry::file_type` would report them as neither file nor
-/// directory.
-#[tauri::command]
-fn list_directory(path: String, project_root: String) -> Result<Vec<DirEntry>, String> {
-    let target = resolve_project_path(&project_root, &path)?;
-    let entries = std::fs::read_dir(&target)
-        .map_err(|e| format!("Could not list {}: {}", path, e))?;
-    let mut items: Vec<DirEntry> = entries
-        .flatten()
-        .map(|entry| DirEntry {
-            name: entry.file_name().to_string_lossy().to_string(),
-            is_dir: std::fs::metadata(entry.path()).map(|m| m.is_dir()).unwrap_or(false),
-        })
-        .collect();
-    items.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(items)
-}
 
-/// Read a file for the TypeScript mirror.
-///
-/// The same containment as `read_file_content` with a larger ceiling, because it
-/// is a different job. `read_file_content` feeds the *editor*, where a 2 MB file
-/// is a hazard worth refusing. A declaration file is never edited, and refusing
-/// one is not a neutral act: `lucide-react` ships a 2.18 MB `lucide-react.d.ts`,
-/// and a reader that will not hand it over turns a package that resolves in every
-/// other editor into "Cannot find module".
-#[tauri::command]
-fn read_file_for_types(file_path: String, project_root: String) -> Result<String, String> {
-    let path = resolve_project_path(&project_root, &file_path)?;
-    if !path.exists() {
-        return Err(format!("File not found: {}", file_path));
-    }
-    let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
-    if meta.len() > 16 * 1024 * 1024 {
-        return Err("File exceeds 16MB limit for type reading".to_string());
-    }
-    std::fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))
-}
 
 #[tauri::command]
 fn read_file_content(file_path: String, project_root: String) -> Result<String, String> {
@@ -4575,8 +4529,6 @@ fn main() {
             system_cleanup,
             list_project_files,
             read_file_content,
-            read_file_for_types,
-            list_directory,
             read_file_base64,
             write_file_content,
             create_file_or_folder,
