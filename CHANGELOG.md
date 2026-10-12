@@ -49,6 +49,11 @@ for them, not which file moved.
   existed only to feed it. Note the honest half: with no server, the worker has no
   project files any more, so the fallback reports syntax and the bundled libraries
   and little else — which is why the editor says which engine is checking.
+- **Go to definition, and find all references.** Both come from the language
+  server, and both can land in a file you do not have open: Monaco can only navigate
+  within the file it is already showing, so the jump is handed to the workbench,
+  which opens the file as a tab and reveals the line — the same path the review panel
+  uses. `F12` and `Shift+F12`.
 - **Type checking comes from your project's own TypeScript.** The editor used to
   ask Monaco's bundled compiler, which runs in a Web Worker with no filesystem and
   therefore only sees a mirror of your project that the app built by hand — so path

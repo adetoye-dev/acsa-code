@@ -106,6 +106,28 @@ export function languageIdFor(path: string): string {
   }
 }
 
+/**
+ * How the app opens a file at a line.
+ *
+ * Monaco's own go-to-definition cannot do this here: `StandaloneCodeEditorService`
+ * looks for an editor already showing the target model and returns `null` for
+ * anything else, so a definition in another file dead-ends. `registerEditorOpener`
+ * exists for exactly this handover — Monaco calls it whenever the resource is not
+ * the current model, and this is where it reaches the workbench, which opens the
+ * file as a tab and reveals the line.
+ */
+export type LocationOpener = (
+  path: string,
+  line?: number,
+  column?: number,
+) => void | Promise<void>;
+
+let locationOpener: LocationOpener | null = null;
+
+export function setLocationOpener(opener: LocationOpener | null): void {
+  locationOpener = opener;
+}
+
 interface Pending {
   resolve: (value: any) => void;
   reject: (error: Error) => void;
@@ -429,6 +451,35 @@ export function toMonacoCompletions(monaco: typeof MonacoType, result: any, posi
   });
 }
 
+/**
+ * Definition and reference results, as Monaco locations.
+ *
+ * Three shapes reach here and all three are in the wild: `Location`,
+ * `Location[]`, and `LocationLink[]` (which names the target with `targetUri` and
+ * carries both a full range and the selection inside it). A `LocationLink`'s
+ * *selection* is where the cursor should land — the full range is the whole
+ * declaration.
+ *
+ * The URI matters more than it looks: this app's models are made with
+ * `Uri.parse(absolutePath)`, which has no scheme, so an already-open file has to be
+ * named by its own model's URI or Monaco will treat it as a different resource and
+ * hand it to the opener — reopening the file the reader is already looking at.
+ */
+export function toMonacoLocations(monaco: typeof MonacoType, result: any): any[] {
+  const items = Array.isArray(result) ? result : result ? [result] : [];
+  return items
+    .map((item) => {
+      const target = item.targetUri ?? item.uri;
+      if (typeof target !== "string") return null;
+      const range = item.targetSelectionRange ?? item.targetRange ?? item.range;
+      if (!range) return null;
+      const path = uriToPath(target);
+      const open = monaco.editor.getModels().find((model) => samePath(modelPath(model), path));
+      return { uri: open ? open.uri : monaco.Uri.file(path), range: toMonacoRange(range) };
+    })
+    .filter(Boolean);
+}
+
 /** Hover text, in whatever shape the protocol used, as markdown. */
 export function toHoverMarkdown(contents: any): string {
   if (!contents) return "";
@@ -465,6 +516,24 @@ function registerProviders(current: Session, capabilities: any): void {
   const documentUri = (model: any) => model.uri.toString();
 
   current.disposables.push(
+    // Cross-file navigation, which Monaco cannot do on its own here.
+    monaco.editor.registerEditorOpener({
+      openCodeEditor: async (_source, resource, selectionOrPosition) => {
+        // Only the filesystem, and only when there is something to open it with.
+        // Monaco calls this handler for *any* resource that is not the current
+        // model, and its own handler opens `http(s)` links in a browser — so this
+        // one must not claim those, whatever order the two are consulted in.
+        const scheme = resource.scheme;
+        if (!locationOpener || (scheme !== "" && scheme !== "file")) return false;
+        const target = selectionOrPosition as
+          | { startLineNumber?: number; startColumn?: number; lineNumber?: number; column?: number }
+          | undefined;
+        const line = target?.startLineNumber ?? target?.lineNumber;
+        const column = target?.startColumn ?? target?.column;
+        await locationOpener(uriToPath(resource.toString()), line, column);
+        return true;
+      },
+    }),
     monaco.languages.registerCompletionItemProvider(languages, {
       triggerCharacters: capabilities?.completionProvider?.triggerCharacters ?? ["."],
       provideCompletionItems: async (model, position) => {
@@ -519,6 +588,27 @@ function registerProviders(current: Session, capabilities: any): void {
             : {}),
           ...(resolved.sortText ? { sortText: String(resolved.sortText) } : {}),
         };
+      },
+    }),
+    monaco.languages.registerDefinitionProvider(languages, {
+      provideDefinition: async (model, position) => {
+        const result = await request(current, "textDocument/definition", {
+          textDocument: { uri: documentUri(model) },
+          position: { line: position.lineNumber - 1, character: position.column - 1 },
+        });
+        return toMonacoLocations(monaco, result);
+      },
+    }),
+    monaco.languages.registerReferenceProvider(languages, {
+      provideReferences: async (model, position, context) => {
+        const result = await request(current, "textDocument/references", {
+          textDocument: { uri: documentUri(model) },
+          position: { line: position.lineNumber - 1, character: position.column - 1 },
+          // The declaration is a reference too, and whether to include it is the
+          // caller's choice — the peek widget asks for both depending on the verb.
+          context: { includeDeclaration: context.includeDeclaration !== false },
+        });
+        return toMonacoLocations(monaco, result);
       },
     }),
     monaco.languages.registerHoverProvider(languages, {

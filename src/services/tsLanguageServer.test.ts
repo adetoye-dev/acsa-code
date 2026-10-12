@@ -71,12 +71,14 @@ function makeModel(path: string, text: string, languageId = "typescript") {
 }
 
 function makeMonaco(models: any[]) {
+  const openers: Array<{ opener: any; disposed: boolean }> = [];
   const created: Array<(m: any) => void> = [];
   const disposed: Array<(m: any) => void> = [];
   const markers = new Map<string, any[]>();
   const providers: Array<{ kind: string; languages: string[]; provider: any; disposed: boolean }> = [];
   return {
     MarkerSeverity: { Hint: 1, Info: 2, Warning: 4, Error: 8 },
+    Uri: { file: (path: string) => ({ path, toString: () => `file://${path}`, scheme: "file", fsPath: path }) },
     languages: {
       CompletionItemKind: { Method: 0, Function: 1, Class: 5, Variable: 4, Text: 18, Snippet: 28, Property: 9 },
       CompletionItemInsertTextRule: { InsertAsSnippet: 4 },
@@ -90,9 +92,24 @@ function makeMonaco(models: any[]) {
         providers.push(entry);
         return { dispose: () => (entry.disposed = true) };
       },
+      registerDefinitionProvider: (langs: string[], provider: any) => {
+        const entry = { kind: "definition", languages: langs, provider, disposed: false };
+        providers.push(entry);
+        return { dispose: () => (entry.disposed = true) };
+      },
+      registerReferenceProvider: (langs: string[], provider: any) => {
+        const entry = { kind: "references", languages: langs, provider, disposed: false };
+        providers.push(entry);
+        return { dispose: () => (entry.disposed = true) };
+      },
     },
     editor: {
       getModels: () => models,
+      registerEditorOpener: (opener: any) => {
+        const entry = { opener, disposed: false };
+        openers.push(entry);
+        return { dispose: () => (entry.disposed = true) };
+      },
       setModelMarkers: (model: any, owner: string, next: any[]) =>
         markers.set(`${model.uri.path}|${owner}`, next),
       onDidCreateModel: (fn: (m: any) => void) => {
@@ -108,6 +125,7 @@ function makeMonaco(models: any[]) {
     created,
     disposed,
     providers,
+    openers,
   } as any;
 }
 
@@ -487,5 +505,127 @@ describe("resolving a completion", () => {
     const result = await provider.provider.resolveCompletionItem(plain as any, { isCancellationRequested: false });
     expect(result).toBe(plain);
     expect(sent().some((m) => m.method === "completionItem/resolve")).toBe(false);
+  });
+});
+
+describe("go to definition, and references", () => {
+  async function running() {
+    const model = makeModel(FILE, "const a = answer;\n");
+    const monaco = makeMonaco([model]);
+    const starting = server.startLanguageServer(monaco, ROOT);
+    await vi.waitFor(() => expect(sent().some((m) => m.method === "initialize")).toBe(true));
+    deliver({
+      jsonrpc: "2.0",
+      id: sent().find((m) => m.method === "initialize").id,
+      result: { capabilities: { definitionProvider: true, referencesProvider: true } },
+    });
+    await starting;
+    await sentMethod("textDocument/didOpen");
+    return { monaco, model };
+  }
+
+  it("names an open file by its own model, and a closed one by its path", async () => {
+    const { monaco } = await running();
+    const provider = monaco.providers.find((p: any) => p.kind === "definition");
+    const pending = provider.provider.provideDefinition(makeModel(FILE, "answer"), { lineNumber: 1, column: 12 });
+
+    let id: number | undefined;
+    await vi.waitFor(() => {
+      id = sent().find((m) => m.method === "textDocument/definition")?.id;
+      expect(id).toBeDefined();
+    });
+    deliver({
+      jsonrpc: "2.0",
+      id,
+      result: [
+        // The file that is already open. Named by its model's URI (no scheme) so
+        // Monaco moves the cursor instead of handing it to the opener and
+        // reopening the file the reader is looking at.
+        { uri: `file://${FILE}`, range: { start: { line: 4, character: 2 }, end: { line: 4, character: 8 } } },
+        // A file that is not open: the opener's job.
+        { uri: "file:///Users/dev/project/src/other.ts", range: { start: { line: 1, character: 0 }, end: { line: 1, character: 5 } } },
+      ],
+    });
+
+    const locations = await pending;
+    expect(locations[0].uri.toString()).toBe(FILE);
+    expect(locations[0].range).toMatchObject({ startLineNumber: 5, startColumn: 3 });
+    expect(locations[1].uri.toString()).toBe("file:///Users/dev/project/src/other.ts");
+  });
+
+  it("reads a LocationLink: the selection is where the cursor goes", async () => {
+    const { monaco } = await running();
+    const provider = monaco.providers.find((p: any) => p.kind === "definition");
+    const pending = provider.provider.provideDefinition(makeModel(FILE, "answer"), { lineNumber: 1, column: 12 });
+    let id: number | undefined;
+    await vi.waitFor(() => {
+      id = sent().find((m) => m.method === "textDocument/definition")?.id;
+      expect(id).toBeDefined();
+    });
+    deliver({
+      jsonrpc: "2.0",
+      id,
+      result: [
+        {
+          targetUri: "file:///Users/dev/project/src/lib.ts",
+          targetRange: { start: { line: 9, character: 0 }, end: { line: 12, character: 1 } },
+          targetSelectionRange: { start: { line: 9, character: 6 }, end: { line: 9, character: 12 } },
+        },
+      ],
+    });
+
+    const [location] = await pending;
+    // The whole declaration is 9–12; the cursor belongs on the name.
+    expect(location.range).toMatchObject({ startLineNumber: 10, startColumn: 7, endLineNumber: 10, endColumn: 13 });
+  });
+
+  it("passes the declaration choice through, and returns every reference", async () => {
+    const { monaco } = await running();
+    const provider = monaco.providers.find((p: any) => p.kind === "references");
+    const pending = provider.provider.provideReferences(makeModel(FILE, "answer"), { lineNumber: 1, column: 12 }, { includeDeclaration: false });
+
+    let id: number | undefined;
+    await vi.waitFor(() => {
+      id = sent().find((m) => m.method === "textDocument/references")?.id;
+      expect(id).toBeDefined();
+    });
+    expect(sent().find((m) => m.method === "textDocument/references").params.context).toEqual({
+      includeDeclaration: false,
+    });
+    deliver({ jsonrpc: "2.0", id, result: [{ uri: `file://${FILE}`, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 6 } } }] });
+
+    const references = await pending;
+    expect(references).toHaveLength(1);
+    expect(references[0].uri.toString()).toBe(FILE);
+  });
+
+  it("hands a cross-file target to the workbench, and says nothing when there is none", async () => {
+    const { monaco } = await running();
+    const opener = monaco.openers[0].opener;
+
+    // Without an app to open it, Monaco is told the request was not handled and
+    // does nothing — the same dead click as before, rather than a broken one.
+    expect(await opener.openCodeEditor(null, monaco.Uri.file("/x/y.ts"), { startLineNumber: 3, startColumn: 1 })).toBe(false);
+
+    const opened: Array<[string, number | undefined, number | undefined]> = [];
+    server.setLocationOpener(async (path, line, column) => {
+      opened.push([path, line, column]);
+    });
+
+    const handled = await opener.openCodeEditor(null, monaco.Uri.file("/x/y.ts"), { startLineNumber: 3, startColumn: 1 });
+    expect(handled).toBe(true);
+    expect(opened).toEqual([["/x/y.ts", 3, 1]]);
+
+    // A position rather than a range (the reference peek sends one) is the other
+    // shape, and both have to name the same line.
+    await opener.openCodeEditor(null, monaco.Uri.file("/x/y.ts"), { lineNumber: 7, column: 2 });
+    expect(opened[1]).toEqual(["/x/y.ts", 7, 2]);
+
+    // Not ours to open: Monaco's own handler puts links in a browser, and a URL
+    // claimed here would be "opened" as a file path.
+    const link = await opener.openCodeEditor(null, { scheme: "https", path: "", toString: () => "https://example.com" }, undefined);
+    expect(link).toBe(false);
+    expect(opened).toHaveLength(2);
+    server.setLocationOpener(null);
   });
 });

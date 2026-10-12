@@ -101,6 +101,14 @@ the mirror, and their tests. Thirty-six of this repository's tests were the mirr
 own; they are gone with it, and what replaces them is sixteen tests around the
 handshake, the framing and the protocol conversions.
 
+Definition and references are served too, and they needed one thing the other
+features did not: `StandaloneCodeEditorService.findModel` returns `null` for any
+resource the current editor is not already showing, so Monaco's own go-to-definition
+dead-ends on a file that is not open. `monaco.editor.registerEditorOpener` is the
+handover for exactly that — Monaco calls it for a resource other than the current
+model, and the app opens the file the way a click in the tree would, revealing the
+line. Links are not claimed by it: its own handler puts `http(s)` in a browser.
+
 Completions and hover are served over LSP as well, so the worker's own providers are
 switched off with `setModeConfiguration` while a server runs. Monaco still bundles
 `ts.worker` (6.7 MB) — removing the worker outright is a separate step, and it needs

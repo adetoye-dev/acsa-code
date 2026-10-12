@@ -63,6 +63,7 @@ import { chatDraft } from "../../services/chatDraft";
 import { openOllamaSetupWizard, EVENT_OPEN_AI_MANAGEMENT, EVENT_START_CODING_WITH_OLLAMA } from "../../services/ollamaSetup";
 import type { UsePipelineReturn } from "../../hooks/usePipeline";
 import { gitFetch } from "../../services/gitClient";
+import { setLocationOpener } from "../../services/tsLanguageServer";
 
 const SPECIAL_PANELS = ["dock_diff", "diff_"];
 
@@ -417,6 +418,19 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
     },
     [openFile, revealEditorForFile]
   );
+
+  /**
+   * Go to definition, and a reference picked out of the peek, both end up here.
+   *
+   * Monaco's editor opener only fires for a resource other than the model being
+   * looked at, and it cannot open this app's tabs itself, so the language server
+   * hands the target over and the workbench opens it the way a click in the tree
+   * would — the same path the review panel uses to jump to a finding.
+   */
+  useEffect(() => {
+    setLocationOpener(handleOpenFileAtLocation);
+    return () => setLocationOpener(null);
+  }, [handleOpenFileAtLocation]);
 
   // A file was chosen somewhere in the chrome: show it on the editor screen
   // rather than loading it behind a page or the full-canvas chat.
