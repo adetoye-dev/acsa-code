@@ -161,6 +161,37 @@ export function configureMonacoTypeScript(monaco: any, projectRoot = ""): void {
   void loadAmbientTypes(typescript, projectRoot);
 }
 
+/**
+ * Hand type checking over to the language server, or take it back.
+ *
+ * The worker's diagnostics are a mirror's approximation of a project it cannot see
+ * (`monacoProjectFiles.ts`), and the language server's are the project's own
+ * compiler reading the project. They cannot both be on: two sets of squiggles on one
+ * word, disagreeing, which is the state this whole arrangement replaces.
+ *
+ * So the worker is switched off only once the server is *answering*, and switched
+ * back on when it stops — a stopped server must never mean an unchecked editor.
+ * The worker keeps everything else it does (completions, hover) until those are
+ * served over LSP too.
+ */
+export function setWorkerDiagnosticsEnabled(monaco: any, enabled: boolean): void {
+  const typescript = typescriptFeature(monaco);
+  if (!typescript) return;
+
+  typescript.typescriptDefaults?.setDiagnosticsOptions({
+    noSemanticValidation: !enabled,
+    noSyntaxValidation: !enabled,
+    diagnosticCodesToIgnore: DIAGNOSTIC_CODES_TO_IGNORE,
+  });
+  // JavaScript stays unchecked by the worker either way: it never type-checked JS
+  // (there was no `checkJs`), and the server reports what it can see. Syntax errors
+  // in JS are still worth having from the worker when there is no server.
+  typescript.javascriptDefaults?.setDiagnosticsOptions({
+    noSemanticValidation: true,
+    noSyntaxValidation: !enabled,
+  });
+}
+
 async function loadAmbientTypes(
   typescript: any,
   projectRoot: string

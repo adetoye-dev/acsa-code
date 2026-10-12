@@ -27,6 +27,11 @@ import { PANE_EDITOR_OPTIONS } from "../../services/monacoPaneOptions";
 import { syncProjectFiles } from "../../services/monacoProjectFiles";
 import { applyMonacoTheme } from "../../services/themeManager";
 import { getAutoSelectedLocalWorker, resolveCompletionAiConfig, resolveEditorAiConfig } from "../../services/aiModelManager";
+import {
+  languageServerState,
+  startLanguageServer,
+  subscribeLanguageServer,
+} from "../../services/tsLanguageServer";
 import type { AISettings } from "../SettingsModal";
 
 /**
@@ -75,6 +80,16 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
   const aiDisposableRef = useRef<MonacoType.IDisposable | null>(null);
   const selectionDisposableRef = useRef<MonacoType.IDisposable | null>(null);
   const settingsRef = useRef(aiSettings);
+
+  /**
+   * Which TypeScript is checking this file, said out loud.
+   *
+   * The editor used to give no clue: a mirror's diagnostics looked exactly like the
+   * compiler's, and when the language server is absent — a source checkout that has
+   * not run `scripts/fetch_lsp_sidecar.sh` — the difference is invisible from here.
+   */
+  const [languageServer, setLanguageServer] = useState(languageServerState);
+  useEffect(() => subscribeLanguageServer(setLanguageServer), []);
 
   useEffect(() => {
     settingsRef.current = aiSettings;
@@ -891,6 +906,12 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
       );
     }
 
+    // Type checking from the project's own TypeScript, over LSP. Started here
+    // because this is where a project root and a Monaco instance meet; it is keyed
+    // by the root, so switching projects replaces the server and switching tabs
+    // does not. See `services/tsLanguageServer.ts`.
+    void startLanguageServer(monaco, projectRoot);
+
     // Reveal target line if provided
     if (targetLine && targetLine > 0) {
       editor.revealLineInCenter(targetLine);
@@ -991,6 +1012,37 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
           </button>
         )}
       </div>
+
+      {/* ── Which TypeScript is checking this file ────────────────── */}
+      {languageServer.status !== "off" && (
+        <div
+          data-testid="language-server-status"
+          title={
+            languageServer.status === "running"
+              ? `Type checking comes from ${languageServer.typescript || "the project's TypeScript"}, read from your project the way your own tsc reads it.`
+              : languageServer.status === "unavailable"
+                ? "The TypeScript language server is not installed, so checking falls back to the built-in engine. Run scripts/fetch_lsp_sidecar.sh."
+                : languageServer.status === "starting"
+                  ? "Starting the TypeScript language server…"
+                  : `The TypeScript language server did not start: ${languageServer.detail}`
+          }
+          className={`absolute top-11 left-3 z-editor px-2 py-0.5 rounded text-3xs font-mono border backdrop-blur-sm ${
+            languageServer.status === "running"
+              ? "bg-white/5 border-hairline text-zinc-400"
+              : languageServer.status === "starting"
+                ? "bg-white/5 border-hairline text-zinc-500"
+                : "bg-amber-500/10 border-amber-500/30 text-amber-300"
+          }`}
+        >
+          {languageServer.status === "running"
+            ? `TS ${languageServer.typescript || "ready"}`
+            : languageServer.status === "starting"
+              ? "TS starting…"
+              : languageServer.status === "unavailable"
+                ? "TS: built-in engine"
+                : "TS: failed"}
+        </div>
+      )}
 
       {/* ── Review status (errors / notes) ───────────────────────── */}
       {(reviewError || reviewNote) && (

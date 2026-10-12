@@ -2741,6 +2741,225 @@ fn ollama_cancel(state: State<'_, OllamaState>) -> Result<(), String> {
     Ok(())
 }
 
+// ── TypeScript language server ──────────────────────────────────────────────
+
+/// Locate the toolchain fetched by `scripts/fetch_lsp_sidecar.sh`.
+///
+/// Same arrangement as the engine and the Codex CLI: a pinned per-platform artefact
+/// fetched at build time, read from the bundle's resources once packaged and from
+/// the checkout otherwise. Node is *not* otherwise a dependency of this app — the
+/// language server is the only thing that needs a JS runtime — so it is resolved
+/// here rather than assumed to be on `PATH`.
+///
+/// Returns `(node, server)` or `None` when the toolchain has not been fetched, which
+/// the caller reports as "not set up" rather than as a failure: the editor works
+/// without it, on the previous engine.
+fn resolve_lsp_toolchain(resource_dir: Option<&Path>) -> Option<(PathBuf, PathBuf)> {
+    let node_name = if cfg!(windows) { "node.exe" } else { "node" };
+    let server_rel = Path::new("server")
+        .join("node_modules")
+        .join("typescript-language-server")
+        .join("lib")
+        .join("cli.mjs");
+
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Some(resources) = resource_dir {
+        roots.push(resources.join("lsp"));
+    }
+    roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("lsp"));
+
+    roots.into_iter().find_map(|root| {
+        let node = root.join("node").join("bin").join(node_name);
+        let server = root.join(&server_rel);
+        if node.is_file() && server.is_file() {
+            Some((node, server))
+        } else {
+            None
+        }
+    })
+}
+
+/// One running language server, and the pipe to talk to it.
+///
+/// The framing is LSP's (`Content-Length: N\r\n\r\n{json}`), and it is parsed
+/// *here* rather than in the frontend: the page should receive whole JSON-RPC
+/// messages, not a byte stream to frame. That also keeps the rule that the shell
+/// owns child processes.
+pub struct LspSession {
+    child: std::process::Child,
+    stdin: std::sync::Mutex<std::process::ChildStdin>,
+}
+
+#[derive(Default)]
+pub struct LspState {
+    sessions: std::sync::Mutex<std::collections::HashMap<u64, LspSession>>,
+}
+
+static LSP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The JSON-RPC message a language server sent, tagged with its session.
+#[derive(Clone, serde::Serialize)]
+struct LspFrame {
+    session: u64,
+    message: serde_json::Value,
+}
+
+/// The lines a language server wrote to stderr, which is where it logs.
+#[derive(Clone, serde::Serialize)]
+struct LspLog {
+    session: u64,
+    line: String,
+}
+
+/// Start a language server for a project and stream its messages.
+///
+/// Returns the session id the caller tags every `lsp_send` with. A second call for
+/// the same project is the caller's business to avoid; the frontend stops the old
+/// session when the project root changes.
+#[tauri::command]
+async fn lsp_start(
+    app_handle: tauri::AppHandle,
+    state: State<'_, LspState>,
+    project_root: String,
+) -> Result<u64, String> {
+    let resource_dir = app_handle.path().resource_dir().ok();
+    let (node, server) = resolve_lsp_toolchain(resource_dir.as_deref())
+        .ok_or_else(|| "the TypeScript language server is not installed".to_string())?;
+
+    let working_dir = if Path::new(&project_root).is_dir() {
+        project_root.clone()
+    } else {
+        ".".to_string()
+    };
+
+    let mut child = Command::new(&node)
+        .arg(&server)
+        .arg("--stdio")
+        .current_dir(&working_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("could not start the language server ({}): {}", node.display(), e))?;
+
+    let stdin = child.stdin.take().ok_or("could not open the language server's input")?;
+    let mut stdout = child.stdout.take().ok_or("could not capture language server output")?;
+    let stderr = child.stderr.take().ok_or("could not capture language server errors")?;
+
+    let session = LSP_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+
+    let log_handle = app_handle.clone();
+    std::thread::spawn(move || {
+        use std::io::{BufRead, BufReader};
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            if !line.trim().is_empty() {
+                let _ = log_handle.emit("lsp:log", LspLog { session, line });
+            }
+        }
+    });
+
+    // The reader owns stdout and frames it. A `Content-Length` that does not match
+    // what arrives is a corrupt stream, not a message to guess at, so a short read
+    // ends the session rather than emitting half a document.
+    let message_handle = app_handle.clone();
+    std::thread::spawn(move || {
+        use std::io::Read;
+
+        let mut buffer: Vec<u8> = Vec::new();
+        let mut chunk = [0u8; 8192];
+        loop {
+            match stdout.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => buffer.extend_from_slice(&chunk[..n]),
+            }
+
+            while let Some(message) = take_lsp_frame(&mut buffer) {
+                let _ = message_handle.emit("lsp:message", LspFrame { session, message });
+            }
+        }
+    });
+
+    state
+        .sessions
+        .lock()
+        .map_err(|e| e.to_string())?
+        .insert(session, LspSession { child, stdin: std::sync::Mutex::new(stdin) });
+
+    Ok(session)
+}
+
+/// Take one complete LSP message out of `buffer`, if it holds one.
+///
+/// LSP frames are `Content-Length: N\r\n\r\n` followed by N bytes of JSON, and
+/// they arrive in whatever pieces the pipe chooses: a header split across two reads,
+/// two messages in one read, or a body that has not finished. Too short is not an
+/// error — the caller reads more and calls again — but a header that never names a
+/// length is unparseable, and those seven bytes are dropped rather than allowed to
+/// stall every message behind them.
+fn take_lsp_frame(buffer: &mut Vec<u8>) -> Option<serde_json::Value> {
+    let header_end = buffer.windows(4).position(|window| window == b"\r\n\r\n")?;
+
+    let header = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+    let length = header.lines().find_map(|line| {
+        line.strip_prefix("Content-Length:")
+            .and_then(|value| value.trim().parse::<usize>().ok())
+    });
+
+    let body_start = header_end + 4;
+    let length = match length {
+        Some(length) => length,
+        None => {
+            buffer.drain(..body_start);
+            return take_lsp_frame(buffer);
+        }
+    };
+
+    if buffer.len() < body_start + length {
+        return None;
+    }
+    let body = buffer[body_start..body_start + length].to_vec();
+    buffer.drain(..body_start + length);
+
+    // A frame whose body is not JSON is dropped, not fatal: the stream after it is
+    // still framed, so the next message is still readable.
+    serde_json::from_slice::<serde_json::Value>(&body).ok().or_else(|| take_lsp_frame(buffer))
+}
+
+/// Wrap one JSON-RPC message in the framing a language server reads.
+///
+/// The length is the *byte* count of the payload. A character count is the obvious
+/// mistake and it only shows up on a file whose text has a non-ASCII character in an
+/// edit — `String::len` is bytes, `chars().count()` is not, and this is the line that
+/// has to be the former.
+fn frame_lsp_message(message: &str) -> Vec<u8> {
+    let mut framed = format!("Content-Length: {}\r\n\r\n", message.len()).into_bytes();
+    framed.extend_from_slice(message.as_bytes());
+    framed
+}
+
+/// Send one JSON-RPC message to a language server.
+#[tauri::command]
+fn lsp_send(state: State<'_, LspState>, session: u64, message: String) -> Result<(), String> {
+    use std::io::Write;
+
+    let guard = state.sessions.lock().map_err(|e| e.to_string())?;
+    let entry = guard.get(&session).ok_or("no such language server session")?;
+    let mut stdin = entry.stdin.lock().map_err(|e| e.to_string())?;
+    stdin.write_all(&frame_lsp_message(&message)).map_err(|e| e.to_string())?;
+    stdin.flush().map_err(|e| e.to_string())
+}
+
+/// Stop a language server and forget it.
+#[tauri::command]
+fn lsp_stop(state: State<'_, LspState>, session: u64) -> Result<(), String> {
+    let mut guard = state.sessions.lock().map_err(|e| e.to_string())?;
+    if let Some(mut entry) = guard.remove(&session) {
+        let _ = entry.child.kill();
+        let _ = entry.child.wait();
+    }
+    Ok(())
+}
+
 // ── Codex agent runtime ─────────────────────────────────────────────────────
 
 const CODEX_BIN_NAME: &str = "codex";
@@ -4337,6 +4556,7 @@ fn main() {
         .manage(ChatState::new())
         .manage(OllamaState::new())
         .manage(AgentState::default())
+        .manage(LspState::default())
         .manage(LocalAdapterState::default())
         // Updates: the app checks a manifest, verifies the artifact against the
         // public key in tauri.conf.json, and installs it on restart. Nothing here
@@ -4385,6 +4605,9 @@ fn main() {
             secrets_delete,
             secrets_list,
             agent_stop,
+            lsp_start,
+            lsp_send,
+            lsp_stop,
             local_adapter_start,
             local_adapter_stop,
             app_restart,
@@ -4448,6 +4671,63 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// LSP framing, which arrives in whatever pieces the pipe chooses.
+    ///
+    /// The failure this guards against is quiet and total: a length read as
+    /// characters instead of bytes hangs every message after a file with one
+    /// non-ASCII character in it, and a header that never names a length stalls the
+    /// stream behind it forever.
+    #[test]
+    fn lsp_frames_are_taken_one_at_a_time() {
+        let a = r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#;
+        let b = r#"{"jsonrpc":"2.0","method":"initialized"}"#;
+
+        // Nothing yet: a header that has not finished arriving.
+        let mut buffer = b"Content-Len".to_vec();
+        assert!(take_lsp_frame(&mut buffer).is_none());
+        assert_eq!(buffer, b"Content-Len");
+
+        // The rest of the header, then the body, in two pieces.
+        buffer = b"Content-Length: 46\r\n\r\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"init".to_vec();
+        assert!(take_lsp_frame(&mut buffer).is_none());
+        buffer.extend_from_slice(b"ialize\"}");
+        let message = take_lsp_frame(&mut buffer).expect("a complete frame");
+        assert_eq!(message["method"], "initialize");
+        assert_eq!(message["id"], 1);
+        assert!(buffer.is_empty());
+
+        // Two messages in one read, in order, leaving nothing behind.
+        buffer = frame_lsp_message(a);
+        buffer.extend_from_slice(&frame_lsp_message(b));
+        assert_eq!(take_lsp_frame(&mut buffer).unwrap()["method"], "initialize");
+        assert_eq!(take_lsp_frame(&mut buffer).unwrap()["method"], "initialized");
+        assert!(take_lsp_frame(&mut buffer).is_none());
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn lsp_framing_counts_bytes_not_characters() {
+        // The payload has an emoji and an accent, so the two counts disagree.
+        let message = r#"{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"text":"const café = 🇳🇬"}}"#;
+        assert_ne!(message.len(), message.chars().count());
+
+        let mut buffer = frame_lsp_message(message);
+        let parsed = take_lsp_frame(&mut buffer).expect("a frame framed by byte length");
+        assert_eq!(parsed["params"]["text"], "const café = 🇳🇬");
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn an_unreadable_header_does_not_stall_the_stream() {
+        // Seven bytes that never name a length, then a real message behind them.
+        let mut buffer = b"xx\r\n\r\n".to_vec();
+        buffer.extend_from_slice(&frame_lsp_message(r#"{"jsonrpc":"2.0","id":2,"result":{}}"#));
+
+        let message = take_lsp_frame(&mut buffer).expect("the message behind the junk");
+        assert_eq!(message["id"], 2);
+        assert!(buffer.is_empty());
     }
 
     fn find_by_name<'a>(nodes: &'a [FileNode], name: &str) -> Option<&'a FileNode> {

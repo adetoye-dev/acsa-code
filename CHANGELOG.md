@@ -39,6 +39,15 @@ for them, not which file moved.
 
 ### Fixed
 
+- **Type checking comes from your project's own TypeScript.** The editor used to
+  ask Monaco's bundled compiler, which runs in a Web Worker with no filesystem and
+  therefore only sees a mirror of your project that the app built by hand — so path
+  aliases, `.d.mts` files, package `exports` and the JSX runtime resolved by
+  approximation, and gaps arrived as errors that VS Code, your `tsc` and your CI do
+  not report. Diagnostics now come from a real language server running the
+  workspace's TypeScript over LSP, in the same arrangement VS Code uses, and the
+  editor says which TypeScript is checking it. The built-in engine takes over again
+  if the server is unavailable, so a missing toolchain is never an unchecked file.
 - **One completion provider for the workbench**, not one per open editor. Monaco
   asks every provider registered for a language, so each tab registering its own
   offered the same suggestion several times over, and — because the debounce and
