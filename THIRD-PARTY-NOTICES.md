@@ -7,8 +7,10 @@ components below, each under its own terms. Generated — do not edit by hand:
 node scripts/generate_third_party_notices.mjs
 ```
 
-Build-only tooling (Vite, TypeScript, Tailwind, PostCSS, the Tauri CLI) is not
-distributed and is therefore not listed.
+Build-only tooling (Vite, Tailwind, PostCSS, the Tauri CLI) is not distributed and
+is therefore not listed. The TypeScript language server, its Node runtime and the
+TypeScript it falls back to *are* distributed — fetched by
+`scripts/fetch_lsp_sidecar.sh` and shipped in the bundle — so they are below.
 
 ## Runtime libraries
 
@@ -70,6 +72,7 @@ distributed and is therefore not listed.
 - **marked** 14.0.0 — MIT — [github.com/markedjs/marked](https://github.com/markedjs/marked)
 - **mnemonist** 0.39.8 — MIT — [github.com/yomguithereal/mnemonist](https://github.com/yomguithereal/mnemonist)
 - **monaco-editor** 0.57.0 — MIT — [github.com/microsoft/monaco-editor](https://github.com/microsoft/monaco-editor)
+- **node** 24.21.0 — MIT — [github.com/nodejs/node](https://github.com/nodejs/node)
 - **object-assign** 4.1.1 — MIT — [github.com/sindresorhus/object-assign](https://github.com/sindresorhus/object-assign)
 - **obliterator** 2.0.5 — MIT — [github.com/yomguithereal/obliterator](https://github.com/yomguithereal/obliterator)
 - **pandemonium** 2.4.1 — MIT — [github.com/yomguithereal/pandemonium](https://github.com/yomguithereal/pandemonium)
@@ -84,6 +87,8 @@ distributed and is therefore not listed.
 - **state-local** 1.0.7 — MIT — [github.com/suren-atoyan/state-local](https://github.com/suren-atoyan/state-local)
 - **tailwind-merge** 3.7.0 — MIT — [github.com/dcastil/tailwind-merge](https://github.com/dcastil/tailwind-merge)
 - **tinycolor2** 1.6.0 — MIT — [github.com/bgrins/TinyColor](https://github.com/bgrins/TinyColor)
+- **typescript** 6.0.3 — Apache-2.0 — [github.com/microsoft/TypeScript](https://github.com/microsoft/TypeScript)
+- **typescript-language-server** 6.0.2 — MIT — [github.com/typescript-language-server/typescript-language-server](https://github.com/typescript-language-server/typescript-language-server)
 
 ## Bundled fonts (SIL Open Font License 1.1)
 

@@ -140,5 +140,6 @@ acsa.db-shm
 .tauri/binaries/
 .tauri/engine/
 .tauri/engine-codex/
-# Language server toolchain (built by scripts/fetch_lsp_sidecar.sh; 50 MB+)
-.tauri/lsp/
+# Language server toolchain (fetched by scripts/fetch_lsp_sidecar.sh; 50 MB+)
+# Outside `.tauri/` on purpose — see the note in that script.
+.lsp/

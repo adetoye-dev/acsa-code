@@ -26,7 +26,7 @@ a child process, spoken to over LSP.** Monaco stays as the surface.
 
 |  | |
 |---|---|
-| Runtime | Node (pinned, `scripts/fetch_lsp_sidecar.sh`) |
+| Runtime | Node (pinned, `scripts/fetch_lsp_sidecar.sh` → `.lsp/`, shipped in the bundle) |
 | Server | `typescript-language-server` (pinned) |
 | TypeScript | **the workspace's**, from `node_modules/typescript` — the bundled copy (6.0.3) is only the fallback |
 | Transport | LSP over stdio, spawned by the shell like the engine and Codex |

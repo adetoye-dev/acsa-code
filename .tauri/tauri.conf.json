@@ -42,7 +42,7 @@
       "../scripts": "scripts",
       "engine": "engine",
       "engine-codex": "engine-codex",
-      "lsp": "lsp",
+      "../.lsp": "lsp",
       "../LICENSE": "LICENSE",
       "../THIRD-PARTY-NOTICES.md": "THIRD-PARTY-NOTICES.md"
     },

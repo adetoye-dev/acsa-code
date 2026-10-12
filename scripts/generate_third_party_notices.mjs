@@ -83,6 +83,32 @@ function fontLicenceText(pkg) {
   return "_(licence file not found in the installed package — regenerate after npm install)_";
 }
 
+/**
+ * The toolchain `scripts/fetch_lsp_sidecar.sh` fetches, which ships inside the app
+ * beside the engine and the Codex runtime: Node itself, the language server, and the
+ * TypeScript that stands in for a project that has none of its own.
+ *
+ * The versions are read from that script's pins rather than from `.lsp/`, because
+ * that directory is fetched build output and the notices have to be identical on a
+ * machine that has fetched it and on CI, which has not. Reading the pins also means a
+ * version bump there fails `notices:check` until this file is regenerated, which is
+ * the point of the check.
+ */
+function bundledToolchain() {
+  const script = fs.readFileSync(path.join(REPO_ROOT, "scripts", "fetch_lsp_sidecar.sh"), "utf8");
+  const pin = (name, override) => {
+    const match = new RegExp(`${name}="\\$\\{${override}:-([^}]+)\\}"`).exec(script);
+    if (!match) throw new Error(`could not read the ${name} pin out of fetch_lsp_sidecar.sh`);
+    return match[1];
+  };
+
+  return [
+    { name: "node", version: pin("NODE_VERSION", "LSP_NODE_VERSION").replace(/^v/, ""), license: "MIT", repo: "https://github.com/nodejs/node" },
+    { name: "typescript-language-server", version: pin("SERVER_VERSION", "LSP_SERVER_VERSION"), license: "MIT", repo: "https://github.com/typescript-language-server/typescript-language-server" },
+    { name: "typescript", version: pin("TS_VERSION", "LSP_TS_VERSION"), license: "Apache-2.0", repo: "https://github.com/microsoft/TypeScript" },
+  ];
+}
+
 const packages = runtimePackages();
 const rows = [];
 const unknown = [];
@@ -106,6 +132,9 @@ for (const [name, version] of packages) {
   });
 }
 
+rows.push(...bundledToolchain());
+rows.sort((a, b) => a.name.localeCompare(b.name));
+
 const fonts = rows.filter((r) => r.license === "OFL-1.1" || r.name.startsWith("@fontsource/"));
 const componentNames = rows
   .filter((r) => r.license !== "OFL-1.1")
@@ -127,9 +156,15 @@ lines.push("node scripts/generate_third_party_notices.mjs");
 lines.push("```");
 lines.push("");
 lines.push(
-  "Build-only tooling (Vite, TypeScript, Tailwind, PostCSS, the Tauri CLI) is not"
+  "Build-only tooling (Vite, Tailwind, PostCSS, the Tauri CLI) is not distributed and"
 );
-lines.push("distributed and is therefore not listed.");
+lines.push(
+  "is therefore not listed. The TypeScript language server, its Node runtime and the"
+);
+lines.push(
+  "TypeScript it falls back to *are* distributed — fetched by"
+);
+lines.push("`scripts/fetch_lsp_sidecar.sh` and shipped in the bundle — so they are below.");
 lines.push("");
 
 lines.push("## Runtime libraries");

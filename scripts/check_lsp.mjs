@@ -30,7 +30,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const LSP_DIR = process.env.ACSA_LSP_DIR ?? join(ROOT, ".tauri", "lsp");
+const LSP_DIR = process.env.ACSA_LSP_DIR ?? join(ROOT, ".lsp");
 const NODE = join(LSP_DIR, "node", "bin", process.platform === "win32" ? "node.exe" : "node");
 const SERVER = join(LSP_DIR, "server", "node_modules", "typescript-language-server", "lib", "cli.mjs");
 
