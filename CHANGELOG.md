@@ -17,6 +17,8 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.36] - 2026-10-12
+
 ### Added
 
 - **Inline AI completions in the editor.** Ghost text appears as you pause, on by
@@ -871,7 +873,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.35...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.36...dev
+[0.2.36]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.35...v0.2.36
 [0.2.35]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.34...v0.2.35
 [0.2.34]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.33...v0.2.34
 [0.2.33]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.32...v0.2.33
