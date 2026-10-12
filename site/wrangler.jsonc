@@ -19,6 +19,22 @@
   // breath — a mismatch fails the deploy.
   "name": "acsa-code",
   "compatibility_date": "2026-09-28",
+  // Required by `npx wrangler preview`, which is what the dashboard's *Preview*
+  // command runs. Without this key wrangler derives a Preview configuration from
+  // the Cloudflare dashboard's "Preview base config" instead — and with no base
+  // config there and nothing in a static-assets Worker to derive from, the
+  // derivation comes out empty and the command refuses to run:
+  //
+  //   ✘ Your Wrangler configuration is missing a `previews` block to run this command.
+  //
+  // That was every preview build on `dev` failing while `main` deployed fine
+  // (`npx wrangler deploy` does not consult this key at all), which is a red check
+  // on every commit and pull request that has nothing to do with the change.
+  // An empty block is enough: assets, compatibility settings and placement stay at
+  // the top level and are not duplicated here. `wrangler preview` is an open-beta
+  // command, so if a future release asks for something in this block, this is the
+  // place it goes.
+  "previews": {},
   "assets": {
     "directory": "./dist",
     // A one-page site: an unknown path gets the 404 page, not index.html pretending

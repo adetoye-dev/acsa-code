@@ -46,29 +46,43 @@ Dashboard → the Worker → **Settings**:
 | Worker name | must match the `name` in `wrangler.jsonc` (`acsa-code`) |
 | Build command | `npm run build` |
 | Deploy command | `npx wrangler deploy` |
-| Non-production deploy command | `npx wrangler versions upload` (only if you want per-branch versions) |
+| Preview command | `npx wrangler preview` (needs the `previews` block below) |
+| Non-production deploy command | `npx wrangler versions upload` (the alternative, if you would rather not use Previews) |
 | Environment variable | `NODE_VERSION=22` |
 
 **Root directory must be `site`.** Pointed at the repository root, the build would install
 the *app's* dependencies and build the *app*.
 
-### The deploy command has to be `wrangler deploy`, not `wrangler preview`
+### Production deploys with `wrangler deploy`; previews need a `previews` block
 
-Worth naming because it cost a deploy and is easy to pick up from a setup flow that
-guesses. `npx wrangler preview` is **not a deploy**: it is the open-beta *Preview
-deployments* command, and pointed at a plain static site it fails with
+Two different commands, and the failure each one has looked like the other.
+
+**Production.** `npx wrangler deploy` is the one that publishes `dist/`, taking
+`assets.directory` from `wrangler.jsonc`. `npx wrangler preview` is **not a deploy** —
+it is the open-beta *Preview deployments* command, and an install that picked it up from
+a setup flow that guessed had every `Workers Builds` check red on every commit and pull
+request, since each of those runs the same command.
+
+**Previews.** `npx wrangler preview` on the *dev* worker genuinely does need a
+`previews` block, and its absence is a different failure with the same look:
 
 ```
-✘ [ERROR] Your Wrangler configuration is missing a 'previews' block to run this command.
+✘ [ERROR] Your Wrangler configuration is missing a `previews` block to run this command.
 ```
 
-because it wants a `previews` block it can scope preview deployments to. The build
-itself is fine in that log — it is the publish step that dies, which makes it look like
-a build failure when it is not.
+`ensurePreviewsConfig` in wrangler returns early when the config has the key, and
+otherwise *derives* a Preview configuration from the dashboard's "Preview base config"
+or from the production config. With no base config set and nothing in a static-assets
+Worker to derive from, the derivation is empty and the command stops — so `main` deploys
+and `dev` never does. An empty block is enough, and it is committed:
 
-`npx wrangler deploy` is the one that publishes `dist/`, taking `assets.directory` from
-`wrangler.jsonc`. It also fixes the `Workers Builds` check that would otherwise be red on
-**every** commit and pull request, since each of those runs the same command.
+```
+"previews": {},
+```
+
+Assets, compatibility settings and placement stay at the top level and are not copied
+into it. In both cases the **build** is fine in the log — it is the publish step that
+dies, which is what makes it read as a build failure.
 
 ### Why `wrangler.jsonc` exists — do not delete it
 
