@@ -132,6 +132,27 @@ node scripts/check_lsp.mjs     # speaks LSP to a scratch project; exits 0 if the
 resolves, a type error is reported at the right line with the compiler's own code,
 and a completion offers the symbol behind the aliased import.
 
+## Code actions: only the applicable ones
+
+Measured, typescript-language-server sends its **quick fixes** with a standard
+`edit` (a workspace edit using `documentChanges`) and its **refactorings** with
+only `command: "_typescript.applyCodeActionCommand"` — whose arguments are the
+TypeScript server's own `changes` shape, not LSP. There is no `edit` and no
+`codeAction/resolve` that fills one in.
+
+So the editor offers the quick fixes (and any refactoring that does carry an edit)
+and drops the rest. An entry that does nothing when it is picked is worse than an
+entry that is not there — which is the same reason the lightbulb needs the markers:
+a code-action request with an empty `context.diagnostics` comes back with
+refactorings only, because a quick fix is matched to a *diagnostic*.
+
+Two conversions that were wrong on the first attempt and are now pinned by tests:
+Monaco's marker severities are a bitmask (Hint 1 … Error 8) and LSP's run the other
+way (Error 1 … Hint 4), so the mapping mirrors; and the `versionId` on an edit must
+be the *model's* version, not the `textDocument.version` from the wire — LSP's counts
+what this client sent, Monaco's counts edits to the model, and handing over the wrong
+one makes Monaco reject an edit that is perfectly good.
+
 ## completionItem/resolve is not optional
 
 Measured against the real server, a completion list item is `{label, kind, sortText,

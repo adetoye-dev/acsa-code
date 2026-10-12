@@ -54,6 +54,7 @@ function makeModel(path: string, text: string, languageId = "typescript") {
       return { dispose: () => listeners.splice(listeners.indexOf(handler), 1) };
     },
     getLanguageId: () => languageId,
+    getVersionId: () => 7,
     isDisposed: () => false,
     /** Monaco's own: the word ending at the cursor, which is the fallback range. */
     getWordUntilPosition: (position: { lineNumber: number; column: number }) => {
@@ -94,6 +95,11 @@ function makeMonaco(models: any[]) {
       },
       registerDefinitionProvider: (langs: string[], provider: any) => {
         const entry = { kind: "definition", languages: langs, provider, disposed: false };
+        providers.push(entry);
+        return { dispose: () => (entry.disposed = true) };
+      },
+      registerCodeActionProvider: (langs: string[], provider: any, _meta: any) => {
+        const entry = { kind: "codeAction", languages: langs, provider, disposed: false };
         providers.push(entry);
         return { dispose: () => (entry.disposed = true) };
       },
@@ -627,5 +633,115 @@ describe("go to definition, and references", () => {
     expect(link).toBe(false);
     expect(opened).toHaveLength(2);
     server.setLocationOpener(null);
+  });
+});
+
+describe("quick fixes", () => {
+  it("carries the markers into the request, because that is what makes it a fix", async () => {
+    const model = makeModel(FILE, "const a = greetName;\n");
+    const monaco = makeMonaco([model]);
+    const starting = server.startLanguageServer(monaco, ROOT);
+    await vi.waitFor(() => expect(sent().some((m) => m.method === "initialize")).toBe(true));
+    deliver({ jsonrpc: "2.0", id: sent().find((m) => m.method === "initialize").id, result: { capabilities: {} } });
+    await starting;
+    await sentMethod("textDocument/didOpen");
+
+    const provider = monaco.providers.find((p: any) => p.kind === "codeAction");
+    const pending = provider.provider.provideCodeActions(
+      model,
+      { startLineNumber: 3, startColumn: 11, endLineNumber: 3, endColumn: 20 },
+      {
+        markers: [
+          {
+            severity: 8, // Monaco's Error
+            message: "Cannot find name 'greetName'.",
+            code: "2304",
+            source: "ts",
+            startLineNumber: 3,
+            startColumn: 11,
+            endLineNumber: 3,
+            endColumn: 20,
+          },
+        ],
+        trigger: 1,
+      },
+    );
+
+    let id: number | undefined;
+    await vi.waitFor(() => {
+      id = sent().find((m) => m.method === "textDocument/codeAction")?.id;
+      expect(id).toBeDefined();
+    });
+    const params = sent().find((m) => m.method === "textDocument/codeAction").params;
+    // Zero-based on the wire, and the severity has to come back down Monaco's
+    // bitmask ladder: 8 (Error) is LSP 1.
+    expect(params.range).toEqual({ start: { line: 2, character: 10 }, end: { line: 2, character: 19 } });
+    expect(params.context.diagnostics[0]).toMatchObject({
+      severity: 1,
+      code: "2304",
+      source: "ts",
+      message: "Cannot find name 'greetName'.",
+    });
+
+    deliver({
+      jsonrpc: "2.0",
+      id,
+      result: [
+        {
+          title: 'Update import from "./lib"',
+          kind: "quickfix",
+          isPreferred: true,
+          // The shape the server measured: a workspace edit with `documentChanges`.
+          edit: {
+            documentChanges: [
+              {
+                textDocument: { uri: `file://${FILE}`, version: 4 },
+                edits: [
+                  { range: { start: { line: 0, character: 22 }, end: { line: 0, character: 22 } }, newText: ", greetName" },
+                ],
+              },
+            ],
+          },
+        },
+        // A refactoring with only the TypeScript server's own command: not LSP, and
+        // not applicable by a client that does not implement it.
+        { title: "Convert to async function", kind: "refactor.rewrite", command: { command: "_typescript.applyCodeActionCommand", arguments: [] } },
+        { title: "Move to a new file", kind: "refactor.move.newFile", disabled: { reason: "Could not find a declaration" }, edit: { changes: { [`file://${FILE}`]: [{ range: { start: { line: 1, character: 0 }, end: { line: 1, character: 1 } }, newText: "x" }] } } },
+      ],
+    });
+
+    const { actions } = await pending;
+    // Two of the three: the command-only refactoring is dropped rather than
+    // offered as an entry that does nothing when it is picked.
+    expect(actions.map((a: any) => a.title)).toEqual(['Update import from "./lib"', "Move to a new file"]);
+    expect(actions[0].isPreferred).toBe(true);
+    expect(actions[0].edit.edits[0]).toMatchObject({
+      resource: { path: FILE },
+      textEdit: { text: ", greetName", range: { startLineNumber: 1, startColumn: 23 } },
+    });
+    // The open model's version, so Monaco can refuse an edit computed against text
+    // that has moved on.
+    expect(actions[0].edit.edits[0].versionId).toBe(7);
+    expect(actions[1].disabled).toBe("Could not find a declaration");
+  });
+
+  it("names a file it cannot open by its path, and forgets a file operation", () => {
+    const model = makeModel(FILE, "const a = 1;\n");
+    const monaco = makeMonaco([model]);
+
+    const edit = server.toMonacoWorkspaceEdit(monaco, {
+      changes: { [`file://${FILE}`]: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } }, newText: "let" }] },
+    });
+    expect(edit.edits[0].resource.toString()).toBe(FILE);
+
+    const elsewhere = server.toMonacoWorkspaceEdit(monaco, {
+      changes: { "file:///Users/dev/project/src/other.ts": [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, newText: "// hi" }] },
+    });
+    expect(elsewhere.edits[0].resource.toString()).toBe("file:///Users/dev/project/src/other.ts");
+
+    // A create/rename/delete has no Monaco equivalent: applying half of a workspace
+    // edit is worse than not offering it.
+    expect(server.toMonacoWorkspaceEdit(monaco, { documentChanges: [{ kind: "create", uri: "file:///new.ts" }] })).toBeUndefined();
+    expect(server.toMonacoWorkspaceEdit(monaco, {})).toBeUndefined();
   });
 });

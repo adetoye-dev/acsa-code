@@ -480,7 +480,104 @@ export function toMonacoLocations(monaco: typeof MonacoType, result: any): any[]
     .filter(Boolean);
 }
 
-/** Hover text, in whatever shape the protocol used, as markdown. */
+/** Monaco's range as LSP's — the other direction, for a request's parameters. */
+function toLspRange(range: any): any {
+  return {
+    start: { line: range.startLineNumber - 1, character: range.startColumn - 1 },
+    end: { line: range.endLineNumber - 1, character: range.endColumn - 1 },
+  };
+}
+
+/**
+ * The markers under the cursor, as the diagnostics the server expects.
+ *
+ * A quick fix is matched to a *diagnostic*: the server decides what it can fix
+ * from the errors the client says are there, so a request with an empty
+ * `context.diagnostics` gets nothing but the general refactorings. Measured — the
+ * same range with the diagnostics attached came back with
+ * `Update import from "./lib"` and `Remove unused declaration`.
+ */
+function toLspDiagnostics(markers: readonly any[]): any[] {
+  return markers.map((marker) => ({
+    range: toLspRange(marker),
+    // Monaco's severities are a bitmask (Hint 1, Info 2, Warning 4, Error 8) and
+    // LSP's run the other way (Error 1 … Hint 4), so the two are mirrors. Getting
+    // this backwards reports every error as a hint, which is a fix nobody sees.
+    severity: marker.severity ? 4 - Math.log2(marker.severity) : 1,
+    ...(marker.code === undefined ? {} : { code: String(marker.code) }),
+    ...(marker.source ? { source: String(marker.source) } : {}),
+    message: String(marker.message ?? ""),
+  }));
+}
+
+/**
+ * An LSP workspace edit as Monaco's.
+ *
+ * Two shapes arrive and both are in use: `changes`, a map of uri to edits, which is
+ * what this server sends for a quick fix, and `documentChanges`, which is the same
+ * thing with the document versions attached and room for file operations. Only text
+ * edits are carried — a file create/rename/delete has no Monaco equivalent and is
+ * dropped, because applying half an edit is worse than not offering it.
+ */
+export function toMonacoWorkspaceEdit(monaco: typeof MonacoType, edit: any): any | undefined {
+  if (!edit) return undefined;
+  const edits: any[] = [];
+
+  const push = (uri: string, textEdit: any) => {
+    if (!uri || !textEdit?.range) return;
+    const path = uriToPath(uri);
+    const open = monaco.editor.getModels().find((model) => samePath(modelPath(model), path));
+    edits.push({
+      resource: open ? open.uri : monaco.Uri.file(path),
+      textEdit: { range: toMonacoRange(textEdit.range), text: String(textEdit.newText ?? "") },
+      // The *model's* version, never the one on the wire. LSP's
+      // `textDocument.version` counts the versions this client sent over the
+      // session; Monaco's counts edits to that model. They are different numbers,
+      // and handing Monaco the wrong one makes it reject an edit that is perfectly
+      // good — insisting on a version the model will never reach.
+      versionId: open ? open.getVersionId() : undefined,
+    });
+  };
+
+  for (const [uri, textEdits] of Object.entries(edit.changes ?? {})) {
+    for (const textEdit of textEdits as any[]) push(uri, textEdit);
+  }
+  for (const change of edit.documentChanges ?? []) {
+    if (!change?.textDocument || !Array.isArray(change.edits)) continue;
+    for (const textEdit of change.edits) push(change.textDocument.uri, textEdit);
+  }
+
+  return edits.length ? { edits } : undefined;
+}
+
+/**
+ * The server's code actions, as Monaco's.
+ *
+ * Only the ones this app can actually *apply* are returned. typescript-language-server
+ * sends its quick fixes with a standard `edit` and its refactorings with only a
+ * `command` — `_typescript.applyCodeActionCommand`, whose arguments are the TypeScript
+ * server's own `changes` shape, not LSP. A client that does not implement that
+ * command offers an entry that does nothing when picked, which is worse than not
+ * offering it; the quick fixes are the ones the lightbulb is for.
+ */
+export function toMonacoCodeActions(monaco: typeof MonacoType, result: any): any[] {
+  const actions: any[] = Array.isArray(result) ? result : (result?.items ?? []);
+  return actions
+    .map((action) => {
+      const edit = toMonacoWorkspaceEdit(monaco, action.edit);
+      if (!edit) return null;
+      return {
+        title: String(action.title ?? ""),
+        kind: typeof action.kind === "string" ? action.kind : undefined,
+        edit,
+        ...(action.isPreferred ? { isPreferred: true } : {}),
+        ...(action.disabled?.reason ? { disabled: String(action.disabled.reason) } : {}),
+      };
+    })
+    .filter(Boolean);
+}
+
+/** Hover text, in whatever shape the protocol used, as markdown. *//** Hover text, in whatever shape the protocol used, as markdown. */
 export function toHoverMarkdown(contents: any): string {
   if (!contents) return "";
   if (typeof contents === "string") return contents;
@@ -517,6 +614,33 @@ function registerProviders(current: Session, capabilities: any): void {
 
   current.disposables.push(
     // Cross-file navigation, which Monaco cannot do on its own here.
+    monaco.languages.registerCodeActionProvider(
+      languages,
+      {
+      provideCodeActions: async (model, range, context) => {
+        const result = await request(current, "textDocument/codeAction", {
+          textDocument: { uri: documentUri(model) },
+          range: toLspRange(range),
+          context: {
+            // The markers are what make it a *quick fix*: the server picks the fix
+            // from the diagnostics the client reports, so an empty list here is why
+            // a lightbulb would otherwise offer nothing but refactorings.
+            diagnostics: toLspDiagnostics(context.markers ?? []),
+            // `CodeActionTriggerType.Invoke` is 1 and LSP's `Invoked` is 1, so the
+            // enum passes through; the lightbulb's automatic pass is 2 in both.
+            triggerKind: context.trigger ?? 1,
+            ...(context.only ? { only: [context.only] } : {}),
+          },
+        });
+        const actions = toMonacoCodeActions(monaco, result);
+        return { actions, dispose: () => {} };
+      },
+      },
+      // The kinds Monaco may ask this provider for. A request that names one —
+      // "Organize Imports" asks for `source.organizeImports` — is filtered against
+      // this list before it reaches the provider at all.
+      { providedCodeActionKinds: ["quickfix", "refactor", "source"] },
+    ),
     monaco.editor.registerEditorOpener({
       openCodeEditor: async (_source, resource, selectionOrPosition) => {
         // Only the filesystem, and only when there is something to open it with.

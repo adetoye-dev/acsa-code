@@ -49,6 +49,12 @@ for them, not which file moved.
   existed only to feed it. Note the honest half: with no server, the worker has no
   project files any more, so the fallback reports syntax and the bundled libraries
   and little else — which is why the editor says which engine is checking.
+- **Quick fixes.** The lightbulb offers what the language server can fix at the
+  cursor — "Update import from …", "Remove unused declaration", the standard range
+  it sends for each — and applies it as one edit. Only the actions the editor can
+  actually apply are shown: this server sends its quick fixes with a standard edit
+  and its refactorings with a TypeScript-only command, and an entry that does nothing
+  when picked is worse than one that is not there.
 - **Go to definition, and find all references.** Both come from the language
   server, and both can land in a file you do not have open: Monaco can only navigate
   within the file it is already showing, so the jump is handed to the workbench,
