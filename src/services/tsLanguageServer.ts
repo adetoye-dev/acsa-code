@@ -1090,8 +1090,11 @@ export async function startLanguageServer(
 
   setState({ status: "running" });
 
-  // Hand the diagnostics over. Only now, with the server answering: turning the
-  // worker off before this would leave the editor with no type checking at all.
+  // Belt and braces, and only effective while Monaco's TypeScript mode has not been
+  // set up yet (an empty project, or a server that came up before the first file was
+  // opened). The load-bearing call is in the editor's `beforeMount` — see
+  // `languageServerWillRun` — because `tsMode.js` reads the mode configuration once
+  // and never again, so a later change leaves the worker answering alongside this.
   setWorkerFeaturesEnabled(monaco, false);
   clearWorkerMarkers(monaco);
 }
@@ -1106,8 +1109,10 @@ export async function stopLanguageServer(): Promise<void> {
   for (const disposable of current.disposables) disposable.dispose();
   for (const unlisten of current.unlisten) unlisten();
   clearServerMarkers(current);
-  // The worker gets its diagnostics back, so a stopped server is never a silently
-  // unchecked editor.
+  // Same caveat as above: this restores the worker only if it had not been set up
+  // with its providers declined. Where it had, the badge is what tells the reader
+  // that nothing is checking: it names the failure rather than leaving the editor
+  // looking merely quiet.
   setWorkerFeaturesEnabled(current.monaco, true);
   setState({ status: "off", typescript: "", detail: "" });
 

@@ -88,7 +88,36 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
    * not run `scripts/fetch_lsp_sidecar.sh` — the difference is invisible from here.
    */
   const [languageServer, setLanguageServer] = useState(languageServerState);
-  useEffect(() => subscribeLanguageServer(setLanguageServer), []);
+  /**
+   * "TS ready" is a confirmation, not a fixture.
+   *
+   * It is worth saying once — the reader has no other way to know which engine is
+   * checking — and not worth keeping on the page afterwards, which is what it was
+   * doing: a permanent label in the corner of every file. Only the states that need
+   * something stay: starting, unavailable, failed.
+   */
+  const [showLanguageServer, setShowLanguageServer] = useState(
+    () => languageServerState().status !== "off",
+  );
+  useEffect(() => {
+    let hide: ReturnType<typeof setTimeout> | null = null;
+    const apply = (next: ReturnType<typeof languageServerState>) => {
+      setLanguageServer(next);
+      if (hide) clearTimeout(hide);
+      if (next.status === "running") {
+        setShowLanguageServer(true);
+        hide = setTimeout(() => setShowLanguageServer(false), 6000);
+      } else {
+        setShowLanguageServer(next.status !== "off");
+      }
+    };
+    apply(languageServerState());
+    const unsubscribe = subscribeLanguageServer(apply);
+    return () => {
+      if (hide) clearTimeout(hide);
+      unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
     settingsRef.current = aiSettings;
@@ -1012,7 +1041,7 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
       </div>
 
       {/* ── Which TypeScript is checking this file ────────────────── */}
-      {languageServer.status !== "off" && (
+      {showLanguageServer && languageServer.status !== "off" && (
         <div
           data-testid="language-server-status"
           title={

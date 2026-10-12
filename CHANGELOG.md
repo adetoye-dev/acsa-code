@@ -17,6 +17,22 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.38] - 2026-10-13
+
+### Fixed
+
+- **One answer per hover, not two.** Monaco's TypeScript worker registers its own
+  completion, hover and diagnostic providers *once* — when the first TypeScript model
+  appears — and reads its mode configuration at that moment only; changing it
+  afterwards changes a stored value and nothing else. So declining the worker when the
+  language server came up declined nothing, and both compilers went on answering:
+  every hover line appeared twice, one from each, and they disagreed — `JSX.Element`
+  beside `React.JSX.Element`, `any` beside `string`. Whether the worker is needed is
+  now decided before that first model exists.
+- **"TS ready" was a permanent label** in the corner of every file. It is a
+  confirmation, not a fixture: it appears for a few seconds and gets out of the way.
+  Only the states that need something — starting, unavailable, failed — stay.
+
 ## [0.2.37] - 2026-10-12
 
 ### Fixed
@@ -890,7 +906,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.37...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.38...dev
+[0.2.38]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.37...v0.2.38
 [0.2.37]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.36...v0.2.37
 [0.2.36]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.35...v0.2.36
 [0.2.35]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.34...v0.2.35

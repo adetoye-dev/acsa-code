@@ -2733,6 +2733,20 @@ fn resolve_lsp_toolchain(resource_dir: Option<&Path>) -> Option<(PathBuf, PathBu
     })
 }
 
+/// Whether the language server toolchain is installed, without starting it.
+///
+/// The editor needs this *before* Monaco's TypeScript mode is set up, because that
+/// is the only moment its own providers can be declined: `tsMode.js` calls
+/// `registerProviders()` once, when the first TypeScript model appears, and reads
+/// the mode configuration then. `setModeConfiguration` afterwards changes the stored
+/// value and nothing else — which is how the worker's hover and completions ended up
+/// answering alongside the server's, one type per provider, doubled.
+#[tauri::command]
+fn lsp_available(app_handle: tauri::AppHandle) -> bool {
+    let resource_dir = app_handle.path().resource_dir().ok();
+    resolve_lsp_toolchain(resource_dir.as_deref()).is_some()
+}
+
 /// One running language server, and the pipe to talk to it.
 ///
 /// The framing is LSP's (`Content-Length: N\r\n\r\n{json}`), and it is parsed
@@ -4572,6 +4586,7 @@ fn main() {
             secrets_delete,
             secrets_list,
             agent_stop,
+            lsp_available,
             lsp_start,
             lsp_send,
             lsp_stop,

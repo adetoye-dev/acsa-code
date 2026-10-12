@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const invokes: Array<{ command: string; args: Record<string, any> }> = [];
 const handlers = new Map<string, (event: { payload: any }) => void>();
 let startFails: string | null = null;
+const toolchainPresent = true;
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: async (command: string, args: Record<string, any>) => {
@@ -15,6 +16,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       if (startFails) throw new Error(startFails);
       return 7;
     }
+    if (command === "lsp_available") return toolchainPresent;
     return undefined;
   },
 }));
@@ -935,3 +937,4 @@ describe("a language server that dies", () => {
     expect(server.languageServerState().status).toBe("starting");
   });
 });
+

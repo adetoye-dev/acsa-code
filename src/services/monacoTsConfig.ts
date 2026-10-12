@@ -26,6 +26,7 @@
  */
 
 import { readTextFile } from "./fileAccess";
+import { languageServerWillRun } from "./languageServerAvailability";
 
 /** Declaration files Monaco cannot discover but that real code depends on. */
 const EXTRA_LIBS = [
@@ -158,6 +159,12 @@ export function configureMonacoTypeScript(monaco: any, projectRoot = ""): void {
   // The subpaths resolve now — the mirror registers the project's `@types` and its
   // packages — so the real declarations are what the worker sees. `EXTRA_LIBS`
   // above still names them for the case where nothing else has.
+
+  // The worker's own providers, declined when a language server will answer. It has
+  // to be decided here and not when the server comes up: Monaco registers them once,
+  // when the first TypeScript model appears, and reads the mode configuration at
+  // that moment only. Read `languageServerAvailability` before moving this.
+  setWorkerFeaturesEnabled(monaco, !languageServerWillRun());
 
   void loadAmbientTypes(typescript, projectRoot);
 }
