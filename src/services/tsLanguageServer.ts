@@ -21,6 +21,7 @@
 
 import type * as MonacoType from "monaco-editor";
 import { setWorkerFeaturesEnabled } from "./monacoTsConfig";
+import { readTextFile, writeTextFile } from "./fileAccess";
 
 export type LanguageServerStatus = "off" | "starting" | "running" | "unavailable" | "failed";
 
@@ -480,7 +481,66 @@ export function toMonacoLocations(monaco: typeof MonacoType, result: any): any[]
     .filter(Boolean);
 }
 
-/** Monaco's range as LSP's — the other direction, for a request's parameters. */
+/** A document's text, split for offset arithmetic. Kept simple: LSP counts in UTF-16. */
+function offsetAt(text: string, position: { line: number; character: number }): number {
+  const lines = text.split("\n");
+  let offset = 0;
+  for (let index = 0; index < position.line && index < lines.length; index++) {
+    offset += lines[index].length + 1;
+  }
+  return Math.min(text.length, offset + position.character);
+}
+
+/**
+ * Apply LSP text edits to one file's text.
+ *
+ * **Last edit first.** Every range in the edit is expressed against the document as
+ * it was when the server read it, so applying them in the order they arrived shifts
+ * the positions of the ones after each change — which is how a rename produces
+ * mangled code rather than an error.
+ */
+export function applyTextEdits(
+  text: string,
+  edits: ReadonlyArray<{ range: any; newText: string }>,
+): string {
+  const ordered = [...edits]
+    .map((edit) => ({
+      start: offsetAt(text, edit.range.start),
+      end: offsetAt(text, edit.range.end),
+      newText: edit.newText,
+    }))
+    .sort((a, b) => b.start - a.start);
+
+  let result = text;
+  for (const edit of ordered) {
+    result = result.slice(0, edit.start) + edit.newText + result.slice(edit.end);
+  }
+  return result;
+}
+
+/** An LSP workspace edit, grouped by the file it changes. */
+export function workspaceEditByFile(
+  edit: any,
+): Map<string, Array<{ range: any; newText: string }>> {
+  const byFile = new Map<string, Array<{ range: any; newText: string }>>();
+  const add = (uri: string, textEdit: any) => {
+    if (!uri || !textEdit?.range) return;
+    const list = byFile.get(uri) ?? [];
+    list.push({ range: textEdit.range, newText: String(textEdit.newText ?? "") });
+    byFile.set(uri, list);
+  };
+
+  for (const [uri, edits] of Object.entries(edit?.changes ?? {})) {
+    for (const textEdit of edits as any[]) add(uri, textEdit);
+  }
+  for (const change of edit?.documentChanges ?? []) {
+    if (!change?.textDocument || !Array.isArray(change.edits)) continue;
+    for (const textEdit of change.edits) add(change.textDocument.uri, textEdit);
+  }
+  return byFile;
+}
+
+/** Monaco's range as LSP's — the other direction, for a request's parameters. *//** Monaco's range as LSP's — the other direction, for a request's parameters. */
 function toLspRange(range: any): any {
   return {
     start: { line: range.startLineNumber - 1, character: range.startColumn - 1 },
@@ -577,7 +637,40 @@ export function toMonacoCodeActions(monaco: typeof MonacoType, result: any): any
     .filter(Boolean);
 }
 
-/** Hover text, in whatever shape the protocol used, as markdown. *//** Hover text, in whatever shape the protocol used, as markdown. */
+/**
+ * Signature help, as Monaco's.
+ *
+ * The two shapes are the same idea and nearly the same fields: `parameter.label` is
+ * either the parameter's own text or `[start, end]` offsets into the signature's
+ * label, and Monaco takes exactly that. `activeParameter` may be given per signature
+ * (LSP 3.16) or once for the whole answer, so both are accepted — a server that
+ * reports it per signature is telling you which parameter of *that* overload is
+ * current, and ignoring it highlights the wrong one in every overload but the first.
+ */
+export function toMonacoSignatureHelp(result: any): any {
+  const signatures = (result?.signatures ?? []).map((signature: any) => ({
+    label: String(signature.label ?? ""),
+    ...(documentationText(signature.documentation)
+      ? { documentation: { value: documentationText(signature.documentation) } }
+      : {}),
+    parameters: (signature.parameters ?? []).map((parameter: any) => ({
+      label: Array.isArray(parameter.label) ? parameter.label : String(parameter.label ?? ""),
+      ...(documentationText(parameter.documentation)
+        ? { documentation: { value: documentationText(parameter.documentation) } }
+        : {}),
+    })),
+  }));
+
+  const activeSignature = result?.activeSignature ?? 0;
+  return {
+    signatures,
+    activeSignature,
+    activeParameter:
+      result?.signatures?.[activeSignature]?.activeParameter ?? result?.activeParameter ?? 0,
+  };
+}
+
+/** Hover text, in whatever shape the protocol used, as markdown. */
 export function toHoverMarkdown(contents: any): string {
   if (!contents) return "";
   if (typeof contents === "string") return contents;
@@ -614,6 +707,66 @@ function registerProviders(current: Session, capabilities: any): void {
 
   current.disposables.push(
     // Cross-file navigation, which Monaco cannot do on its own here.
+    monaco.languages.registerSignatureHelpProvider(languages, {
+      // The server's own characters, so a signature appears at the moment it types
+      // `(` rather than the moment it finishes thinking.
+      signatureHelpTriggerCharacters: capabilities?.signatureHelpProvider?.triggerCharacters ?? ["(", ","],
+      signatureHelpRetriggerCharacters: capabilities?.signatureHelpProvider?.retriggerCharacters ?? [],
+      provideSignatureHelp: async (model, position) => {
+        const result = await request(current, "textDocument/signatureHelp", {
+          textDocument: { uri: documentUri(model) },
+          position: { line: position.lineNumber - 1, character: position.column - 1 },
+        });
+        if (!result?.signatures?.length) return null;
+        return { value: toMonacoSignatureHelp(result), dispose: () => {} };
+      },
+    }),
+    monaco.languages.registerRenameProvider(languages, {
+      resolveRenameLocation: async (model, position) => {
+        const result = await request(current, "textDocument/prepareRename", {
+          textDocument: { uri: documentUri(model) },
+          position: { line: position.lineNumber - 1, character: position.column - 1 },
+        });
+        // `null` means "this is not a symbol": the editor should say so on the spot
+        // rather than open a box and refuse afterwards.
+        if (!result || result.rejectReason) {
+          return {
+            range: { startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 1 },
+            text: "",
+            rejectReason: String(result?.rejectReason ?? "Nothing to rename here."),
+          };
+        }
+        const range = toMonacoRange(result.range ?? { start: result.start, end: result.end });
+        // Monaco seeds the rename box with this, so it is the name as it stands —
+        // the server's `placeholder` when it sends one, the text otherwise.
+        return { range, text: String(result.placeholder ?? model.getValueInRange(range)) };
+      },
+      provideRenameEdits: async (model, position, newName) => {
+        const result = await request(current, "textDocument/rename", {
+          textDocument: { uri: documentUri(model) },
+          position: { line: position.lineNumber - 1, character: position.column - 1 },
+          newName,
+        });
+        if (!result) return { edits: [], rejectReason: "The language server offered no rename here." };
+
+        const byFile = workspaceEditByFile(result);
+        const closed = [...byFile]
+          .filter(([uri]) => !modelForPath(current, uriToPath(uri)))
+          .map(([uri, edits]) => ({ path: uriToPath(uri), edits }));
+
+        // A rename that spans files the editor is not showing cannot be handed to
+        // Monaco: `applyEdits` has no model for them and drops them, which renames
+        // the symbol in the open files and leaves the rest disagreeing — broken code
+        // that reports success. So the closed files are written here first, and
+        // Monaco gets the open ones only if every one of them succeeded.
+        if (closed.length > 0) {
+          const failure = await writeClosedFileEdits(current, closed);
+          if (failure) return { edits: [], rejectReason: failure };
+        }
+
+        return openFileEdits(current, byFile);
+      },
+    }),
     monaco.languages.registerCodeActionProvider(
       languages,
       {
@@ -747,6 +900,63 @@ function registerProviders(current: Session, capabilities: any): void {
       },
     }),
   );
+}
+
+/** The edits for the files the editor is showing, in Monaco's shape. */
+function openFileEdits(
+  current: Session,
+  byFile: Map<string, Array<{ range: any; newText: string }>>,
+): any {
+  const edits: any[] = [];
+  for (const [uri, list] of byFile) {
+    const open = modelForPath(current, uriToPath(uri));
+    if (!open) continue;
+    for (const edit of list) {
+      edits.push({
+        resource: open.uri,
+        // The model's version, so Monaco refuses an edit computed against text
+        // that has moved on since.
+        versionId: open.getVersionId(),
+        textEdit: { range: toMonacoRange(edit.range), text: edit.newText },
+      });
+    }
+  }
+  return { edits };
+}
+
+/**
+ * Apply a workspace edit to files that are not open.
+ *
+ * Written through the same file access the editor's saves use, and rolled back if
+ * any file fails: a rename that lands in four files out of five is worse than one
+ * that does not happen, because nothing about the result says it was partial.
+ */
+async function writeClosedFileEdits(
+  current: Session,
+  files: Array<{ path: string; edits: Array<{ range: any; newText: string }> }>,
+): Promise<string | null> {
+  const written: Array<{ path: string; original: string }> = [];
+  for (const file of files) {
+    try {
+      const original = await readTextFile(file.path, current.projectRoot);
+      const next = applyTextEdits(original, file.edits);
+      if (next === original) continue;
+      await writeTextFile(file.path, next, current.projectRoot);
+      written.push({ path: file.path, original });
+    } catch (error) {
+      for (const undo of written) {
+        try {
+          await writeTextFile(undo.path, undo.original, current.projectRoot);
+        } catch {
+          // Nothing further to try; the message below says nothing was changed.
+        }
+      }
+      const name = file.path.split(/[/\\]/).pop() ?? file.path;
+      const detail = String((error as Error)?.message ?? error);
+      return `This rename also changes ${files.length} file(s) that are not open, and ${name} could not be written (${detail}). Nothing was changed.`;
+    }
+  }
+  return null;
 }
 
 /** Start a session for a project, or leave the running one alone. */

@@ -26,6 +26,19 @@ vi.mock("@tauri-apps/api/event", () => ({
   },
 }));
 
+const fileWrites: Array<{ path: string; content: string }> = [];
+const fileReads: Record<string, string> = {};
+vi.mock("./fileAccess", () => ({
+  readTextFile: async (path: string) => {
+    if (!(path in fileReads)) throw new Error("no such file");
+    return fileReads[path];
+  },
+  writeTextFile: async (path: string, content: string) => {
+    fileWrites.push({ path, content });
+    fileReads[path] = content;
+  },
+}));
+
 const workerDiagnostics: boolean[] = [];
 vi.mock("./monacoTsConfig", () => ({
   setWorkerFeaturesEnabled: (_monaco: unknown, enabled: boolean) => workerDiagnostics.push(enabled),
@@ -98,6 +111,16 @@ function makeMonaco(models: any[]) {
         providers.push(entry);
         return { dispose: () => (entry.disposed = true) };
       },
+      registerSignatureHelpProvider: (langs: string[], provider: any) => {
+        const entry = { kind: "signature", languages: langs, provider, disposed: false };
+        providers.push(entry);
+        return { dispose: () => (entry.disposed = true) };
+      },
+      registerRenameProvider: (langs: string[], provider: any) => {
+        const entry = { kind: "rename", languages: langs, provider, disposed: false };
+        providers.push(entry);
+        return { dispose: () => (entry.disposed = true) };
+      },
       registerCodeActionProvider: (langs: string[], provider: any, _meta: any) => {
         const entry = { kind: "codeAction", languages: langs, provider, disposed: false };
         providers.push(entry);
@@ -159,6 +182,8 @@ const FILE = `${ROOT}/src/app.ts`;
 beforeEach(() => {
   invokes.length = 0;
   workerDiagnostics.length = 0;
+  fileWrites.length = 0;
+  for (const key of Object.keys(fileReads)) delete fileReads[key];
   handlers.clear();
   startFails = null;
 });
@@ -743,5 +768,124 @@ describe("quick fixes", () => {
     // edit is worse than not offering it.
     expect(server.toMonacoWorkspaceEdit(monaco, { documentChanges: [{ kind: "create", uri: "file:///new.ts" }] })).toBeUndefined();
     expect(server.toMonacoWorkspaceEdit(monaco, {})).toBeUndefined();
+  });
+});
+
+describe("rename, which must not half-apply", () => {
+  it("applies the last edit first, because every range is against the old text", () => {
+    // Two edits on one line: applying the left one first shifts the right one by a
+    // character and the result is mangled code rather than an error.
+    const text = "const alt = value; use(alt, alt);\n";
+    const edits = [
+      { range: { start: { line: 0, character: 6 }, end: { line: 0, character: 9 } }, newText: "renamed" },
+      { range: { start: { line: 0, character: 23 }, end: { line: 0, character: 26 } }, newText: "renamed" },
+    ];
+    expect(server.applyTextEdits(text, edits)).toBe("const renamed = value; use(renamed, alt);\n");
+    expect(server.applyTextEdits(text, [...edits, { range: { start: { line: 0, character: 28 }, end: { line: 0, character: 31 } }, newText: "renamed" }]))
+      .toBe("const renamed = value; use(renamed, renamed);\n");
+  });
+
+  async function renaming(result: any) {
+    const model = makeModel(FILE, "const alt = value;\n");
+    const monaco = makeMonaco([model]);
+    const starting = server.startLanguageServer(monaco, ROOT);
+    await vi.waitFor(() => expect(sent().some((m) => m.method === "initialize")).toBe(true));
+    deliver({ jsonrpc: "2.0", id: sent().find((m) => m.method === "initialize").id, result: { capabilities: {} } });
+    await starting;
+    await sentMethod("textDocument/didOpen");
+
+    const provider = monaco.providers.find((p: any) => p.kind === "rename");
+    const pending = provider.provider.provideRenameEdits(model, { lineNumber: 1, column: 7 }, "renamed");
+    let id: number | undefined;
+    await vi.waitFor(() => {
+      id = sent().find((m) => m.method === "textDocument/rename")?.id;
+      expect(id).toBeDefined();
+    });
+    expect(sent().find((m) => m.method === "textDocument/rename").params.newName).toBe("renamed");
+    deliver({ jsonrpc: "2.0", id, result });
+    return pending;
+  }
+
+  it("writes the files it cannot show, and hands the open one to Monaco", async () => {
+    const closed = `${ROOT}/src/other.ts`;
+    fileReads[closed] = "import { alt } from './lib';\n";
+
+    const outcome = await renaming({
+      changes: {
+        [`file://${FILE}`]: [{ range: { start: { line: 0, character: 6 }, end: { line: 0, character: 9 } }, newText: "renamed" }],
+        [`file://${closed}`]: [{ range: { start: { line: 0, character: 9 }, end: { line: 0, character: 12 } }, newText: "renamed" }],
+      },
+    });
+
+    // The closed file is on disk now, which Monaco could never have done.
+    expect(fileWrites).toEqual([{ path: closed, content: "import { renamed } from './lib';\n" }]);
+    // And only the open file comes back, named by its own model's URI.
+    expect(outcome.edits).toHaveLength(1);
+    expect(outcome.edits[0].resource.toString()).toBe(FILE);
+    expect(outcome.rejectReason).toBeUndefined();
+  });
+
+  it("changes nothing at all when a file it cannot show cannot be written", async () => {
+    const model = makeModel(FILE, "const alt = value;\n");
+    const monaco = makeMonaco([model]);
+    const starting = server.startLanguageServer(monaco, ROOT);
+    await vi.waitFor(() => expect(sent().some((m) => m.method === "initialize")).toBe(true));
+    deliver({ jsonrpc: "2.0", id: sent().find((m) => m.method === "initialize").id, result: { capabilities: {} } });
+    await starting;
+    await sentMethod("textDocument/didOpen");
+
+    // One file writes, the next does not exist.
+    const writable = `${ROOT}/src/a.ts`;
+    const missing = `${ROOT}/src/gone.ts`;
+    fileReads[writable] = "alt;\n";
+
+    const provider = monaco.providers.find((p: any) => p.kind === "rename");
+    const pending = provider.provider.provideRenameEdits(model, { lineNumber: 1, column: 7 }, "renamed");
+    let id: number | undefined;
+    await vi.waitFor(() => {
+      id = sent().find((m) => m.method === "textDocument/rename")?.id;
+      expect(id).toBeDefined();
+    });
+    deliver({
+      jsonrpc: "2.0",
+      id,
+      result: {
+        changes: {
+          [`file://${FILE}`]: [],
+          [`file://${writable}`]: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } }, newText: "renamed" }],
+          [`file://${missing}`]: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } }, newText: "renamed" }],
+        },
+      },
+    });
+
+    const outcome = await pending;
+    // The open file is NOT renamed — Monaco is given nothing to apply.
+    expect(outcome.edits).toEqual([]);
+    expect(outcome.rejectReason).toContain("Nothing was changed");
+    // And the file that did write was put back: a rename in some files and not
+    // others is broken code that reports success.
+    expect(fileWrites.at(-1)).toEqual({ path: writable, content: "alt;\n" });
+  });
+});
+
+describe("signature help", () => {
+  it("passes both label shapes through, and the parameter of the overload in play", () => {
+    const help = server.toMonacoSignatureHelp({
+      signatures: [
+        {
+          label: "greetName(who: string, loudly?: boolean): string",
+          parameters: [{ label: [10, 21] }, { label: "loudly?: boolean" }],
+          activeParameter: 1,
+        },
+      ],
+      activeSignature: 0,
+    });
+
+    expect(help.signatures[0].parameters[0].label).toEqual([10, 21]);
+    expect(help.signatures[0].parameters[1].label).toBe("loudly?: boolean");
+    // Per signature, which is what the server sends: taking the answer-level value
+    // would highlight the first parameter of every overload but the one in play.
+    expect(help.activeParameter).toBe(1);
+    expect(help.activeSignature).toBe(0);
   });
 });

@@ -132,6 +132,26 @@ node scripts/check_lsp.mjs     # speaks LSP to a scratch project; exits 0 if the
 resolves, a type error is reported at the right line with the compiler's own code,
 and a completion offers the symbol behind the aliased import.
 
+## Rename writes the files the editor cannot show
+
+A rename is a workspace edit, and a symbol is usually used in files that are not
+open. Monaco applies a workspace edit through `applyEdits`, which has no model for a
+file it is not showing and **drops those edits** — so the rename would land in the
+open files, not in the rest, and report success. Broken code that says it worked is
+the worst outcome available, so the split is explicit:
+
+* files the editor is showing → handed to Monaco (undo, dirty markers, and its own
+  version check);
+* files it is not → read, edited, and written through the same file access the
+  editor's saves use, **before** Monaco is given anything. If any of those writes
+  fails, the ones already written are put back and the rename is refused with a
+  reason, so the result is all or nothing.
+
+Two conversions that had to be right for it to work at all: edits are applied
+**last-first**, because every range is expressed against the text as it was; and
+`resolveRenameLocation` returns `{ range, text }` — `text`, not `placeholder`, since
+that is what Monaco seeds the rename box with.
+
 ## Code actions: only the applicable ones
 
 Measured, typescript-language-server sends its **quick fixes** with a standard

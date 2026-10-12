@@ -49,6 +49,12 @@ for them, not which file moved.
   existed only to feed it. Note the honest half: with no server, the worker has no
   project files any more, so the fallback reports syntax and the bundled libraries
   and little else — which is why the editor says which engine is checking.
+- **Rename a symbol, across the files that use it.** Files you have open are renamed
+  through the editor like any edit; files you do not are read, changed and written
+  before the editor is given anything — and put back if any of them fails, so a
+  rename is all or nothing rather than half-applied with success reported.
+- **Signature help** at `(` and `,`, including which parameter of which overload is
+  in play.
 - **Quick fixes.** The lightbulb offers what the language server can fix at the
   cursor — "Update import from …", "Remove unused declaration", the standard range
   it sends for each — and applies it as one edit. Only the actions the editor can
