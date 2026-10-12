@@ -180,10 +180,17 @@ jobs:
       - name: Fetch the Codex agent runtime
         run: scripts/fetch_codex_sidecar.sh
 
+      # The TypeScript language server, by the same rule as the two above: it is
+      # gitignored build output that `bundle.resources` names, and the app bundles
+      # its own Node with it.
+      - name: Fetch the language server toolchain
+        run: scripts/fetch_lsp_sidecar.sh
+
       # `tauri::generate_context!()` is a proc macro with opinions, and each of
       # these three was a separate failed run to discover:
-      #   * every `bundle.resources` path must exist — `engine/` (Python freeze)
-      #     and `engine-codex/` (Codex fetch) are gitignored build output;
+      #   * every `bundle.resources` path must exist — `engine/` (Python freeze),
+      #     `engine-codex/` (Codex fetch) and `lsp/` (language server) are all
+      #     gitignored build output;
       #   * `frontendDist` must exist — hence the build below, which the bundle
       #     would otherwise be the first thing to create.
       # So: build everything the config references, and only then compile tests.

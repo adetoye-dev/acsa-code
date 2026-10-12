@@ -74,6 +74,12 @@ jobs:
       - name: Fetch the Codex agent runtime
         run: scripts/fetch_codex_sidecar.sh
 
+      # The TypeScript language server, by the same rule as the two above: it is
+      # gitignored build output that `bundle.resources` names, and the app bundles
+      # its own Node with it.
+      - name: Fetch the language server toolchain
+        run: scripts/fetch_lsp_sidecar.sh
+
       - name: Warn when signing is not configured
         if: env.APPLE_CERTIFICATE == ''
         run: |
