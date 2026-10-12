@@ -17,6 +17,8 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.35] - 2026-10-12
+
 ### Fixed
 
 - **Aliased imports resolve, and so do packages whose types are `.d.mts`.** Two
@@ -771,7 +773,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.34...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.35...dev
+[0.2.35]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.34...v0.2.35
 [0.2.34]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.33...v0.2.34
 [0.2.33]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.32...v0.2.33
 [0.2.32]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.31...v0.2.32
