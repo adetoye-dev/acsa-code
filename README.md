@@ -84,6 +84,13 @@ edit/review flow over the selection: ask for a change and it comes back as a dif
 accept or reject. A whole-file review lands as comments anchored to the lines they
 are about.
 
+**Finish the line you are on.** AI ghost text appears in the editor as you pause:
+`Tab` takes the suggestion, `⌘→` takes one word, `Esc` dismisses it. It is written by
+a local model that can fill in the middle — free, and nothing leaves the machine — or
+by the provider you have configured, and the prompt carries the top of the file so it
+uses your own types rather than inventing fields. Settings → Editor → Code Style
+turns it off and names the model doing it.
+
 **Install tools, skills and MCP servers.** The **Marketplace** installs real MCP
 servers and skills into your project and hands them to the agent — skills you install
 are mirrored into the runtime's own home, so it uses them. Your existing skills under
