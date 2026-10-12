@@ -49,8 +49,15 @@ updates:
       # exist in 22.
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
-      # React 19. react-dom 19 and its types will not resolve against react 18, so this
-      # is the React upgrade rather than a bump.
+      # React 19, and all four names it takes. Only react-dom and its types were
+      # listed, so Dependabot kept opening the other half — `react` 19 against
+      # `react-dom` 18 — which cannot resolve and could not have been merged: a
+      # permanently red pull request produced by our own ignore list. They move
+      # together or not at all.
+      - dependency-name: "react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/react"
+        update-types: ["version-update:semver-major"]
       - dependency-name: "react-dom"
         update-types: ["version-update:semver-major"]
       - dependency-name: "@types/react-dom"
