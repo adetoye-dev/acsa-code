@@ -15,6 +15,7 @@ const MIGRATED: Record<string, string> = {
   "test-connection": "test-connection",
   "review-file": "review-file",
   "inline-edit": "inline-edit",
+  "complete": "complete",
   "usage": "usage",
 };
 

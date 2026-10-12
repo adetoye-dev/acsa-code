@@ -593,7 +593,15 @@ export function setDefaultProvider(providerId: AIProviderId): Record<AIProviderI
 
 export function getDefaultProvider(): AIProviderConfig {
   const all = loadAllProviders();
-  const defaultId = (localStorage.getItem(DEFAULT_PROVIDER_KEY) || "ollama") as AIProviderId;
+  // Guarded like every other read of this key: a missing `localStorage` (the node
+  // test runner, a webview with storage disabled) used to throw here rather than
+  // fall back, and this is on the path that every editor AI call resolves.
+  let defaultId: AIProviderId = "ollama";
+  try {
+    defaultId = ((localStorage.getItem(DEFAULT_PROVIDER_KEY) as AIProviderId) || "ollama");
+  } catch {
+    /* no storage: the first provider in the registry is the default */
+  }
   return all[defaultId] || all.ollama;
 }
 
@@ -604,6 +612,8 @@ export interface EditorAiConfig {
   baseUrl: string;
   /** Where the config came from — surfaced so a local fallback is never silent. */
   source: "selected" | "configured" | "settings" | "local";
+  /** Carried through for completions only; absent means on. See `aiAutocomplete`. */
+  inlineCompletion?: boolean;
 }
 
 /**
@@ -634,12 +644,26 @@ export function resolveEditorAiConfig(
   const s = settings || {};
   const all = loadAllProviders() as Record<string, AIProviderConfig>;
   const hasUsableKey = (key?: string) => Boolean(key && key.trim().length > 3);
+  /**
+   * A cloud provider is usable when it is *connected*, not when it carries a key.
+   *
+   * `apiKey` is empty by design — credentials are write-only across the API and
+   * the engine resolves them server-side — so gating on it here meant steps 1 and
+   * 2 could never fire. Every review and inline edit therefore fell through to the
+   * local worker however the user had configured their providers, which is the
+   * failure `getConfiguredModelsList` documents fixing for the model list and this
+   * one still had. Local providers keep the key test: a local model needs no key,
+   * and treating "connected" as a yes here would override a configured cloud
+   * provider with whatever happens to be installed.
+   */
+  const isUsable = (cfg?: AIProviderConfig) =>
+    Boolean(cfg && (cfg.category === "cloud" ? cfg.isConnected : hasUsableKey(cfg.apiKey)));
 
   // 1. The model the user explicitly picked for chat/agent work.
   const active = getActiveSelectedModel();
   if (active) {
     const cfg = all[active.providerId as string];
-    if (hasUsableKey(cfg?.apiKey)) {
+    if (isUsable(cfg)) {
       return {
         provider: active.providerId,
         model: pickFastVariant(cfg.availableModels || [], active.model),
@@ -650,11 +674,11 @@ export function resolveEditorAiConfig(
     }
   }
 
-  // 2. Any configured cloud provider with a usable key (default first).
+  // 2. Any configured cloud provider (default first).
   const preferred = getDefaultProvider();
   const candidates = [preferred, ...Object.values(all)];
   for (const cfg of candidates) {
-    if (cfg && cfg.category === "cloud" && hasUsableKey(cfg.apiKey)) {
+    if (cfg && cfg.category === "cloud" && cfg.isConnected) {
       return {
         provider: cfg.id,
         model: pickFastVariant(cfg.availableModels || [], cfg.selectedModel || ""),
@@ -684,6 +708,43 @@ export function resolveEditorAiConfig(
     baseUrl: "",
     source: "local",
   };
+}
+
+/**
+ * The config inline completions should use.
+ *
+ * Local first, and not as a fallback: ghost text fires on every pause in typing,
+ * which is the one place a cloud bill appears without the reader ever asking for
+ * it. A local model that can fill in the middle is free, private, and measured at
+ * ~1.15s warm for 24 tokens, so it is used whenever one is installed. The cloud
+ * path stays for machines that have no such model — there, the ordinary resolution
+ * applies, and completions are an ordinary chat call to the configured provider.
+ *
+ * "Can fill in the middle" is the one thing completions need that review does not:
+ * a model with no FIM template answers 400 and produces no ghost text at all,
+ * which reads as a broken feature rather than an incapable model.
+ */
+export function resolveCompletionAiConfig(
+  settings?: Partial<EditorAiConfig> | null
+): EditorAiConfig {
+  // Carried across the resolution: the switch has to survive the walk in order to
+  // reach the code that would spend the tokens.
+  const choice = { inlineCompletion: settings?.inlineCompletion };
+
+  const all = loadAllProviders();
+  const insertionModel = autoSelectInsertionModel(all.ollama?.availableModels || []);
+  if (insertionModel) {
+    return {
+      provider: "ollama",
+      model: insertionModel,
+      apiKey: "",
+      baseUrl: all.ollama?.baseUrl || "",
+      source: "local",
+      ...choice,
+    };
+  }
+
+  return { ...resolveEditorAiConfig(settings), ...choice };
 }
 
 export const LOCAL_WORKER_KEY = "acsa_local_worker_model";
@@ -766,6 +827,35 @@ export function getAutoSelectedLocalWorker(): string {
     if (best) return best;
   }
   return "qwen2.5-coder:7b";
+}
+
+/**
+ * The local model to write inline completions with.
+ *
+ * Completions are fill-in-the-middle, so the model needs a FIM template, and
+ * Ollama reports exactly that as the `insert` capability. It is not the same
+ * question as "which model is the best worker": on the models installed here,
+ * `autoSelectBestLocalWorker` picks qwen3.5:9b (9.7B scores above a 7B on the size
+ * bonus) and qwen3.5:9b has no `insert` — so a completion from it is a 400 and no
+ * ghost text at all. Measured against the daemon, the ranking that picks the
+ * `insert`-capable model is the ranking that produces a completion.
+ *
+ * Unknown capabilities are not a disqualification — the engine has not always
+ * been asked yet, and guessing "cannot" would silently disable the feature.
+ */
+export function autoSelectInsertionModel(installedModels: string[]): string | null {
+  const clean = (installedModels || []).filter(Boolean);
+  if (clean.length === 0) return null;
+
+  const canInsert = clean.filter((m) => {
+    const capabilities = modelCapabilities("ollama", m);
+    return !capabilities || capabilities.includes("insert");
+  });
+  if (canInsert.length === 0) return null;
+
+  const scored = canInsert.map((model) => ({ model, score: scoreLocalModel(model) }));
+  scored.sort((a, b) => b.score - a.score);
+  return scored[0]?.model || canInsert[0];
 }
 
 export function setAutoSelectedLocalWorker(modelName: string): void {

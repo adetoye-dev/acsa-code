@@ -17,6 +17,15 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+### Added
+
+- **Inline AI completions in the editor.** Ghost text appears as you pause, on by
+  default, and can be turned off in Settings → Editor → Code Style, which names
+  the model that will write it. It runs on an installed local model whenever one
+  can fill in the middle (free, private, and ~1.2s warm on a 7B), and otherwise on
+  the configured cloud provider, through the engine — the only side that can see a
+  credential.
+
 ### Fixed
 
 - **The chat scrolls while the agent is streaming.** The follow-the-tail effect

@@ -352,13 +352,36 @@ def _extract_issues(raw: str) -> list[dict]:
     return cleaned
 
 
+def _tidy(text: str, strip: bool) -> str:
+    """Trim a provider's answer, unless the answer's own whitespace is the point."""
+    return (text or "").strip() if strip else (text or "")
+
+
 def _review_completion(
-    provider: str, model: str, base_url: str, api_key: str, system: str, user: str
+    provider: str,
+    model: str,
+    base_url: str,
+    api_key: str,
+    system: str,
+    user: str,
+    max_tokens: int = 1600,
+    strip: bool = True,
 ) -> tuple[bool, str, str, tuple[int, int]]:
     """One non-streaming completion. Returns (ok, text, error, (in_tokens, out_tokens)).
 
     Providers report real token counts on the same response, so metering uses
     them instead of guessing from character counts.
+
+    `max_tokens` is a parameter because the callers want opposite things from it:
+    a review or an inline edit rewrites a region and needs room, while an inline
+    completion is a couple of lines and a generous cap is what turns a suggestion
+    into a patch.
+
+    `strip` is a parameter for the same reason. A review or an edit is a whole
+    block of text and its surrounding whitespace is not part of the answer, but a
+    completion is inserted exactly where the cursor is: the leading space in
+    `" email },"` is the character that keeps `where: {` and `email` apart, and
+    removing it changes the code that gets written.
     """
     timeout = 180.0
     if provider == "ollama":
@@ -372,7 +395,7 @@ def _review_completion(
                     {"role": "user", "content": user},
                 ],
                 "stream": False,
-                "options": {"temperature": 0.1, "num_predict": 1600},
+                "options": {"temperature": 0.1, "num_predict": max_tokens},
             },
             timeout,
         )
@@ -380,7 +403,7 @@ def _review_completion(
             return False, "", body.get("error") or f"Ollama request failed ({status})", (0, 0)
         return (
             True,
-            ((body.get("message") or {}).get("content") or "").strip(),
+            _tidy((body.get("message") or {}).get("content") or "", strip),
             "",
             (int(body.get("prompt_eval_count") or 0), int(body.get("eval_count") or 0)),
         )
@@ -394,7 +417,7 @@ def _review_completion(
             {"Content-Type": "application/json", "x-api-key": api_key, "anthropic-version": "2023-06-01"},
             {
                 "model": model or "claude-3-5-sonnet-latest",
-                "max_tokens": 1600,
+                "max_tokens": max_tokens,
                 "system": system,
                 "messages": [{"role": "user", "content": user}],
             },
@@ -406,7 +429,7 @@ def _review_completion(
         tokens = body.get("usage") or {}
         return (
             True,
-            (content[0].get("text") or "").strip(),
+            _tidy(content[0].get("text") or "", strip),
             "",
             (int(tokens.get("input_tokens") or 0), int(tokens.get("output_tokens") or 0)),
         )
@@ -420,6 +443,7 @@ def _review_completion(
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
+            "max_tokens": max_tokens,
             "temperature": 0.1,
         },
         timeout,
@@ -430,7 +454,7 @@ def _review_completion(
     tokens = body.get("usage") or {}
     return (
         True,
-        ((choices[0].get("message") or {}).get("content") or "").strip(),
+        _tidy((choices[0].get("message") or {}).get("content") or "", strip),
         "",
         (int(tokens.get("prompt_tokens") or 0), int(tokens.get("completion_tokens") or 0)),
     )
@@ -559,6 +583,107 @@ def _sanitize_inline_replacement(replacement: str, selected: str, prefix: str, s
     return {"replacement": replacement, "reason": ""}
 
 
+COMPLETION_SYSTEM_PROMPT = (
+    "You are an inline code autocomplete engine. Complete the code at the cursor. "
+    "Output ONLY the code to insert, and nothing else: no markdown code blocks, no "
+    "explanation, and no repetition of the code that is already written."
+)
+
+#: A couple of lines. The frontend caps the result again; this is what stops the
+#: model producing a patch, which no longer reads as a suggestion.
+COMPLETION_MAX_TOKENS = 24
+
+
+def _ollama_fim(
+    model: str, base_url: str, prefix: str, suffix: str
+) -> tuple[bool, str, str, tuple[int, int]]:
+    """Ask Ollama for a fill-in-the-middle completion.
+
+    `suffix` is the whole point: it is what makes Ollama apply the model's own FIM
+    template, and it is the only prompt shape measured to produce a completion.
+    Hand-rolled `<|fim_prefix|>` tokens came back as a chat reply — a Qwen model
+    echoed the entire prefix inside a ```typescript fence, and a model without a
+    FIM template answered with a paragraph of prose. Both would be typed into the
+    file, so neither is offered.
+
+    `keep_alive` keeps the model resident: a cold load measured 4.4s against ~1.15s
+    warm for 24 tokens, and this runs on every pause in typing.
+
+    An empty suffix is replaced with a newline rather than sent as-is. With nothing
+    after the cursor — the end of the file, the most common place to want a
+    completion — the model leaves FIM mode and answers as a chat bot: measured on
+    three different prefixes it returned prose every time ("It looks like you're
+    trying to find a user in your database using Prisma, but the code snippet you
+    provided is…") and took ~4s. With `"\\n"` the same call returned
+    `"\\n  });\\n}"` in 257ms.
+    """
+    status, body = _post_json(
+        f"{base_url or DEFAULT_BASE_URLS['ollama']}/api/generate",
+        {"Content-Type": "application/json"},
+        {
+            "model": model or "qwen2.5-coder:7b",
+            "prompt": prefix,
+            "suffix": suffix or "\n",
+            "stream": False,
+            "options": {"temperature": 0.1, "num_predict": COMPLETION_MAX_TOKENS},
+            "keep_alive": "30m",
+        },
+        timeout=30.0,
+    )
+    if status != 200:
+        return False, "", body.get("error") or f"Ollama request failed ({status})", (0, 0)
+    return (
+        True,
+        body.get("response") or "",
+        "",
+        (int(body.get("prompt_eval_count") or 0), int(body.get("eval_count") or 0)),
+    )
+
+
+def complete(payload: dict) -> dict:
+    """Fill in the code at the cursor. Returns {ok, completion, reason}.
+
+    Cloud credentials are write-only from the page's point of view — the registry
+    never hands a key back to the renderer — so a completion that went straight
+    from the page to the provider would arrive with no key and quietly do nothing.
+    The key is resolved here, the same way every other provider call resolves it.
+
+    The raw text is returned unsanitized on purpose: `aiAutocomplete.ts` holds the
+    only sanitizer and the tests that pin it, and a second copy here would be a
+    second answer to the same question.
+    """
+    provider = str(payload.get("provider") or "ollama").strip()
+    model = str(payload.get("model") or "").strip()
+    base_url = str(payload.get("baseUrl") or "").rstrip("/")
+    api_key = _resolve_key(provider, str(payload.get("apiKey") or ""))
+    prefix = str(payload.get("prefix") or "")
+    suffix = str(payload.get("suffix") or "")
+
+    started = time.monotonic()
+    if provider == "ollama":
+        ok, raw, error, tokens = _ollama_fim(model, base_url, prefix, suffix)
+    else:
+        user_prompt = f"Prefix:\n{prefix}\n\nSuffix:\n{suffix}\n\nComplete the code:"
+        ok, raw, error, tokens = _review_completion(
+            provider,
+            model,
+            base_url,
+            api_key,
+            COMPLETION_SYSTEM_PROMPT,
+            user_prompt,
+            max_tokens=COMPLETION_MAX_TOKENS,
+            strip=False,
+        )
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    if not ok:
+        return {"ok": False, "completion": "", "reason": error}
+
+    # Metered, like every other provider call: ghost text spends tokens on every
+    # pause, so it belongs in the totals rather than outside them.
+    _record_usage(provider, model, tokens[0], tokens[1], elapsed_ms, payload.get("projectRoot"))
+    return {"ok": True, "completion": raw or "", "reason": ""}
+
+
 def inline_edit(payload: dict) -> dict:
     """Rewrite the selected code and return only the replacement."""
     provider = str(payload.get("provider") or "ollama").strip()
@@ -603,6 +728,7 @@ COMMANDS = {
     "test-connection": test_connection,
     "review-file": review_file,
     "inline-edit": inline_edit,
+    "complete": complete,
     "usage": usage,
 }
 

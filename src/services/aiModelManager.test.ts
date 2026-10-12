@@ -296,3 +296,85 @@ describe("which models can run the agent", () => {
     expect(models.autoSelectBestLocalWorker(["deepseek-coder:6.7b"])).toBe("deepseek-coder:6.7b");
   });
 });
+
+/**
+ * Inline completions are fill-in-the-middle, which is a different question from
+ * "which model is the best worker" — and answering it with the worker's answer is
+ * what makes the feature look broken on a machine where nothing can insert.
+ */
+describe("the model that writes inline completions", () => {
+  beforeEach(async () => {
+    reset();
+    await models.hydrateProviders();
+  });
+
+  it("picks the model that can fill in the middle, not the best worker", () => {
+    models.rememberModelCapabilities("ollama", [
+      { name: "qwen2.5-coder:7b", capabilities: ["completion", "tools", "insert"] },
+      { name: "qwen3.5:9b", capabilities: ["completion", "tools", "thinking"] },
+      { name: "deepseek-coder:6.7b", capabilities: ["completion"] },
+    ]);
+
+    const installed = ["qwen2.5-coder:7b", "qwen3.5:9b", "deepseek-coder:6.7b"];
+    // The worker ranking prefers the 9B on its size bonus, and the 9B has no
+    // `insert`: a completion from it is a 400 and no ghost text at all.
+    expect(models.autoSelectBestLocalWorker(installed)).toBe("qwen3.5:9b");
+    expect(models.autoSelectInsertionModel(installed)).toBe("qwen2.5-coder:7b");
+  });
+
+  it("does not hold unreported capabilities against a model", () => {
+    expect(models.autoSelectInsertionModel(["mystery-coder:latest"])).toBe("mystery-coder:latest");
+  });
+
+  it("names no model rather than guessing when nothing installed can insert", () => {
+    models.rememberModelCapabilities("ollama", [
+      { name: "deepseek-coder:6.7b", capabilities: ["completion"] },
+    ]);
+    expect(models.autoSelectInsertionModel(["deepseek-coder:6.7b"])).toBeNull();
+  });
+
+  it("uses the configured cloud provider when no installed model can insert", async () => {
+    // A machine with cloud configured and nothing local that can fill in the
+    // middle: the ordinary editor-AI resolution applies.
+    models.rememberModelCapabilities("ollama", [
+      { name: "no-insert:latest", capabilities: ["completion"] },
+    ]);
+    rows.ollama.availableModels = ["no-insert:latest"];
+    await models.hydrateProviders();
+
+    const cfg = models.resolveCompletionAiConfig(null);
+    expect(cfg.provider).toBe("deepseek");
+    expect(cfg.source).toBe("configured");
+  });
+
+  it("carries the on/off switch through the resolution", async () => {
+    // The switch is read by the code that would spend the tokens, so it has to
+    // survive the walk that picks the model.
+    models.rememberModelCapabilities("ollama", [
+      { name: "no-insert:latest", capabilities: ["completion"] },
+    ]);
+    rows.ollama.availableModels = ["no-insert:latest"];
+    await models.hydrateProviders();
+
+    const off = models.resolveCompletionAiConfig({
+      provider: "groq",
+      model: "openai/gpt-oss-120b",
+      apiKey: "gsk-abcdef",
+      baseUrl: "https://api.groq.com/openai/v1",
+      inlineCompletion: false,
+    });
+    expect(off.inlineCompletion).toBe(false);
+    // Absent means on — the feature ships enabled.
+    expect(models.resolveCompletionAiConfig(null).inlineCompletion).toBeUndefined();
+  });
+
+  it("gives a local completion a model that can insert", () => {
+    models.rememberModelCapabilities("ollama", [
+      { name: "qwen2.5-coder:7b", capabilities: ["completion", "tools", "insert"] },
+      { name: "qwen3.5:9b", capabilities: ["completion", "tools", "thinking"] },
+    ]);
+    const cfg = models.resolveCompletionAiConfig(null);
+    expect(cfg.source).toBe("local");
+    expect(cfg.model).toBe("qwen2.5-coder:7b");
+  });
+});

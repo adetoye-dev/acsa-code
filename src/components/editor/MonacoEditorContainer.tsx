@@ -26,7 +26,7 @@ import { useRemeasureOnLayout } from "../../hooks/useRemeasureOnLayout";
 import { PANE_EDITOR_OPTIONS } from "../../services/monacoPaneOptions";
 import { syncProjectFiles } from "../../services/monacoProjectFiles";
 import { applyMonacoTheme } from "../../services/themeManager";
-import { getAutoSelectedLocalWorker, resolveEditorAiConfig } from "../../services/aiModelManager";
+import { getAutoSelectedLocalWorker, resolveCompletionAiConfig, resolveEditorAiConfig } from "../../services/aiModelManager";
 import type { AISettings } from "../SettingsModal";
 
 /**
@@ -884,8 +884,10 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
 
     // Register AI Ghost Text Autocomplete
     if (!aiDisposableRef.current) {
+      // Completions resolve their own config: unlike review, they need a model
+      // that can fill in the middle. See `resolveCompletionAiConfig`.
       aiDisposableRef.current = registerAiInlineCompletions(monaco, () =>
-        resolveEditorAiConfig(settingsRef.current)
+        resolveCompletionAiConfig(settingsRef.current)
       );
     }
 

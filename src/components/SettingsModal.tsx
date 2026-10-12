@@ -33,6 +33,7 @@ import {
   type AgentTransport,
 } from "../services/agentApproval";
 import { DEFAULT_TURN_LIMIT_MINUTES, TURN_LIMIT_CHOICES } from "../services/agentTurnLimit";
+import { resolveCompletionAiConfig } from "../services/aiModelManager";
 
 export interface AISettings {
   /**
@@ -51,6 +52,12 @@ export interface AISettings {
   insertSpaces?: boolean;
   wordWrap?: boolean;
   terminalFontSize?: number;
+  /**
+   * Whether the editor offers AI ghost text as you type. On unless turned off:
+   * it spends tokens on every pause, so it must be switchable — but a feature
+   * nobody finds is the one that has to be switched on to cost anything.
+   */
+  inlineCompletion?: boolean;
   /** How much the agent may do unattended. See AGENT_APPROVAL_MODES. */
   approvalMode?: AgentApprovalMode;
   /** Which agent runtime to drive. See AGENT_TRANSPORTS. */
@@ -201,6 +208,7 @@ export function SettingsModal({
   const [tabSize, setTabSize] = useState<number>(2);
   const [insertSpaces, setInsertSpaces] = useState(true);
   const [wordWrap, setWordWrap] = useState(true);
+  const [inlineCompletion, setInlineCompletion] = useState(true);
 
   // Terminal state
   const [terminalFontSize, setTerminalFontSize] = useState(13);
@@ -209,6 +217,21 @@ export function SettingsModal({
   const [approvalMode, setApprovalMode] = useState<AgentApprovalMode>(DEFAULT_AGENT_APPROVAL_MODE);
   const [agentTransport, setAgentTransport] = useState<AgentTransport>(DEFAULT_AGENT_TRANSPORT);
   const [turnLimitMinutes, setTurnLimitMinutes] = useState<number>(DEFAULT_TURN_LIMIT_MINUTES);
+
+  /**
+   * Which model will actually write the ghost text, named rather than implied.
+   *
+   * It is deliberately not the chat model: completions need a model that can fill
+   * in the middle, so the resolver may pick a smaller one. Saying which keeps the
+   * answer to "what is spending my tokens?" in the same place as the switch.
+   */
+  const completionModel = useMemo(() => {
+    try {
+      return resolveCompletionAiConfig(settings).model || "the active model";
+    } catch {
+      return "the active model";
+    }
+  }, [settings]);
 
   // Tree filter logic (unconditional hook)
   const filteredTree = useMemo(() => {
@@ -256,6 +279,7 @@ export function SettingsModal({
     setTabSize(safeSettings.tabSize ?? 2);
     setInsertSpaces(safeSettings.insertSpaces ?? true);
     setWordWrap(safeSettings.wordWrap ?? true);
+    setInlineCompletion(safeSettings.inlineCompletion ?? true);
     setTerminalFontSize(safeSettings.terminalFontSize ?? 13);
     setApprovalMode(
       isAgentApprovalMode(safeSettings.approvalMode)
@@ -366,6 +390,7 @@ export function SettingsModal({
         tabSize,
         insertSpaces,
         wordWrap,
+        inlineCompletion,
         terminalFontSize,
         approvalMode,
         agentTransport,
@@ -387,6 +412,7 @@ export function SettingsModal({
         tabSize,
         insertSpaces,
         wordWrap,
+        inlineCompletion,
         terminalFontSize,
         approvalMode,
         agentTransport,
@@ -988,6 +1014,23 @@ export function SettingsModal({
                         onChange={(e) => setWordWrap(e.target.checked)}
                         className="rounded border-hairline text-purple-400 focus:ring-0"
                       />
+                    </div>
+
+                    <div className="border-t border-hairline pt-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-200">Inline AI Completions</span>
+                        <input
+                          type="checkbox"
+                          checked={inlineCompletion}
+                          onChange={(e) => setInlineCompletion(e.target.checked)}
+                          className="rounded border-hairline text-purple-400 focus:ring-0"
+                        />
+                      </div>
+                      <p className="text-2xs text-zinc-500 mt-1">
+                        {inlineCompletion
+                          ? `Ghost text appears as you pause. Written by ${completionModel}. Turn it off to stop the requests.`
+                          : "Off — no completions are requested, so nothing is spent on them."}
+                      </p>
                     </div>
                   </div>
                 </div>
