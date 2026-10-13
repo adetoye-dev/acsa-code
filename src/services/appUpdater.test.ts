@@ -64,6 +64,90 @@ describe("an install that fails", () => {
   });
 });
 
+describe("one install at a time", () => {
+  beforeEach(() => {
+    (globalThis as any).localStorage = new FakeStorage();
+  });
+
+  /**
+   * Reported from use as "Download glitching", with two screenshots 43 seconds
+   * apart: 59%, then 58%. A single download cannot count backwards — `received`
+   * only grows and the total comes from one `Content-Length` — so the number was
+   * showing two installs at once, each downloading the 155 MB and each writing
+   * this one progress value, overtaking each other by a percent.
+   */
+  it("downloads once when it is asked for twice, and never counts backwards", async () => {
+    const percents: number[] = [];
+    const releases: Array<() => void> = [];
+    let downloads = 0;
+
+    // Two scripted streams, so the test would *show* the backwards number if a
+    // second download were ever allowed to start: the first reports 59%, the
+    // second 58%.
+    const script = [590, 580];
+
+    nextCheck = async () => ({
+      available: true,
+      version: "0.2.40",
+      downloadAndInstall: (onEvent: (event: any) => void) =>
+        new Promise<void>((resolve) => {
+          const index = downloads;
+          downloads += 1;
+          const emit = (event: any) => {
+            onEvent(event);
+            const now = updater.installProgress();
+            if (now?.phase === "downloading") percents.push(now.percent);
+          };
+          emit({ event: "Started", data: { contentLength: 1000 } });
+          emit({ event: "Progress", data: { chunkLength: script[index] ?? 0 } });
+          releases.push(() => {
+            emit({ event: "Finished" });
+            resolve();
+          });
+        }),
+    });
+
+    const first = updater.installUpdate();
+    // The second click lands once the download is visibly underway — which is the
+    // real sequence: the button keeps showing progress, so it stays clickable.
+    await vi.waitFor(() => expect(releases.length).toBe(1));
+    const second = updater.installUpdate();
+    // Long enough for a second download to have announced itself, so this is a
+    // statement about what happened rather than about timing.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(downloads).toBe(1);
+
+    releases.forEach((release) => release());
+    await Promise.all([first, second]);
+
+    expect(downloads).toBe(1);
+    // The number the user watches never goes down. Zeroes are the start of an
+    // attempt and are not progress, so they are not part of the comparison.
+    const reported = percents.filter((percent) => percent > 0);
+    expect(reported).toEqual([...reported].sort((a, b) => a - b));
+    expect(reported.length).toBeGreaterThan(0);
+  });
+
+  it("leaves a failed attempt retryable rather than joining the promise that failed", async () => {
+    // The join has to be about the install *in flight*, not "an install has ever
+    // been attempted" — otherwise one failure would wedge the updater for the rest
+    // of the session, which is a worse bug than the one being fixed.
+    let attempts = 0;
+    nextCheck = async () => ({
+      available: true,
+      version: "0.2.40",
+      downloadAndInstall: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("network unreachable");
+      },
+    });
+
+    await expect(updater.installUpdate()).rejects.toThrow();
+    await expect(updater.installUpdate()).resolves.toBeUndefined();
+    expect(attempts).toBe(2);
+  });
+});
+
 describe("the check-on-launch preference", () => {
   beforeEach(() => {
     (globalThis as any).localStorage = new FakeStorage();

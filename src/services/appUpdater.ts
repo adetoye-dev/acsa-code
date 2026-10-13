@@ -258,8 +258,30 @@ export async function checkForUpdate(
 /**
  * Download and install the update. Resolves when it is on disk and waiting for a
  * restart — this never restarts the app itself.
+ *
+ * One at a time. A second request joins the install that is already running rather
+ * than starting another, because a second one is not free: it is the same 155 MB
+ * again, over half the bandwidth, and — because both streams write this one
+ * progress value — a number on screen that runs *backwards* as they overtake each
+ * other. Reported from use as "Download glitching", with 59% at 09:01:58 and 58%
+ * at 09:02:41: a single download cannot do that, since `received` only grows and
+ * the total comes from one `Content-Length`. Two can, and two is what a second
+ * click produces — the button stays live until the first progress event has been
+ * published through React, which is a gap of a few hundred milliseconds.
  */
-export async function installUpdate(onProgress?: (percent: number) => void): Promise<void> {
+let inFlightInstall: Promise<void> | null = null;
+
+export function installUpdate(onProgress?: (percent: number) => void): Promise<void> {
+  if (inFlightInstall) return inFlightInstall;
+  inFlightInstall = runInstall(onProgress).finally(() => {
+    // Cleared however it ended, so a failure the user chose to retry is a fresh
+    // attempt rather than a join with a promise that already rejected.
+    inFlightInstall = null;
+  });
+  return inFlightInstall;
+}
+
+async function runInstall(onProgress?: (percent: number) => void): Promise<void> {
   const { check } = await import("@tauri-apps/plugin-updater");
   const update = await check();
   if (!update?.available) throw new Error("no update is available");
