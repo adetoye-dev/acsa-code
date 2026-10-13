@@ -17,6 +17,35 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.40] - 2026-10-13
+
+### Added
+
+- **The chat says it is thinking while it waits for the first token.** An answer
+  that had not started streaming yet was an empty bubble — nothing moving,
+  nothing counting — so a working turn and a dead one looked the same. Three dots
+  now rise in turn, and after three seconds the bubble also says how long it has
+  been waiting. On a local 7B that gap is commonly thirty seconds or more, which
+  is exactly when the silence was worst.
+
+### Changed
+
+- **The running turn's clock counts, without naming a ceiling you cannot
+  interpret.** It said `Working 1m 29s of 20m`: twenty minutes of what, counted
+  from when? It reads `Working 1m 29s` now, and the limit — which is real, a run
+  does stop itself — moved into the tooltip, where it can say what it means and
+  point at Settings → Agent. Hovering a paused turn explains the other half:
+  the clock stops while it waits for you.
+
+### Fixed
+
+- **A turn that ended without any text no longer leaves an empty bubble.** It could
+  come from a model that finished and sent nothing, or from a reply the app never
+  received — and because the placeholder is written to disk when a turn starts, an
+  empty bubble could survive restarts for good. It says so now, and names where the
+  reason would be: "No text came back for this turn. Send it again, or open Output
+  to see what the run reported."
+
 ## [0.2.39] - 2026-10-13
 
 ### Changed
@@ -943,7 +972,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.39...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.40...dev
+[0.2.40]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.39...v0.2.40
 [0.2.39]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.38...v0.2.39
 [0.2.38]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.37...v0.2.38
 [0.2.37]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.36...v0.2.37
