@@ -1218,82 +1218,12 @@ export function AiManagementDashboard({
                       </p>
                   </div>
 
-                  {/* API Key Input (if cloud provider) */}
-                  {activeProvider.category === "cloud" ? (
-                    <div className="space-y-2">
-                      <label htmlFor="aimanagementdashboard-api-key-secret-token-stored-in-the-app-3" className="text-xs font-semibold text-zinc-300 flex items-center justify-between">
-                        <span>API Key / Secret Token</span>
-                        <span className="text-2xs text-zinc-500 font-normal">
-                          Stored in your system keychain — never read back into the page
-                        </span>
-                      </label>
-                      <div className="flex items-center gap-2">
-                        <div className="relative flex-1">
-                          <input id="aimanagementdashboard-base-url-endpoint-classname-text-1-4"
-                            type={showApiKey ? "text" : "password"}
-                            value={apiKeyInput}
-                            onChange={(e) => setApiKeyInput(e.target.value)}
-                            placeholder="sk-••••••••••••••••••••••••"
-                            // A credential is not prose. Measured: with "Show key" on,
-                            // WebKit capitalised the first character and the app saved
-                            // `Sk-…` — a key that looks right and authenticates as 401.
-                            // Nothing about a key wants autocapitalisation, autocorrect
-                            // or spellcheck, and none of them can be recovered from.
-                            autoCapitalize="none"
-                            autoCorrect="off"
-                            spellCheck={false}
-                            className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-3.5 pr-10 py-2.5 text-xs text-zinc-100 font-mono placeholder-zinc-500 focus:outline-none focus:border-purple-500/60 transition-colors"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setShowApiKey((prev) => !prev)}
-                            className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300"
-                            title={showApiKey ? "Hide key" : "Show key"}
-                          >
-                            {showApiKey ? <Icon icon={Eye} className="w-3.5 h-3.5" /> : <Icon icon={Eye} className="w-3.5 h-3.5" />}
-                          </button>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => handleSaveProvider()}
-                          className="px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-xs font-bold text-white transition-colors shadow-sm"
-                        >
-                          Save Key
-                        </button>
-                      </div>
-                      {keyStorage && (
-                        <p
-                          className={
-                            keyStorage.stored === "keychain"
-                              ? "mt-2 text-2xs text-emerald-300/80"
-                              : "mt-2 text-2xs text-amber-300/90"
-                          }
-                        >
-                          {keyStorage.stored === "keychain"
-                            ? "Saved to your system keychain."
-                            : `Saved to the app database, not your keychain — ${
-                                keyStorage.reason || "the keychain was not usable here"
-                              }`}
-                        </p>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-300 flex items-start gap-2.5">
-                      <Icon icon={ShieldCheck} className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                      <div>
-                        <div className="font-semibold text-white">100% Offline & Private</div>
-                        <p className="text-2xs text-emerald-300/80 mt-0.5">
-                          This model runs locally on your machine. Zero network traffic, zero third-party telemetry, zero API keys required.
-                        </p>
-                      </div>
-                    </div>
-                  )}
                 </>
               )}
 
               {/* Base URL / Endpoint */}
               <div className="space-y-2">
-                <label htmlFor="aimanagementdashboard-base-url-endpoint-classname-text-1-4" className="text-xs font-semibold text-zinc-300 flex items-center justify-between">
+                <label htmlFor="aimanagementdashboard-base-url-input" className="text-xs font-semibold text-zinc-300 flex items-center justify-between">
                   <span>Base URL / Endpoint</span>
                   <button
                     type="button"
@@ -1307,6 +1237,7 @@ export function AiManagementDashboard({
                   </button>
                 </label>
                 <input
+                  id="aimanagementdashboard-base-url-input"
                   type="text"
                   value={baseUrlInput}
                   onChange={(e) => setBaseUrlInput(e.target.value)}
@@ -1314,6 +1245,68 @@ export function AiManagementDashboard({
                   className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-xs text-zinc-100 font-mono placeholder-zinc-500 focus:outline-none focus:border-purple-500/60 transition-colors"
                 />
               </div>
+
+              {/* API Key Input (if cloud provider) */}
+              {activeProvider.category === "cloud" ? (
+                <div className="space-y-2">
+                  <label htmlFor="aimanagementdashboard-api-key-input" className="text-xs font-semibold text-zinc-300 flex items-center justify-between">
+                    <span>API Key / Secret Token</span>
+                    <span className="text-2xs text-zinc-500 font-normal">
+                      Stored in your system keychain — never read back into the page
+                    </span>
+                  </label>
+                  <div className="relative">
+                    <input id="aimanagementdashboard-api-key-input"
+                      type={showApiKey ? "text" : "password"}
+                      value={apiKeyInput}
+                      onChange={(e) => setApiKeyInput(e.target.value)}
+                      placeholder="sk-••••••••••••••••••••••••"
+                      // A credential is not prose. Measured: with "Show key" on,
+                      // WebKit capitalised the first character and the app saved
+                      // `Sk-…` — a key that looks right and authenticates as 401.
+                      // Nothing about a key wants autocapitalisation, autocorrect
+                      // or spellcheck, and none of them can be recovered from.
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-3.5 pr-10 py-2.5 text-xs text-zinc-100 font-mono placeholder-zinc-500 focus:outline-none focus:border-purple-500/60 transition-colors"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowApiKey((prev) => !prev)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300"
+                      title={showApiKey ? "Hide key" : "Show key"}
+                    >
+                      {showApiKey ? <Icon icon={Eye} className="w-3.5 h-3.5" /> : <Icon icon={Eye} className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                  {keyStorage && (
+                    <p
+                      className={
+                        keyStorage.stored === "keychain"
+                          ? "mt-2 text-2xs text-emerald-300/80"
+                          : "mt-2 text-2xs text-amber-300/90"
+                      }
+                    >
+                      {keyStorage.stored === "keychain"
+                        ? "Saved to your system keychain."
+                        : `Saved to the app database, not your keychain — ${
+                            keyStorage.reason || "the keychain was not usable here"
+                          }`}
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-300 flex items-start gap-2.5">
+                  <Icon icon={ShieldCheck} className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                  <div>
+                    <div className="font-semibold text-white">100% Offline & Private</div>
+                    <p className="text-2xs text-emerald-300/80 mt-0.5">
+                      This model runs locally on your machine. Zero network traffic, zero third-party telemetry, zero API keys required.
+                    </p>
+                  </div>
+                </div>
+              )}
 
               {/* Provider Actions */}
               <div className="space-y-2 pt-1">
