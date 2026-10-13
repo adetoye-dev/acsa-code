@@ -115,6 +115,19 @@ export interface ChatMessage {
    */
   attachedPaths?: string[];
   timestamp: number;
+  /**
+   * How long this turn worked for, so the transcript can say so.
+   *
+   * A start time answers "when did I ask?"; after a run that took seven minutes, what
+   * the reader wants to know is that it took seven minutes — and the start time is
+   * the less interesting half of that. Absent while it is still running, and on
+   * messages recorded before this existed.
+   *
+   * A duration rather than an end time on purpose: an agent turn stops its clock
+   * while it is waiting on the human, so the number that matters is the work it did,
+   * not `end - start` (which would count the waiting).
+   */
+  durationMs?: number;
   provider?: string;
   model?: string;
   isStreaming?: boolean;

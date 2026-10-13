@@ -305,11 +305,18 @@ const ChatTranscript = memo(function ChatTranscript({
                     <span className="font-semibold text-purple-300 font-mono text-2xs truncate">
                       {msg.model || "AI Assistant"}
                     </span>
-                    {msg.timestamp && (
+                    {typeof msg.durationMs === "number" ? (
+                      <span
+                        className="text-4xs font-mono text-zinc-500 ml-1"
+                        title={`Started ${new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}
+                      >
+                        worked for {formatDuration(msg.durationMs)}
+                      </span>
+                    ) : msg.timestamp ? (
                       <span className="text-4xs font-mono text-zinc-500 ml-1">
                         {new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                       </span>
-                    )}
+                    ) : null}
                   </>
                 )}
               </div>
@@ -317,7 +324,12 @@ const ChatTranscript = memo(function ChatTranscript({
 
             {/* Message Bubble */}
             <div
-              className={`min-w-0 max-w-[95%] p-3.5 rounded-2xl text-xs leading-relaxed transition-all ${
+              // `break-words` because a line that cannot wrap is a line the panel
+              // clips: a pasted URL or hash is one unbroken token, and without it the
+              // bubble keeps its own width while the line runs out of the rounded
+              // box and off the edge of the dock — with nothing to scroll, because
+              // the aside is the thing hiding it.
+              className={`min-w-0 max-w-[95%] p-3.5 rounded-2xl text-xs leading-relaxed break-words transition-all ${
                 msg.role === "user"
                   ? "bg-zinc-800/80 border border-zinc-700/60 text-zinc-100 rounded-tr-sm shadow-sm"
                   : msg.error
@@ -1079,7 +1091,20 @@ export function AiAssistantChat({
   }, [pendingApproval, pendingQuestion]);
 
   const prevStatusRef = useRef(status);
+  /**
+   * When the running turn began, so the finished message can be dated honestly.
+   *
+   * An agent's assistant message is built *after* the run, so its `timestamp` would
+   * otherwise be the moment the run ended — and the header would say the turn started
+   * when the answer appeared. The pipeline's `turnElapsedMs` is the work done (it
+   * stops while waiting on a person); this is the wall-clock start, kept for the
+   * tooltip so nothing is lost.
+   */
+  const turnStartedAtRef = useRef(0);
   useEffect(() => {
+    if (status === "running" && prevStatusRef.current !== "running") {
+      turnStartedAtRef.current = Date.now();
+    }
     if (prevStatusRef.current === "running" && (status === "success" || status === "failed" || status === "error")) {
       const isSuccess = status === "success";
       let errorType: "offline" | "timeout" | "syntax" | "api" | "general" = "general";
@@ -1181,7 +1206,11 @@ export function AiAssistantChat({
         id: `assistant-agent-${Date.now()}`,
         role: "assistant",
         content: finalContent,
-        timestamp: Date.now(),
+        // The turn began when the pipeline went running, and worked for the time the
+        // composer was counting beside the stop button. Both are recorded here so the
+        // finished transcript says "worked for 7m 29s" rather than a start time.
+        timestamp: turnStartedAtRef.current || Date.now() - turnElapsedMs,
+        durationMs: turnElapsedMs,
         provider: selectedModelItem?.providerId || "ollama",
         model: selectedModelItem?.model || "ACSA Agent",
         steps: finalizedSteps.length > 0 ? finalizedSteps : undefined,
@@ -1205,7 +1234,10 @@ export function AiAssistantChat({
       });
     }
     prevStatusRef.current = status;
-  }, [status, failureDetail, failureSummary, noFileChanges, waitingForUser, turnChanges, projectRoot, selectedModelItem, streamingAnswer, streamingThought, agentSteps, planWriteSettled]);
+    // `turnElapsedMs` is a dependency on purpose even though the effect must not
+    // rebuild the message when it ticks: the guard above (`status` left "running")
+    // makes those extra runs no-ops, and it is the value the finished message needs.
+  }, [status, failureDetail, failureSummary, noFileChanges, waitingForUser, turnChanges, projectRoot, selectedModelItem, streamingAnswer, streamingThought, agentSteps, planWriteSettled, turnElapsedMs]);
 
   /**
    * Ask Ollama what is actually installed, and believe it.
@@ -1801,7 +1833,7 @@ export function AiAssistantChat({
         setChatMessages((prev) => {
           const updated = prev.map((msg) =>
             msg.id === assistantMsgId
-              ? { ...msg, isStreaming: false }
+              ? { ...msg, isStreaming: false, durationMs: Date.now() - msg.timestamp }
               : msg
           );
           saveChatHistory(updated, projectRoot);
@@ -1819,6 +1851,7 @@ export function AiAssistantChat({
                     ? `${msg.content}\n\n⚠️ **Error:** ${errMsg}`
                     : `⚠️ **Error:** ${errMsg}`,
                   isStreaming: false,
+                  durationMs: Date.now() - msg.timestamp,
                   error: true,
                 }
               : msg
@@ -1835,14 +1868,16 @@ export function AiAssistantChat({
       onCancelPipeline();
     }
     abortControllerRef.current?.abort();
-      setIsStreaming(false);
-      setChatMessages((prev) => {
-        const updated = prev.map((msg) =>
-          msg.isStreaming ? { ...msg, isStreaming: false } : msg
-        );
-        saveChatHistory(updated, projectRoot);
-        return updated;
-      });
+    setIsStreaming(false);
+    setChatMessages((prev) => {
+      const updated = prev.map((msg) =>
+        msg.isStreaming
+          ? { ...msg, isStreaming: false, durationMs: Date.now() - msg.timestamp }
+          : msg
+      );
+      saveChatHistory(updated, projectRoot);
+      return updated;
+    });
   };
 
   const handleClearChat = () => {

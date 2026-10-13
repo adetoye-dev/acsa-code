@@ -840,3 +840,79 @@ describe("the composer and the transcript", () => {
     expect(screen.getByTestId("chat-transcript").className).toContain("select-text");
   });
 });
+
+/**
+ * How long the turn worked, in place of the time it started.
+ *
+ * A start time answers "when did I ask?"; after a run that took seven minutes, the
+ * thing the reader wants is the seven minutes. Two different clocks feed it, and
+ * both are easy to get wrong: an agent's message is built *after* the run, so its
+ * own `timestamp` is the end, and a chat reply has no clock at all unless the
+ * transport's callbacks record one.
+ */
+describe("how long a turn worked for", () => {
+  const SEVEN_MINUTES = 7 * 60 * 1000 + 29 * 1000;
+
+  it("dates an agent's finished message by its work, not by when the answer appeared", async () => {
+    // `turnElapsedMs` is the pipeline's own counter — it stops while the turn waits
+    // on a person, so it is the work done rather than the wall clock.
+    const { rerender } = render(
+      <AiAssistantChat {...baseProps} status="running" turnElapsedMs={SEVEN_MINUTES} />,
+    );
+    rerender(
+      <AiAssistantChat
+        {...baseProps}
+        status="success"
+        turnElapsedMs={SEVEN_MINUTES}
+        streamingAnswer="Done."
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText(/worked for 7m 29s/)).toBeTruthy());
+    // The start time is not discarded — it moves into the tooltip.
+    expect(screen.getByText(/worked for 7m 29s/).getAttribute("title")).toMatch(/^Started /);
+  });
+
+  it("measures a chat reply from the prompt to the last token", async () => {
+    model.canRun = { [LOCAL_CHAT_MODEL.model]: false };
+    model.initial = LOCAL_CHAT_MODEL;
+    model.list = [LOCAL_CHAT_MODEL];
+
+    let transport: { onDone: (metadata?: unknown) => void } | null = null;
+    const mock = streamChatCompletion as unknown as {
+      mockImplementation: (fn: unknown) => void;
+      mockClear: () => void;
+    };
+    mock.mockClear();
+    mock.mockImplementation(async (params: unknown) => {
+      transport = params as never;
+    });
+
+    const now = vi.spyOn(Date, "now");
+    try {
+      now.mockReturnValue(1_000);
+      render(<AiAssistantChat {...baseProps} />);
+      fireEvent.change(screen.getByRole("textbox"), { target: { value: "hello" } });
+      fireEvent.click(screen.getByTitle("Run Agent (Enter)"));
+      await waitFor(() => expect(streamChatCompletion).toHaveBeenCalled());
+
+      now.mockReturnValue(1_000 + 12_000);
+      await act(async () => {
+        transport?.onDone();
+      });
+
+      await waitFor(() => expect(screen.getByText(/worked for 12s/)).toBeTruthy());
+    } finally {
+      now.mockRestore();
+      mock.mockImplementation(async () => undefined);
+    }
+  });
+
+  it("still shows the start time when no duration was recorded", () => {
+    // The control for the two above: a transcript saved before this existed, or a
+    // message still streaming, must not acquire a duration it never measured.
+    render(<AiAssistantChat {...baseProps} />);
+    expect(screen.getByText(/Done — it is on/)).toBeTruthy();
+    expect(screen.queryByText(/worked for/)).toBeNull();
+  });
+});
