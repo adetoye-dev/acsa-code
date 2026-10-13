@@ -21,7 +21,6 @@ import {
   validateReplacement,
 } from "../../services/aiAutocomplete";
 import { reviewFile, isReviewableFile, type ReviewIssue } from "../../services/aiReview";
-import { configureMonacoTypeScript } from "../../services/monacoTsConfig";
 import { useRemeasureOnLayout } from "../../hooks/useRemeasureOnLayout";
 import { PANE_EDITOR_OPTIONS } from "../../services/monacoPaneOptions";
 import { applyMonacoTheme } from "../../services/themeManager";
@@ -904,12 +903,9 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
   }, [path, clearReview]);
 
   const handleEditorDidMount: OnMount = (editor, monaco) => {
-    // The TypeScript contribution (and its worker) only exists once a JS/TS
-    // model has been created, so configure it here rather than in beforeMount.
-    configureMonacoTypeScript(monaco, projectRoot);
-    // Then give the worker the project, so an import resolves to a real file
-    // instead of being reported as missing. Deliberately not awaited: the editor
-    // is usable while it lands, and it is cached per project.
+    // Nothing TypeScript-specific to configure here any more: the worker's own
+    // language features are declined once in `monacoSetup`, and everything the editor
+    // asks about types comes from the language server.
 
     editorRef.current = editor;
     monacoRef.current = monaco;
@@ -1295,7 +1291,6 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
         theme={themeId}
         beforeMount={(monaco) => {
           applyMonacoTheme(monaco, themeId);
-          configureMonacoTypeScript(monaco, projectRoot);
         }}
         onChange={(val) => onChange(val || "")}
         onMount={handleEditorDidMount}

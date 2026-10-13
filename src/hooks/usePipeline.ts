@@ -1098,7 +1098,6 @@ export const AGENT_BASE_INSTRUCTIONS =
   "When you genuinely need a decision before continuing, ask with the `request_user_input` tool so the panel can show it as a question card; a question written as plain text ends the turn with no way for the user to answer it.";
 
 import { appStore } from "../services/appStore";
-import { probeToolchainAvailability } from "../services/languageServerAvailability";
 import {
   syncProjectIndex,
   getIndexStatus,
@@ -1486,11 +1485,6 @@ export function usePipeline(): UsePipelineReturn {
     (async () => {
       try {
         await ensureProvidersHydrated();
-        // Asked before any editor exists: Monaco reads its TypeScript worker's mode
-        // configuration once, when the first TypeScript model appears, and that is
-        // the only moment the worker's own providers can be declined. See
-        // `languageServerWillRun`.
-        void probeToolchainAvailability();
         const [settings, active] = await Promise.all([
           appStore.getSettings(),
           appStore.getActiveProject(),

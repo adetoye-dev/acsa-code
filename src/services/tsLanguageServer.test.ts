@@ -41,11 +41,6 @@ vi.mock("./fileAccess", () => ({
   },
 }));
 
-const workerDiagnostics: boolean[] = [];
-vi.mock("./monacoTsConfig", () => ({
-  setWorkerFeaturesEnabled: (_monaco: unknown, enabled: boolean) => workerDiagnostics.push(enabled),
-}));
-
 const server = await import("./tsLanguageServer");
 
 /** The messages the page sent to the server, in order. */
@@ -183,7 +178,6 @@ const FILE = `${ROOT}/src/app.ts`;
 
 beforeEach(() => {
   invokes.length = 0;
-  workerDiagnostics.length = 0;
   fileWrites.length = 0;
   for (const key of Object.keys(fileReads)) delete fileReads[key];
   handlers.clear();
@@ -205,7 +199,6 @@ describe("starting the language server", () => {
     expect(server.languageServerState().status).toBe("unavailable");
     // The important half: an editor that still type-checks, by the old route,
     // rather than one that silently stopped checking.
-    expect(workerDiagnostics).toEqual([]);
   });
 
   it("opens the project's models and hands diagnostics over only once it answers", async () => {
@@ -215,7 +208,6 @@ describe("starting the language server", () => {
     const starting = server.startLanguageServer(monaco, ROOT);
     // `initialize` is in flight: the worker must still be the one checking.
     await vi.waitFor(() => expect(sent().some((m) => m.method === "initialize")).toBe(true));
-    expect(workerDiagnostics).toEqual([]);
 
     const initialize = sent().find((m) => m.method === "initialize");
     expect(initialize.params.rootUri).toBe(`file://${ROOT}`);
@@ -229,7 +221,6 @@ describe("starting the language server", () => {
     expect(opened.params.textDocument.uri).toBe(FILE);
     expect(opened.params.textDocument.text).toBe("const answer: number = 42;\n");
     expect(server.languageServerState().status).toBe("running");
-    expect(workerDiagnostics).toEqual([false]);
   });
 
   it("leaves models outside the project alone", async () => {
@@ -336,8 +327,6 @@ describe("a running session", () => {
     });
 
     await server.stopLanguageServer();
-
-    expect(workerDiagnostics).toEqual([false, true]);
     expect(server.languageServerState().status).toBe("off");
     await vi.waitFor(() =>
       expect(invokes.some((i) => i.command === "lsp_stop" && i.args.session === 7)).toBe(true),
@@ -450,11 +439,11 @@ describe("IntelliSense over the wire", () => {
     expect(provider.provider.triggerCharacters).toEqual([".", "'"]);
   });
 
-  it("puts the worker's features back when the session stops", async () => {
+  it("lets go of its providers when the session stops", async () => {
+    // The worker is not switched back on — its providers were never registered (see
+    // `monacoSetup`) — so the badge is what tells the reader nothing is checking.
     const { monaco } = await running();
-    expect(workerDiagnostics.at(-1)).toBe(false);
     await server.stopLanguageServer();
-    expect(workerDiagnostics.at(-1)).toBe(true);
     for (const provider of monaco.providers) expect(provider.disposed).toBe(true);
   });
 });
