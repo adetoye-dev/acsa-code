@@ -17,6 +17,22 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.41] - 2026-10-13
+
+### Fixed
+
+- **The update download can no longer run backwards — and no longer downloads the
+  same 155 MB twice.** Two screenshots 43 seconds apart read 59%, then 58%. One
+  download cannot do that: it only counts up, and the total comes from a single
+  `Content-Length`. Two can, and a second click produced exactly that — the
+  button stays live until the first progress event reaches the screen, which is a
+  few hundred milliseconds, and a click in that window started a *second* install.
+  Both downloads then wrote to the one progress value, so the number followed
+  whichever reported last and dipped when they crossed, each got half the
+  bandwidth, and the same file came down twice. An install in progress now
+  absorbs any further request: click again and you are watching the download that
+  is already running.
+
 ## [0.2.40] - 2026-10-13
 
 ### Added
@@ -972,7 +988,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.40...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.41...dev
+[0.2.41]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.40...v0.2.41
 [0.2.40]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.39...v0.2.40
 [0.2.39]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.38...v0.2.39
 [0.2.38]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.37...v0.2.38
