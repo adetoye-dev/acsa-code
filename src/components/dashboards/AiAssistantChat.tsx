@@ -385,7 +385,11 @@ const ChatTranscript = memo(function ChatTranscript({
                 />
               )}
 
-              <FormattedMarkdown content={msg.content} isStreaming={msg.isStreaming} />
+              <FormattedMarkdown
+                content={msg.content}
+                isStreaming={msg.isStreaming}
+                startedAt={msg.timestamp}
+              />
               {msg.changes && msg.changes.length > 0 && (
                 <ChangeLogCard changes={msg.changes} onReview={onReviewFile} />
               )}
@@ -543,17 +547,26 @@ const ChatTranscript = memo(function ChatTranscript({
                 className={`flex items-center gap-1 text-3xs font-mono ml-2 ${
                   blockedOn ? "text-amber-300" : "text-purple-400"
                 }`}
+                // The bare counter, not "1m 29s of 20m": "of 20m" names a ceiling with
+                // nothing to attach it to — twenty minutes of what, and counted from
+                // when? It read as a second clock beside the one that was already
+                // running. The ceiling is real (the run stops itself), so it moves into
+                // the tooltip, which has room to say what it means and where to change
+                // it. Reported from use: "it just adds more confusion".
+                title={
+                  blockedOn
+                    ? "The clock pauses while the turn waits on you."
+                    : turnLimitMinutes > 0
+                    ? `A turn stops itself after ${turnLimitMinutes}m of work — Settings → Agent.`
+                    : "No turn time limit is set — Settings → Agent."
+                }
               >
                 <span
                   className={`w-1.5 h-1.5 rounded-full ${
                     blockedOn ? "bg-amber-400 animate-pulse" : "bg-purple-400 animate-pulse"
                   }`}
                 />
-                {blockedOn
-                  ? `Waiting for ${blockedOn}`
-                  : turnLimitMinutes > 0
-                  ? `Working ${formatDuration(agentElapsedMs)} of ${turnLimitMinutes}m`
-                  : `Working ${formatDuration(agentElapsedMs)}`}
+                {blockedOn ? `Waiting for ${blockedOn}` : `Working ${formatDuration(agentElapsedMs)}`}
               </span>
             </div>
 
@@ -3454,20 +3467,87 @@ function ThinkingAccordion({
  * Same on the streaming path, where the growing message used to re-render every
  * code block it already had on each token.
  */
+/**
+ * What the reader sees between sending a message and the first token arriving.
+ *
+ * Three dots that rise in turn, and — after a few seconds — a count of how long it
+ * has been. On a local 7B seeing the first token can take a minute, and until now
+ * that whole minute was an empty bubble: nothing moved, nothing counted, so a
+ * working turn was indistinguishable from one that had died. The seconds are
+ * deliberately the same bare number the agent's own working line shows, and only
+ * appear once there is something to report, so a fast reply never flickers a "0s".
+ *
+ * `role="status"` with `aria-live="polite"` announces it rather than sitting
+ * mute in the tree; the dots themselves are decorative and are hidden from it.
+ */
+const ReasoningIndicator = memo(function ReasoningIndicator({ since }: { since?: number }) {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!since) return;
+    const tick = () => setElapsed(Math.max(0, Math.floor((Date.now() - since) / 1000)));
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
+  }, [since]);
+
+  return (
+    <div
+      data-testid="reasoning-indicator"
+      className="flex items-center gap-2 text-zinc-400 text-xs py-1"
+      role="status"
+      aria-live="polite"
+    >
+      <span className="flex items-end gap-1 h-3.5" aria-hidden="true">
+        {[0, 1, 2].map((dot) => (
+          <span
+            key={dot}
+            className="w-1.5 h-1.5 rounded-full bg-purple-400/80 acsa-reasoning-dot"
+            style={{ animationDelay: `${dot * 160}ms` }}
+          />
+        ))}
+      </span>
+      <span>Thinking…</span>
+      {since && elapsed >= 3 ? (
+        // Hidden from the live region on purpose: a counter that changes every second
+        // inside `role="status"` is a screen reader announcing every second. The
+        // words it needs are "Thinking…"; the number is for the eye.
+        <span aria-hidden="true" className="font-mono text-2xs text-zinc-500">
+          {elapsed}s
+        </span>
+      ) : null}
+    </div>
+  );
+});
+
+/**
+ * A turn that ended without any text.
+ *
+ * Reached two ways, and both looked identical from here: the model finished and
+ * sent nothing (a local model that produced only reasoning, a filtered reply), or
+ * the app closed mid-run and left its placeholder saved. Either way the transcript
+ * held an empty bubble with no way to tell "no answer" from "not answered yet" —
+ * so it says which one it is, and names the surface that can explain it.
+ */
+const EmptyReplyNote = memo(function EmptyReplyNote() {
+  return (
+    <p data-testid="empty-reply-note" className="text-2xs text-zinc-500 leading-relaxed py-0.5">
+      No text came back for this turn. Send it again, or open Output to see what the run reported.
+    </p>
+  );
+});
+
 const FormattedMarkdown = memo(function FormattedMarkdown({
   content,
   isStreaming,
+  startedAt,
 }: {
   content: string;
   isStreaming?: boolean;
+  /** When the turn began, so the reasoning indicator can count. */
+  startedAt?: number;
 }) {
-  if (!content && isStreaming) {
-    return (
-      <div className="flex items-center gap-2 text-zinc-400 text-xs py-1">
-        <Icon icon={RefreshCw} className="w-3 h-3 animate-spin text-purple-400" />
-        <span>Thinking…</span>
-      </div>
-    );
+  if (!content) {
+    return isStreaming ? <ReasoningIndicator since={startedAt} /> : <EmptyReplyNote />;
   }
 
   // Split content by code blocks: ```lang ... ```

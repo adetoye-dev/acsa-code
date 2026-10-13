@@ -489,6 +489,112 @@ try {
   })()`);
   await sleep(1200);
 
+  // The two states that only exist *during* a turn, put in front of the layout
+  // without an engine: a reply that has not started streaming yet, and one that
+  // ended without any text. A hydrated transcript cannot carry the first —
+  // hydration clears `isStreaming`, because a stream does not survive a reload —
+  // so this uses the app's own in-session channel for transcript updates, which
+  // is what a second panel hears when the first one's turn moves on. Dispatched
+  // for both candidate project roots; the one that does not match is ignored.
+  //
+  // Report was by eye: an empty bubble while a local model was still working, and
+  // "the users can feel it's stuck which is bad for ux".
+  const streamingNow = Date.now() - 8_000;
+  // The same wide block the persisted fixture carries, repeated here because this
+  // update *replaces* the transcript rather than adding to it: the layout
+  // assertions below all read the one list.
+  const wideLine =
+    "const veryLongIdentifierName = someFunction(argumentOne, argumentTwo, argumentThree, argumentFour);";
+  const wideContent = [
+    "Here is the change.",
+    "",
+    "```ts",
+    Array(6).fill(wideLine).join("\n"),
+    "```",
+    "",
+    "and a long unbroken token: " + "x".repeat(300),
+  ].join("\n");
+  const states = JSON.stringify([
+    { id: "gui-u1", role: "user", content: "what changed?", timestamp: 1 },
+    {
+      id: "gui-a1",
+      role: "assistant",
+      content: wideContent,
+      timestamp: 2,
+      provider: "deepseek",
+      model: "deepseek-flash",
+      durationMs: 449000,
+    },
+    {
+      id: "gui-thinking",
+      role: "assistant",
+      content: "",
+      provider: "ollama",
+      model: "qwen2.5-coder:7b",
+      timestamp: streamingNow,
+      isStreaming: true,
+    },
+    {
+      id: "gui-empty",
+      role: "assistant",
+      content: "",
+      provider: "ollama",
+      model: "qwen2.5-coder:7b",
+      timestamp: streamingNow - 60_000,
+    },
+  ]);
+  await session.eval(`(() => {
+    const messages = ${states};
+    for (const root of ["", undefined]) {
+      window.dispatchEvent(new CustomEvent("acsa:chat-history-updated", { detail: { projectRoot: root, messages } }));
+    }
+    return messages.length;
+  })()`);
+  await sleep(600);
+
+  const pending = await session.eval(`(() => {
+    const dock = document.querySelector('[data-testid="chat-dock-panel"]');
+    const thinking = dock && dock.querySelector('[data-testid="reasoning-indicator"]');
+    const note = dock && dock.querySelector('[data-testid="empty-reply-note"]');
+    const dot = thinking && thinking.querySelector('.acsa-reasoning-dot');
+    const motion = dot ? getComputedStyle(dot) : null;
+    return {
+      thinking: thinking ? thinking.textContent : null,
+      thinkingRole: thinking ? thinking.getAttribute("role") : null,
+      dotCount: thinking ? thinking.querySelectorAll('.acsa-reasoning-dot').length : 0,
+      animation: motion ? { name: motion.animationName, duration: motion.animationDuration } : null,
+      note: note ? note.textContent : null,
+    };
+  })()`);
+  check("a reply that has not started streaming says it is thinking",
+    pending && /Thinking/.test(pending.thinking || "") && /[3-9]s/.test(pending.thinking || "") &&
+      pending.thinkingRole === "status",
+    pending ? `indicator reads ${JSON.stringify(pending.thinking)}` : "no indicator rendered");
+  check("the waiting dots are actually animating, three of them",
+    pending && pending.dotCount === 3 && pending.animation &&
+      pending.animation.name === "acsa-reasoning-dot" && parseFloat(pending.animation.duration) > 0.5,
+    pending ? `${pending.dotCount} dots, ${pending.animation?.name} ${pending.animation?.duration}` : "no dots rendered");
+  check("a turn that ended without text says so instead of showing an empty bubble",
+    pending && /No text came back/.test(pending.note || ""),
+    pending ? `note reads ${JSON.stringify(pending.note)}` : "no note rendered");
+
+  // Motion is a preference, and the app collapses every animation for it — the dots
+  // stop, and the word beside them still says what is happening.
+  await session.send("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+  });
+  const still = await session.eval(`(() => {
+    const dot = document.querySelector('[data-testid="chat-dock-panel"] .acsa-reasoning-dot');
+    if (!dot) return null;
+    const s = getComputedStyle(dot);
+    const indicator = document.querySelector('[data-testid="reasoning-indicator"]');
+    return { duration: s.animationDuration, text: indicator ? indicator.textContent : null };
+  })()`);
+  check("reduced motion stops the dots without losing the words",
+    still && parseFloat(still.duration) < 0.05 && /Thinking/.test(still.text || ""),
+    still ? `animation-duration ${still.duration}, reads ${JSON.stringify(still.text)}` : "no dots rendered");
+  await session.send("Emulation.setEmulatedMedia", { features: [] });
+
   const wide = await session.eval(`(() => {
     const dock = document.querySelector('[data-testid="chat-dock-panel"]');
     const pre = dock && dock.querySelector('[data-testid="chat-transcript"] pre');

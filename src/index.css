@@ -88,6 +88,23 @@
   visibility: visible;
 }
 
+/* ── The reasoning indicator ──────────────────────────────────────────────
+   Three dots that rise in turn, for the gap between sending a message and the
+   first token arriving. On a local 7B that gap is tens of seconds, and an empty
+   bubble through it is what makes a working turn look like a stuck one.
+
+   Only the movement is animated; the dots keep their colour, so the
+   `prefers-reduced-motion` rule at the bottom of this file (which freezes every
+   animation) leaves them visible and readable beside the word "Thinking". */
+@keyframes acsa-reasoning-dot {
+  0%, 70%, 100% { transform: translateY(0); }
+  35% { transform: translateY(-3px); }
+}
+
+.acsa-reasoning-dot {
+  animation: acsa-reasoning-dot 1.15s ease-in-out infinite;
+}
+
 @layer base {
   /**
    * Motion, for people whose system asks for less of it.

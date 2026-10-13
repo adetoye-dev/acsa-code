@@ -916,3 +916,90 @@ describe("how long a turn worked for", () => {
     expect(screen.queryByText(/worked for/)).toBeNull();
   });
 });
+
+/**
+ * A turn with nothing to show yet, and one that will never have anything to show.
+ *
+ * Reported from use: an empty bubble while a local model was still working through
+ * the prompt — "the users can feel it's stuck which is bad for ux". A blank rounded
+ * box is also what a turn that ended empty leaves behind, and from the outside the
+ * two are the same picture: nothing there. So neither is blank now — one says it is
+ * thinking, with the seconds it has been, and the other says no text came back.
+ */
+describe("a turn that has not produced text", () => {
+  const streamed = (extra: Record<string, unknown>) => {
+    SEEDED.push({
+      id: `seed-${SEEDED.length}`,
+      role: "assistant" as const,
+      content: "",
+      provider: "ollama",
+      model: "qwen2.5-coder:7b",
+      timestamp: Date.now(),
+      ...extra,
+    });
+    return () => {
+      SEEDED.length = 2;
+    };
+  };
+
+  it("shows that it is thinking instead of an empty bubble", () => {
+    const reset = streamed({ isStreaming: true });
+    try {
+      render(<AiAssistantChat {...baseProps} />);
+      const indicator = screen.getByTestId("reasoning-indicator");
+      expect(indicator.textContent).toMatch(/Thinking/);
+      // The bubble has something in it — the failure was a bubble with nothing.
+      expect(indicator.textContent?.trim().length).toBeGreaterThan("Thinking…".length - 1);
+    } finally {
+      reset();
+    }
+  });
+
+  it("counts the seconds once it has been waiting long enough to wonder", async () => {
+    const reset = streamed({ isStreaming: true, timestamp: Date.now() - 6_000 });
+    try {
+      render(<AiAssistantChat {...baseProps} />);
+      await waitFor(() => expect(screen.getByTestId("reasoning-indicator").textContent).toMatch(/[3-9]s/));
+    } finally {
+      reset();
+    }
+  });
+
+  it("says no text came back when the turn ended empty", () => {
+    const reset = streamed({});
+    try {
+      render(<AiAssistantChat {...baseProps} />);
+      expect(screen.getByTestId("empty-reply-note").textContent).toMatch(/No text came back/);
+      expect(screen.queryByTestId("reasoning-indicator")).toBeNull();
+    } finally {
+      reset();
+    }
+  });
+});
+
+/**
+ * The running turn's clock, which is the only clock on screen.
+ *
+ * It said "Working 1m 29s of 20m". The ceiling is real — a run stops itself — but
+ * stating it beside the elapsed time gives the reader two numbers and no way to
+ * tell what the second one is measured from: "there's no context for what 20
+ * minutes we're measuring for". The counter stands alone now, and the ceiling moved
+ * into the tooltip, which can say what it is and where to change it.
+ */
+describe("the running agent's clock", () => {
+  it("counts without naming a ceiling it cannot explain", () => {
+    render(
+      <AiAssistantChat
+        {...baseProps}
+        status="running"
+        turnElapsedMs={89_000}
+        turnLimitMinutes={20}
+      />,
+    );
+
+    expect(screen.getByText("Working 1m 29s")).toBeTruthy();
+    expect(screen.queryByText(/of 20m/)).toBeNull();
+    // The ceiling is not thrown away — it answers a hover, and names the setting.
+    expect(screen.getByText("Working 1m 29s").getAttribute("title")).toMatch(/Settings → Agent/);
+  });
+});
