@@ -17,6 +17,43 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.39] - 2026-10-13
+
+### Changed
+
+- **Setting up a cloud provider is one decision, not two.** The panel offered
+  "Save Key" beside the key and "Save Configuration" at the bottom, which ran the
+  same save and read as two different choices. There is one button now, and the
+  fields sit in the order you fill them in: model, then **Base URL / Endpoint**,
+  then **API Key / Secret Token**, then Save Configuration immediately under the
+  key it saves.
+
+### Fixed
+
+- **A finished agent run says how long it worked for.** The transcript used to
+  date an assistant message with the time the run *started* — `14:32`. It now says
+  `worked for 7m 29s`, matching the counter that ran beside the stop button, with
+  the start time in the tooltip. Chat replies get the same treatment, measured
+  from the prompt to the last token, and a message saved before this keeps showing
+  its time.
+- **A long line no longer runs off the side of the chat pane.** A pasted URL, a
+  hash or any other unbroken token kept the bubble's width while the line spilled
+  out of it and off the edge of the panel, where nothing could scroll to reach it —
+  the panel is what hides it. The reply text wraps now.
+- **No more "TS ready" on every new tab.** The badge was seeded from the live
+  state, so a tab opened an hour into a session announced the language server
+  again. It appears only for the states that need something — starting,
+  unavailable, failed.
+
+### Removed
+
+- **Monaco's TypeScript worker, and the 6.7 MB it shipped as.** Type checking,
+  completions and hover have come from the language server since 0.2.33, which
+  left the worker with nothing to do but answer beside it — and the mode
+  configuration that was supposed to decline it was being read too late, which is
+  what made every hover appear twice in 0.2.38. It is declined before any model
+  exists, and the worker file is no longer in the bundle.
+
 ## [0.2.38] - 2026-10-13
 
 ### Fixed
@@ -906,7 +943,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.38...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.39...dev
+[0.2.39]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.38...v0.2.39
 [0.2.38]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.37...v0.2.38
 [0.2.37]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.36...v0.2.37
 [0.2.36]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.35...v0.2.36
