@@ -14,6 +14,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as monaco from "monaco-editor";
+import { declineMonacoTypeScriptProviders } from "../monacoTypeScriptProviders";
 
 const invokes: Array<{ command: string; args: Record<string, any> }> = [];
 const handlers = new Map<string, (event: { payload: any }) => void>();
@@ -58,6 +59,15 @@ if (!(globalThis as any).ResizeObserver) {
     disconnect() {}
   };
 }
+
+// The app declines Monaco's own TypeScript providers at startup (`monacoSetup`, at
+// module load), and the editor never creates a model before that has happened. A test
+// that drives the real Monaco has to establish the same precondition: Monaco reads the
+// mode configuration once, when the first TypeScript model appears, so a model created
+// first would measure a configuration the app never runs — and the providers it left
+// registered reach for a worker the app no longer ships, which is what made this file
+// fail with `Worker is not defined`.
+declineMonacoTypeScriptProviders(monaco);
 
 const server = await import("./tsLanguageServer");
 

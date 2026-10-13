@@ -95,9 +95,13 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
    * doing: a permanent label in the corner of every file. Only the states that need
    * something stay: starting, unavailable, failed.
    */
-  const [showLanguageServer, setShowLanguageServer] = useState(
-    () => languageServerState().status !== "off",
-  );
+  const [showLanguageServer, setShowLanguageServer] = useState(() => {
+    // On mount, only if something needs attention. A tab opened an hour into a
+    // session should not announce a language server that has been running the whole
+    // time — which is what it did, flashing "TS ready" on every new tab.
+    const status = languageServerState().status;
+    return status !== "off" && status !== "running";
+  });
   useEffect(() => {
     let hide: ReturnType<typeof setTimeout> | null = null;
     const apply = (next: ReturnType<typeof languageServerState>) => {
@@ -110,7 +114,8 @@ export const MonacoEditorContainer = memo(function MonacoEditorContainer({
         setShowLanguageServer(next.status !== "off");
       }
     };
-    apply(languageServerState());
+    // The current state, applied without the confirmation: `apply` is for *changes*.
+    setLanguageServer(languageServerState());
     const unsubscribe = subscribeLanguageServer(apply);
     return () => {
       if (hide) clearTimeout(hide);
