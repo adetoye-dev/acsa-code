@@ -422,6 +422,169 @@ try {
 
   await session.screenshot("new-project-step2");
 
+  // 5c. A wide line in the transcript stays inside the dock, and the finished turn
+  //     says how long it worked for rather than when it started.
+  //
+  //     Both were found by eye and neither was visible to the suite: a fenced code
+  //     block wider than the panel ran to the panel's edge and was cut off there —
+  //     the rest of the line unreachable, because nothing scrolled — and a finished
+  //     run was dated with its *start*, which is the less interesting half of "this
+  //     took seven minutes". The seeded transcript is the only way to put a wide
+  //     block and a finished turn in front of the layout without a model, and the
+  //     browser preview has no engine to talk to (`/api/app/chat` answers 501), so
+  //     the legacy localStorage transcript is what it reads.
+  //     The fixture is registered as a document-start script rather than set on
+  //     the loaded page, because a cold page hydrates the transcript twice — the
+  //     mount read and the effect after it — and the preview's legacy localStorage
+  //     migration deletes the key on its first read, so the loser of that race
+  //     would publish an empty transcript over the winner's. Pinning `removeItem`
+  //     for that one key keeps the fixture readable by both; nothing else about
+  //     the app is stubbed. In the real app the same double read hits the database
+  //     twice and returns the same rows, so this is a preview artifact, not a bug
+  //     being papered over.
+  await session.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `(() => {
+      const key = "acsa_code_chat_history_v1_global";
+      const newline = String.fromCharCode(10);
+      const fence = String.fromCharCode(96).repeat(3);
+      const line = "const veryLongIdentifierName = someFunction(argumentOne, argumentTwo, argumentThree, argumentFour);";
+      const content = [
+        "Here is the change.",
+        "",
+        fence + "ts",
+        line, line, line, line, line, line,
+        fence,
+        "",
+        "and a long unbroken token: " + "x".repeat(300),
+      ].join(newline);
+      try {
+        localStorage.setItem(key, JSON.stringify([
+          { id: "gui-u1", role: "user", content: "what changed?", timestamp: 1 },
+          {
+            id: "gui-a1",
+            role: "assistant",
+            content,
+            timestamp: 2,
+            provider: "deepseek",
+            model: "deepseek-flash",
+            durationMs: 449000,
+          },
+        ]));
+        const remove = Storage.prototype.removeItem;
+        Storage.prototype.removeItem = function (k) {
+          if (String(k) === key) return;
+          return remove.call(this, k);
+        };
+      } catch { /* storage disabled */ }
+    })()`,
+  });
+  await session.send("Page.navigate", { url: APP });
+  await sleep(2200);
+  // Open it only if it is not already: the toggle closes an open dock, and the
+  // dock starts open at this width.
+  await session.eval(`(() => {
+    if (document.querySelector('[data-testid="chat-dock-panel"]')) return "already open";
+    document.querySelector('[title^="Toggle AI Chat Panel"]').click();
+    return "opened";
+  })()`);
+  await sleep(1200);
+
+  const wide = await session.eval(`(() => {
+    const dock = document.querySelector('[data-testid="chat-dock-panel"]');
+    const pre = dock && dock.querySelector('[data-testid="chat-transcript"] pre');
+    if (!dock || !pre) return null;
+    const d = dock.getBoundingClientRect();
+    const p = pre.getBoundingClientRect();
+    pre.scrollLeft = 99999;
+    const stamp = dock.querySelector('[title^="Started "]');
+    // A line that cannot wrap does not widen its own box, so measuring rectangles
+    // misses it: the bubble stays the right width while the line box runs out of
+    // it, and the aside's overflow-hidden cuts it with nothing to scroll. Compare
+    // each element's own scroll extent instead, ignoring the blocks that are *meant*
+    // to scroll sideways.
+    const transcript = dock.querySelector('[data-testid="chat-transcript"]');
+    let clipped = null;
+    for (const el of transcript.querySelectorAll('*')) {
+      const ox = getComputedStyle(el).overflowX;
+      if (ox === 'auto' || ox === 'scroll') continue;
+      if (el.scrollWidth - el.clientWidth > 1) {
+        clipped = { cls: String(el.className).slice(0, 60), over: el.scrollWidth - el.clientWidth };
+        break;
+      }
+    }
+    return {
+      dockWidth: Math.round(d.width),
+      blockWidth: Math.round(p.width),
+      scrollWidth: Math.round(pre.scrollWidth),
+      scrolledTo: Math.round(pre.scrollLeft),
+      pastEdge: Math.round(p.right - d.right),
+      clipped,
+      page: { scrollWidth: document.documentElement.scrollWidth, viewport: window.innerWidth },
+      header: stamp ? stamp.textContent : null,
+    };
+  })()`);
+  check("a wide code block stays inside the chat dock",
+    wide && wide.pastEdge <= 1 && wide.blockWidth <= wide.dockWidth &&
+      wide.page.scrollWidth <= wide.page.viewport + 1,
+    wide ? `dock ${wide.dockWidth}px, block ${wide.blockWidth}px, ${wide.pastEdge}px past the edge, page scroll ${wide.page.scrollWidth}/${wide.page.viewport}` : "no code block rendered");
+  check("a wide code block can be scrolled to its end",
+    wide && wide.scrollWidth > wide.blockWidth && wide.scrolledTo > 0,
+    wide ? `content ${wide.scrollWidth}px in ${wide.blockWidth}px, scrolled to ${wide.scrolledTo}px` : "no code block rendered");
+  check("no line in the transcript is clipped with nothing to scroll",
+    wide && !wide.clipped,
+    wide ? (wide.clipped ? `${wide.clipped.over}px over in ${wide.clipped.cls}` : "nothing overflows its box") : "no transcript rendered");
+  check("a finished turn says how long it worked for, not when it started",
+    wide && wide.header === "worked for 7m 29s",
+    wide ? `header reads ${JSON.stringify(wide.header)}` : "no assistant header rendered");
+  await session.screenshot("chat-transcript-wide");
+
+  // 5d. The cloud provider panel reads in the order it is filled in, with one
+  //     save button. It had two — "Save Key" beside the key and "Save
+  //     Configuration" below — which did the same thing and read as two different
+  //     decisions, and the endpoint sat *below* the key it belongs to. Reported
+  //     from use: "hard for them to really understand the difference".
+  // A taller window, so the whole panel — key, endpoint and the single save
+  // button together — is on screen for the assertion and the screenshot.
+  await session.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+  await session.send("Page.navigate", { url: APP });
+  await sleep(2200);
+  await session.eval(`document.querySelector('[data-testid="nav-item-aiManager"]').click()`);
+  await sleep(900);
+  await session.eval(`(() => {
+    const item = [...document.querySelectorAll('button, [role="button"]')]
+      .find((b) => /Groq/.test(b.textContent || ''));
+    if (item) item.click();
+  })()`);
+  await sleep(700);
+  const provider = await session.eval(`(() => {
+    const url = document.querySelector('#aimanagementdashboard-base-url-input');
+    const key = document.querySelector('#aimanagementdashboard-api-key-input');
+    const labels = [...document.querySelectorAll('label')].map((l) => l.getAttribute('for'));
+    const saveButtons = [...document.querySelectorAll('button')].filter((b) => /Save (Key|Configuration)/i.test(b.textContent || ''));
+    if (!url || !key) return null;
+    const u = url.getBoundingClientRect();
+    const k = key.getBoundingClientRect();
+    const save = saveButtons[0] && saveButtons[0].getBoundingClientRect();
+    return {
+      baseUrlAboveKey: u.top < k.top,
+      keyAboveSave: save ? k.bottom <= save.top + 1 : null,
+      saveButtons: saveButtons.map((b) => (b.textContent || '').trim()),
+      labelled: labels.includes('aimanagementdashboard-base-url-input') &&
+        labels.includes('aimanagementdashboard-api-key-input'),
+      urlWidth: Math.round(u.width),
+      keyWidth: Math.round(k.width),
+      rowWidth: Math.round(url.parentElement.getBoundingClientRect().width),
+    };
+  })()`);
+  check("the cloud provider panel puts the endpoint above the key and saves once",
+    provider && provider.baseUrlAboveKey && provider.keyAboveSave &&
+      provider.saveButtons.length === 1 && provider.saveButtons[0] === "Save Configuration",
+    provider ? `${provider.baseUrlAboveKey ? "URL above key" : "URL NOT above key"}, save buttons ${JSON.stringify(provider.saveButtons)}` : "provider panel did not render");
+  check("each field is labelled by its own label, and the key fills its row",
+    provider && provider.labelled && Math.abs(provider.keyWidth - provider.rowWidth) <= 1,
+    provider ? `labels ${provider.labelled}, key ${provider.keyWidth}px of ${provider.rowWidth}px` : "provider panel did not render");
+  await session.screenshot("provider-cloud-panel");
+
   // 6. Reduced motion is honoured. Nothing here respected it: a spinner, a pulsing
   //    status dot, an entrance animation on every dialog and a sidebar that
   //    animates its own width were all unavoidable. Asserted on the rail's width
