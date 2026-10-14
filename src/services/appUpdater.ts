@@ -113,7 +113,8 @@ export interface InstallProgress {
   detail?: string;
   /**
    * Set when the failure has a way out that is not "try again": the copy running
-   * cannot be replaced, so the user has to fetch the build themselves.
+   * cannot be replaced — or a download that keeps failing — so the surface also
+   * offers the build itself.
    */
   remedy?: "manual";
 }
@@ -195,6 +196,27 @@ function describeInstallFailure(error: unknown): { detail: string; remedy?: "man
         "the disk image rather than from the Applications folder. Move ACSA Code into " +
         "Applications, open it from there, and update again — or download the new build " +
         "from the release page.",
+      remedy: "manual",
+    };
+  }
+  /*
+   * A download that did not finish.
+   *
+   * `error decoding response body` is reqwest's decode failure — the bytes stopped
+   * arriving partway, usually a dropped connection or a proxy cutting a long
+   * transfer. It says nothing about the app, and reported from use it left the
+   * user with a banner they could only escape by quitting and relaunching: "download
+   * failed and retry does nothing".
+   *
+   * The retry button is the fix for the second half; this is the sentence for the
+   * first, and it names the two ways forward rather than the errno.
+   */
+  if (/decoding response body|error decoding|unexpected eof|connection reset|broken pipe|incomplete/i.test(raw)) {
+    return {
+      detail:
+        "The download stopped partway through, so nothing was installed. That is usually " +
+        "the connection rather than the app — try again, and if it keeps happening, " +
+        "download the build from the release page instead.",
       remedy: "manual",
     };
   }

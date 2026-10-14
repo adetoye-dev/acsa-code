@@ -201,6 +201,18 @@ export function AboutPane() {
                 <Icon icon={AlertCircle} className="w-3 h-3 mt-0.5 shrink-0" />
                 <span>{install?.detail || "The update could not be installed."}</span>
               </span>
+              {/* This pane is the other place an install is started, and it had the
+                  same dead end: the "Download & install" button renders only while
+                  there is no install, so a failure left the reason and no way to
+                  act on it. */}
+              <button
+                type="button"
+                onClick={() => void startInstall()}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-2xs font-medium text-white transition-colors cursor-pointer"
+              >
+                <Icon icon={RefreshCw} className="w-3 h-3" />
+                <span>Try again</span>
+              </button>
               {install?.remedy === "manual" && (
                 <button
                   type="button"

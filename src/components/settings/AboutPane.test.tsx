@@ -38,6 +38,7 @@ vi.mock("../../services/appUpdater", () => ({
 }));
 
 const { AboutPane } = await import("./AboutPane");
+const updater = await import("../../services/appUpdater");
 
 afterEach(() => {
   cleanup();
@@ -73,6 +74,33 @@ describe("an update that cannot replace the copy that is running", () => {
     expect(screen.getByText(/read-only location/i)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /open the download page/i }));
     expect(opened.urls).toEqual([RELEASE_URL]);
+  });
+
+  it("offers a retry after a failure, rather than only the reason", async () => {
+    // This pane starts installs too, and it had the same dead end as the banner:
+    // "Download & install" renders only while there is no install in flight, so a
+    // failure left the reason and nothing to do about it.
+    render(<AboutPane />);
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent("acsa:update", {
+          detail: {
+            kind: "install",
+            progress: {
+              version: "0.2.46",
+              phase: "failed",
+              percent: 0,
+              detail: "The download stopped partway through, so nothing was installed.",
+            },
+          },
+        }),
+      );
+    });
+
+    expect(screen.getByText(/stopped partway/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /try again/i }));
+    expect(vi.mocked(updater.installUpdate)).toHaveBeenCalledTimes(1);
   });
 
   it("does not offer a download page for a failure that can just be retried", async () => {

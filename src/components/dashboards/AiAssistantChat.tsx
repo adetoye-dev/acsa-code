@@ -3267,6 +3267,21 @@ interface AgentFlowProps {
   phase?: string;
 }
 
+/** The last segment of a path, for a row too narrow to hold the whole thing. */
+function fileNameOf(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() || path;
+}
+
+/** Everything before it, which is only worth showing when two names collide. */
+function parentDirOf(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  parts.pop();
+  if (parts.length === 0) return "";
+  // Two segments at most, right to left: "work/acsa-code/src" is the useful end of a
+  // path, not its root.
+  return parts.slice(-2).join("/");
+}
+
 /**
  * "Edited N files  +X −Y", with a row per file and a Review on each.
  *
@@ -3284,6 +3299,21 @@ function ChangeLogCard({
   if (changes.length === 0) return null;
   const added = changes.reduce((total, change) => total + change.added, 0);
   const removed = changes.reduce((total, change) => total + change.removed, 0);
+
+  /*
+   * The file's name, not its route.
+   *
+   * Rows read `/Users/adetoyeadewoye/Desktop/work/...` and truncated there, so the
+   * one part that identifies the file — the end of the path — was the part cut off,
+   * and every row started with the same three segments. Asked for directly: "display
+   * the file name for the changed files instead of the route".
+   *
+   * The directory comes back only when the names alone are ambiguous — two
+   * `page.tsx` in one run — because that is the one case where the name is not
+   * enough. The full path is on the row's tooltip either way.
+   */
+  const names = changes.map((change) => fileNameOf(change.path));
+  const ambiguous = new Set(names).size !== names.length;
 
   return (
     <div
@@ -3307,7 +3337,14 @@ function ChangeLogCard({
           title={`Review ${change.path}`}
           className="w-full flex items-center justify-between gap-3 px-3 py-1.5 text-left hover:bg-zinc-900/70 transition-colors cursor-pointer"
         >
-          <span className="text-2xs font-mono text-zinc-400 truncate">{change.path}</span>
+          {/* Dimmed directory first, then the name — so the row still reads as a
+              path, with the part that identifies the file at the bright end. */}
+          <span className="min-w-0 text-2xs font-mono truncate">
+            {ambiguous && (
+              <span className="text-4xs text-zinc-500">{parentDirOf(change.path)}/</span>
+            )}
+            <span className="text-zinc-300">{fileNameOf(change.path)}</span>
+          </span>
           <span className="flex items-center gap-3 font-mono text-2xs shrink-0">
             {change.added > 0 && <span className="text-emerald-400">+{change.added}</span>}
             {change.removed > 0 && <span className="text-red-400">−{change.removed}</span>}

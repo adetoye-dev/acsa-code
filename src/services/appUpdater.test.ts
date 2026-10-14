@@ -64,6 +64,70 @@ describe("an install that fails", () => {
   });
 });
 
+describe("an install that failed partway", () => {
+  beforeEach(() => {
+    (globalThis as any).localStorage = new FakeStorage();
+  });
+
+  it("says the download stopped, and offers both ways forward", () => {
+    // Reported from use, with a screenshot: `error decoding response body`, which
+    // is reqwest's decode failure and says nothing to anyone. It is a transfer that
+    // stopped partway — a retry is the first thing to try, and the release page is
+    // the way out if it keeps happening.
+    installThatFailsWith("error decoding response body");
+
+    return updater.installUpdate().then(
+      () => {
+        throw new Error("the install should have failed");
+      },
+      () => {
+        const failed = updater.installProgress();
+        expect(failed?.phase).toBe("failed");
+        expect(failed?.detail).toMatch(/stopped partway/);
+        expect(failed?.detail).toMatch(/try again/i);
+        expect(failed?.detail).toMatch(/release page/);
+        // The errno is not repeated at the user.
+        expect(failed?.detail).not.toMatch(/decoding response body/i);
+        expect(failed?.remedy).toBe("manual");
+      },
+    );
+  });
+
+  it("still reports a failure it cannot explain, in the provider's words", () => {
+    // The control: a mapping that swallowed everything would pass the test above
+    // and lose the detail of every other failure.
+    installThatFailsWith("HTTP 500 from the release host");
+
+    return updater.installUpdate().then(
+      () => {
+        throw new Error("the install should have failed");
+      },
+      () => {
+        expect(updater.installProgress()?.detail).toBe("HTTP 500 from the release host");
+      },
+    );
+  });
+
+  it("lets a retry run after that failure", async () => {
+    // The other half of "retry does nothing": the service has to still be able to
+    // start one. The first attempt fails, the second succeeds.
+    let attempts = 0;
+    nextCheck = async () => ({
+      available: true,
+      version: "0.2.40",
+      downloadAndInstall: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("error decoding response body");
+      },
+    });
+
+    await expect(updater.installUpdate()).rejects.toThrow();
+    await expect(updater.installUpdate()).resolves.toBeUndefined();
+    expect(attempts).toBe(2);
+    expect(updater.installProgress()?.phase).toBe("ready");
+  });
+});
+
 describe("one install at a time", () => {
   beforeEach(() => {
     (globalThis as any).localStorage = new FakeStorage();

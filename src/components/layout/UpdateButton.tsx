@@ -117,7 +117,25 @@ export function UpdateButton() {
     <div className="relative shrink-0" ref={wrapRef}>
       <button
         type="button"
-        onClick={() => setOpen((prev) => !prev)}
+        /*
+         * A failure makes this button the way out, not a way to open a panel.
+         *
+         * It is labelled "Retry" in that state and it used to only toggle the
+         * panel — which, when failed, offered nothing to click either. Reported
+         * from use: "download failed and retry does nothing. Had to quit and
+         * restart the app and try the download all over again before it worked."
+         * Restarting was the only thing that could get out of it, because the
+         * failed state is service state and a fresh process is the only thing that
+         * clears it.
+         */
+        onClick={() => {
+          if (phase === "failed") {
+            setOpen(true);
+            void startInstall();
+            return;
+          }
+          setOpen((prev) => !prev);
+        }}
         title={`Version ${update.version} is available`}
         className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/50 text-purple-200 transition-all shadow-sm"
       >
@@ -197,6 +215,17 @@ export function UpdateButton() {
                 <Icon icon={AlertCircle} className="w-3 h-3 mt-0.5 shrink-0" />
                 <span>{detail || "The update could not be installed."}</span>
               </p>
+              {/* Always offered, whatever the failure was: a download that did not
+                  finish is the common case and a second attempt is the first thing
+                  to try. This is the button that was missing. */}
+              <button
+                type="button"
+                onClick={() => void startInstall()}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-purple-600 hover:bg-purple-500 text-2xs font-medium text-white transition-colors shadow-sm cursor-pointer"
+              >
+                <Icon icon={RefreshCw} className="w-3 h-3" />
+                <span>Try again</span>
+              </button>
               {/* When the running copy cannot be replaced, "Retry" is not the way
                   out — a fresh download is, so the banner offers that instead of
                   leaving the user to work it out from an errno. */}
@@ -204,7 +233,7 @@ export function UpdateButton() {
                 <button
                   type="button"
                   onClick={() => void openExternal(RELEASE_PAGE_URL)}
-                  className="text-2xs font-medium text-purple-300 hover:text-purple-200 underline underline-offset-2 transition-colors cursor-pointer"
+                  className="block text-2xs font-medium text-purple-300 hover:text-purple-200 underline underline-offset-2 transition-colors cursor-pointer"
                 >
                   Open the download page
                 </button>

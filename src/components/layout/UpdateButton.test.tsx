@@ -131,3 +131,57 @@ describe("an install started somewhere else", () => {
     expect(button.textContent).toContain("42%");
   });
 });
+
+/**
+ * Retry, after a download that failed.
+ *
+ * Reported from use, with a screenshot of the banner reading "Return / error
+ * decoding response body": "download failed and retry does nothing. Had to quit and
+ * restart the app and try the download all over again before it worked."
+ *
+ * The button was labelled Retry and only toggled the panel, and the panel's actions
+ * rendered *only* while idle — so a failed install had no way forward at all, and a
+ * fresh process (which clears the service's state) was the only escape.
+ */
+describe("the titlebar button after a failed install", () => {
+  const failIt = () => {
+    const failed = { version: "0.2.0", phase: "failed", percent: 0, detail: "The download stopped partway." };
+    vi.mocked(updater.installUpdate).mockImplementationOnce(async () => {
+      window.dispatchEvent(
+        new CustomEvent("acsa:update", { detail: { kind: "install", progress: failed } }),
+      );
+      throw new Error("install failed");
+    });
+    return failed;
+  };
+
+  it("offers Try again in the panel, and it retries", async () => {
+    failIt();
+    render(<UpdateButton />);
+    fireEvent.click(await findButton());
+
+    // The first click on "Download & install" fails — as it would in the app.
+    fireEvent.click(screen.getByText("Download & install"));
+    expect(await screen.findByText("Try again")).toBeTruthy();
+    expect(screen.getByText("The download stopped partway.")).toBeTruthy();
+
+    fireEvent.click(screen.getByText("Try again"));
+    expect(vi.mocked(updater.installUpdate)).toHaveBeenCalledTimes(2);
+  });
+
+  it("makes the button labelled Retry retry", async () => {
+    // The label promised an action and delivered a panel toggle: clicking it in
+    // the failed state only opened and closed the panel that had nothing in it.
+    failIt();
+    render(<UpdateButton />);
+    fireEvent.click(await findButton());
+    fireEvent.click(screen.getByText("Download & install"));
+    await screen.findByText("Try again");
+
+    // Now the titlebar button reads "Retry", and that is what it must do.
+    const retry = screen.getByRole("button", { name: /retry/i });
+    fireEvent.click(retry);
+
+    expect(vi.mocked(updater.installUpdate)).toHaveBeenCalledTimes(2);
+  });
+});

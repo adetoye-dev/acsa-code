@@ -1404,6 +1404,50 @@ describe("the agent's reasoning, in the flow", () => {
     expect(flow.textContent).toContain("Step 1: Run Command");
   });
 
+  it("names the files it changed, not their paths", () => {
+    // Rows read `/Users/adetoyeadewoye/Desktop/work/…` and truncated there, so the
+    // part that identifies the file was the part cut off, and every row opened with
+    // the same three segments. Asked for directly: "display the file name for the
+    // changed files instead of the route".
+    const reset = seed({
+      changes: [
+        { path: "/Users/dev/Desktop/work/acsa-code/src/payments.service.ts", added: 4, removed: 13 },
+        { path: "/Users/dev/Desktop/work/acsa-code/src/refunds.service.ts", added: 1, removed: 0 },
+      ],
+    });
+    try {
+      render(<AiAssistantChat {...baseProps} />);
+
+      const card = screen.getByTestId("change-log");
+      expect(card.textContent).toContain("payments.service.ts");
+      expect(card.textContent).toContain("refunds.service.ts");
+      expect(card.textContent).not.toContain("/Users/dev");
+      // The path is not lost — it is what the row opens, and what its tooltip says.
+      const row = screen.getByTitle("Review /Users/dev/Desktop/work/acsa-code/src/payments.service.ts");
+      expect(row.textContent).toContain("payments.service.ts");
+    } finally {
+      reset();
+    }
+  });
+
+  it("shows the directory only when two files share a name", () => {
+    // `page.tsx` twice in one run is the case a name alone cannot carry.
+    const reset = seed({
+      changes: [
+        { path: "/repo/app/admin/page.tsx", added: 2, removed: 0 },
+        { path: "/repo/app/shop/page.tsx", added: 3, removed: 1 },
+      ],
+    });
+    try {
+      render(<AiAssistantChat {...baseProps} />);
+      const card = screen.getByTestId("change-log");
+      expect(card.textContent).toContain("admin/page.tsx");
+      expect(card.textContent).toContain("shop/page.tsx");
+    } finally {
+      reset();
+    }
+  });
+
   it("offers Stop inside the run's own flow row, not a footer of its own", () => {
     // One panel: the control that ends the turn belongs to the row that describes
     // it, not to a second bordered bar underneath.

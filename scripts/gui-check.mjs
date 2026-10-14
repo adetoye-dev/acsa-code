@@ -740,6 +740,10 @@ try {
     // them.
     const card = box.querySelector('[data-testid="change-log"]');
     const changeText = Boolean(card && card.querySelectorAll("button").length > 0);
+    // The row names the file, not its route — the whole path is the tooltip.
+    const row = card && card.querySelector("button");
+    const rowText = row ? (row.textContent || "").trim() : "";
+    const rowTitle = row ? row.getAttribute("title") || "" : "";
     const insideFlow = Boolean(card && flow && flow.contains(card));
     // The answer is the block the flow opens onto; the card follows it.
     const answer = flow ? flow.nextElementSibling : null;
@@ -753,6 +757,8 @@ try {
       caret: Boolean(caret),
       carets: flow ? flow.querySelectorAll("button svg.lucide-chevron-down, button svg.lucide-chevron-right").length : -1,
       changeText: changeText,
+      rowText: rowText,
+      rowTitle: rowTitle,
       insideFlow: insideFlow,
       afterAnswer: Boolean(card && answer && (answer.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING)),
       // Nothing between the flow and the answer but the answer's own block.
@@ -771,6 +777,14 @@ try {
     unified
       ? `change rows ${unified.changeText}, inside the flow ${unified.insideFlow}, after the answer ${unified.afterAnswer}`
       : "no flow rendered");
+  check("a changed file is named, not addressed",
+    // The row leads with the name and carries no directory; the path it opens is in
+    // the tooltip. The counts live in the same button, so this is a prefix check.
+    unified &&
+      unified.rowText.startsWith("payments.service.ts") &&
+      !unified.rowText.includes("src/") &&
+      unified.rowTitle === "Review src/payments.service.ts",
+    unified ? `row reads ${JSON.stringify(unified.rowText)}, title ${JSON.stringify(unified.rowTitle)}` : "no change row");
 
   check("a reasoning paragraph wraps rather than being clipped",
     flow && flow.clipped <= 1,
