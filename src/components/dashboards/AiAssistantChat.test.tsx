@@ -1070,10 +1070,10 @@ describe("the agent's reasoning, in the flow", () => {
       render(<AiAssistantChat {...baseProps} />);
 
       // One line, the same shape Copilot shows: how much work, and how long it took.
-      const header = screen.getByText("Completed 2 steps in 1m 59s");
+      const header = screen.getByText("2 steps · worked for 1m 59s");
       expect(header).toBeTruthy();
       // Two actions, not four entries — the reasoning is not a step.
-      expect(screen.queryByText(/Completed 4 steps/)).toBeNull();
+      expect(screen.queryByText(/4 steps/)).toBeNull();
       // Collapsed: the flow is not in the document until it is asked for.
       expect(screen.queryByTestId("agent-reasoning")).toBeNull();
 
@@ -1088,7 +1088,7 @@ describe("the agent's reasoning, in the flow", () => {
     const reset = seed({});
     try {
       render(<AiAssistantChat {...baseProps} />);
-      fireEvent.click(screen.getByText("Completed 2 steps in 1m 59s"));
+      fireEvent.click(screen.getByText("2 steps · worked for 1m 59s"));
 
       const flow = flowOrder();
       expect(flow.map((entry) => entry.split(":")[0])).toEqual([
@@ -1211,6 +1211,70 @@ describe("the agent's reasoning, in the flow", () => {
     } finally {
       reset();
     }
+  });
+
+  it("reports what the run cost instead of repeating how long it worked for", () => {
+    // Reported from use: "we now have a potential duplicate above chat we have
+    // 'worked for 1m 59s' then inside the chat we have 'completed 2 steps in 1m
+    // 59s' on our dropdown". The flow row keeps the duration; the header takes the
+    // number that was nowhere else — what the provider counted.
+    const reset = seed({
+      tokens: { input: 197_625, output: 16_339, cached: 189_824, reasoning: 4_094, total: 213_964 },
+    });
+    try {
+      render(<AiAssistantChat {...baseProps} />);
+      const spend = screen.getByText("214k tokens");
+      expect(spend.getAttribute("title")).toContain("197,625 input");
+      expect(spend.getAttribute("title")).toContain("4,094 reasoning");
+      // Once, and not in the header: the flow row above the answer is the only
+      // place the duration appears.
+      expect(screen.getAllByText(/worked for 1m 59s/)).toHaveLength(1);
+      expect(screen.getByText("2 steps · worked for 1m 59s")).toBeTruthy();
+    } finally {
+      reset();
+    }
+  });
+
+  it("keeps the duration in the header when there is no flow to carry it", () => {
+    // The other half of the rule: a turn with no steps on record has no row to put
+    // it on, and losing the duration entirely would be worse than showing it once
+    // in the place that is left.
+    const reset = seed({ steps: undefined });
+    try {
+      render(<AiAssistantChat {...baseProps} />);
+      expect(screen.getByText(/worked for 1m 59s/)).toBeTruthy();
+    } finally {
+      reset();
+    }
+  });
+
+  it("closes the flow as soon as the summary starts arriving", () => {
+    // Asked for directly: "after a task is done and the summary starts writing we
+    // auto-close the dropdown so that the user is able to focus on the summary."
+    const steps = [
+      { id: "r1", kind: "reasoning" as const, name: "Reasoning", text: "Checking the driver.", status: "running" as const },
+      { id: "c1", name: "Run Command", detail: "rg driver", status: "running" as const },
+    ];
+    const { rerender } = render(
+      <AiAssistantChat {...baseProps} status="running" agentSteps={steps} turnElapsedMs={5_000} />,
+    );
+
+    // Open while it works: the flow is what there is to read.
+    expect(screen.getByText("Checking the driver.")).toBeTruthy();
+
+    rerender(
+      <AiAssistantChat
+        {...baseProps}
+        status="running"
+        agentSteps={steps}
+        turnElapsedMs={12_000}
+        streamingAnswer="Here is what I found:"
+      />,
+    );
+
+    // The answer is on screen and the flow has stepped aside.
+    expect(screen.getByText(/Here is what I found/)).toBeTruthy();
+    expect(screen.queryByText("Checking the driver.")).toBeNull();
   });
 
   it("shows the reasoning while the turn is still running, without a click", () => {

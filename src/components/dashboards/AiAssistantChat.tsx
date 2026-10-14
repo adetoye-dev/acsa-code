@@ -38,6 +38,7 @@ import {
   streamChatCompletion,
   type ChatMessage,
   type AgentStep,
+  type RunTokens,
 } from "../../services/aiChatService";
 import { chatDraft, useChatDraft } from "../../services/chatDraft";
 import {
@@ -56,6 +57,7 @@ import { filterFiles, flattenFiles } from "../../services/fileSearch";
 import type { FileNode } from "../FileTree";
 import { readTextFile, writeTextFile } from "../../services/fileAccess";
 import { formatDuration } from "../../services/agentTurnLimit";
+import { formatTokens } from "../../services/tokenCount";
 import { summarizeFailure } from "../../services/providerErrors";
 
 interface AiAssistantChatProps {
@@ -125,6 +127,8 @@ interface AiAssistantChatProps {
   isIndexing?: boolean;
   onSyncIndex?: () => void;
   streamingAnswer?: string;
+  /** What the running turn has cost so far, as the provider counted it. */
+  turnTokens?: RunTokens | null;
   agentSteps?: AgentStep[];
   activeAiSettings?: { provider: string; model: string } | null;
 }
@@ -302,7 +306,38 @@ const ChatTranscript = memo(function ChatTranscript({
                     <span className="font-semibold text-purple-300 font-mono text-2xs truncate">
                       {msg.model || "AI Assistant"}
                     </span>
-                    {typeof msg.durationMs === "number" ? (
+                    {/*
+                      What the run cost, where the duration used to be.
+
+                      Both are true of the same turn, and the flow's own row already
+                      says how long it worked for — so saying it twice, once above
+                      the answer and once inside it, spent the header on the half the
+                      reader can also see by opening the flow. Tokens are the half
+                      nothing else on screen reports, and the number people are
+                      most often surprised by: context is re-sent every step, so
+                      input dwarfs output.
+
+                      A turn from before this existed, or a provider that reports no
+                      usage, keeps the clock time — never the duration, so the two
+                      lines can never say the same thing.
+                    */}
+                    {msg.tokens ? (
+                      <span
+                        className="text-4xs font-mono text-zinc-500 ml-1"
+                        title={[
+                          `${msg.tokens.input.toLocaleString()} input`,
+                          msg.tokens.cached ? `${msg.tokens.cached.toLocaleString()} cached` : "",
+                          `${msg.tokens.output.toLocaleString()} output`,
+                          msg.tokens.reasoning ? `${msg.tokens.reasoning.toLocaleString()} reasoning` : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      >
+                        {formatTokens(msg.tokens.total)} tokens
+                      </span>
+                    ) : msg.durationMs && !(msg.steps && msg.steps.length > 0) ? (
+                      // No flow to carry it, so the header keeps the duration — once,
+                      // in whichever of the two is on screen.
                       <span
                         className="text-4xs font-mono text-zinc-500 ml-1"
                         title={`Started ${new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}
@@ -687,6 +722,7 @@ export function AiAssistantChat({
   isIndexing = false,
   onSyncIndex,
   streamingAnswer = "",
+  turnTokens = null,
   agentSteps = NO_STEPS,
   activeAiSettings = null,
 }: AiAssistantChatProps) {
@@ -1224,6 +1260,7 @@ export function AiAssistantChat({
         // finished transcript says "worked for 7m 29s" rather than a start time.
         timestamp: turnStartedAtRef.current || Date.now() - turnElapsedMs,
         durationMs: turnElapsedMs,
+        tokens: turnTokens ?? undefined,
         provider: selectedModelItem?.providerId || "ollama",
         model: selectedModelItem?.model || "ACSA Agent",
         steps: finalizedSteps.length > 0 ? finalizedSteps : undefined,
@@ -1249,7 +1286,7 @@ export function AiAssistantChat({
     // `turnElapsedMs` is a dependency on purpose even though the effect must not
     // rebuild the message when it ticks: the guard above (`status` left "running")
     // makes those extra runs no-ops, and it is the value the finished message needs.
-  }, [status, failureDetail, failureSummary, noFileChanges, waitingForUser, turnChanges, projectRoot, selectedModelItem, streamingAnswer, agentSteps, planWriteSettled, turnElapsedMs]);
+  }, [status, failureDetail, failureSummary, noFileChanges, waitingForUser, turnChanges, projectRoot, selectedModelItem, streamingAnswer, agentSteps, planWriteSettled, turnElapsedMs, turnTokens]);
 
   /**
    * Ask Ollama what is actually installed, and believe it.
@@ -3297,7 +3334,10 @@ function AgentFlow({
   const prevSummaryRef = useRef(hasSummary);
 
   useEffect(() => {
-    // When a conclusion/summary is delivered, auto-collapse the thinking loop
+    // The summary starting to arrive closes the flow, so the reader is looking at
+    // the answer rather than at how it was reached. Once closed it stays closed:
+    // re-opening it is a choice, and yanking it shut again under someone's cursor
+    // would be the opposite of the point.
     if (!prevSummaryRef.current && hasSummary) {
       setIsOpen(false);
     }
@@ -3386,15 +3426,13 @@ function AgentFlow({
                 */}
                 {actionSteps.length > 0
                   ? elapsedSeconds > 0
-                    ? `Completed ${actionSteps.length} ${
+                    ? `${actionSteps.length} ${
                         actionSteps.length === 1 ? "step" : "steps"
-                      } in ${formatDuration(elapsedSeconds * 1000)}`
-                    : `Completed ${actionSteps.length} ${
-                        actionSteps.length === 1 ? "step" : "steps"
-                      }`
+                      } · worked for ${formatDuration(elapsedSeconds * 1000)}`
+                    : `${actionSteps.length} ${actionSteps.length === 1 ? "step" : "steps"}`
                   : elapsedSeconds > 0
-                  ? `Thought for ${formatDuration(elapsedSeconds * 1000)}`
-                  : "Model Reasoning"}
+                  ? `worked for ${formatDuration(elapsedSeconds * 1000)}`
+                  : "Reasoning"}
               </span>
               {/* Only while it is still running: "18 of 20" is a progress report,
                   and a finished turn's progress is 100% — which the line above
@@ -3472,6 +3510,11 @@ function AgentFlow({
                         {step.detail && (
                           <span className="text-3xs text-zinc-400 ml-1.5 font-mono break-all">
                             — {step.detail}
+                          </span>
+                        )}
+                        {step.progress && step.status === "running" && (
+                          <span className="text-3xs text-purple-300 ml-1.5 font-mono">
+                            {step.progress}
                           </span>
                         )}
                         {/* The step's own output, on request. A row that only names

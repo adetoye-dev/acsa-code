@@ -198,6 +198,7 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
     pendingQuestion,
     respondToQuestion,
     turnElapsedMs,
+    turnTokens,
     turnLimitMinutes,
     turnChanges,
     openDiff,
@@ -1040,6 +1041,7 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
     pendingApproval,
     respondToApproval,
     turnElapsedMs,
+    turnTokens,
     turnLimitMinutes,
     onClose: () => setIsCenterChatOpen(false),
     onPopOutWide: () => {
@@ -1696,6 +1698,7 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
               pendingApproval={pendingApproval}
               respondToApproval={respondToApproval}
               turnElapsedMs={turnElapsedMs}
+              turnTokens={turnTokens}
               turnLimitMinutes={turnLimitMinutes}
               pendingQuestion={pendingQuestion}
               respondToQuestion={respondToQuestion}

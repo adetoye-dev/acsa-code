@@ -23,7 +23,8 @@ function recorder() {
     touched: string[][];
     changes: any[][];
     failure: string | null;
-  } = { steps: [], answer: "", logs: [], touched: [], changes: [], failure: null };
+    usage: any;
+  } = { steps: [], answer: "", logs: [], touched: [], changes: [], failure: null, usage: null };
 
   const update = {
     setSteps: (fn: (prev: any[]) => any[]) => { calls.steps = fn(calls.steps); },
@@ -33,6 +34,7 @@ function recorder() {
     markTouched: (paths: string[]) => { calls.touched.push(paths); },
     recordChanges: (changes: any[]) => { calls.changes.push(changes); },
     fail: (detail: string) => { calls.failure = detail; },
+    recordUsage: (usage: any) => { calls.usage = usage; },
   };
   return { calls, update };
 }
@@ -167,6 +169,97 @@ describe("an app-server run, from the protocol", () => {
     );
     expect(harness.calls.steps).toHaveLength(1);
     expect(harness.calls.steps[0].status).toBe("done");
+  });
+
+  it("reports what the turn cost, in the app-server's own spelling", () => {
+    // Captured from a real turn driven through `codex app-server` — `tokenUsage.last`
+    // is this turn, `total` is the whole thread, and the transcript wants the turn.
+    const harness = recorder();
+    applyAppServerEvent(
+      {
+        method: "thread/tokenUsage/updated",
+        params: {
+          tokenUsage: {
+            total: { totalTokens: 90_000, inputTokens: 88_000, outputTokens: 2_000 },
+            last: {
+              totalTokens: 2092,
+              inputTokens: 2050,
+              cachedInputTokens: 1024,
+              outputTokens: 42,
+              reasoningOutputTokens: 14,
+            },
+            modelContextWindow: 258400,
+          },
+        },
+      },
+      harness.update,
+    );
+
+    expect(harness.calls.usage).toEqual({
+      input: 2050,
+      output: 42,
+      cached: 1024,
+      reasoning: 14,
+      total: 2092,
+    });
+  });
+
+  it("reads the exec transport's usage too, which has no total to read", () => {
+    // From the committed `exec-run.json` capture: snake_case, and no `total_tokens`
+    // at all — so the total is added up rather than read.
+    const harness = recorder();
+    applyCodexEvent(
+      {
+        type: "turn.completed",
+        usage: {
+          input_tokens: 197_625,
+          cached_input_tokens: 189_824,
+          cache_write_input_tokens: 0,
+          output_tokens: 16_339,
+          reasoning_output_tokens: 4094,
+        },
+      },
+      harness.update,
+    );
+
+    expect(harness.calls.usage).toMatchObject({
+      input: 197_625,
+      output: 16_339,
+      cached: 189_824,
+      reasoning: 4094,
+      total: 213_964,
+    });
+  });
+
+  it("turns an MCP tool call into a step that reports its own progress", () => {
+    // An MCP call was invisible — it did not even become a step — so a run that
+    // spent a minute in a remote tool looked like it had stopped.
+    const harness = recorder();
+    applyAppServerEvent(
+      { method: "item/started", params: { item: { id: "m1", type: "mcpToolCall", serverName: "linear", toolName: "list_issues" } } },
+      harness.update,
+    );
+    expect(harness.calls.steps[0]).toMatchObject({
+      id: "m1",
+      name: "MCP Tool",
+      detail: "linear · list_issues",
+      status: "running",
+    });
+
+    applyAppServerEvent(
+      { method: "item/mcpToolCall/progress", params: { itemId: "m1", progress: "12 of 40" } },
+      harness.update,
+    );
+    expect(harness.calls.steps[0].progress).toBe("12 of 40");
+
+    applyAppServerEvent(
+      { method: "item/completed", params: { item: { id: "m1", type: "mcpToolCall", serverName: "linear", toolName: "list_issues" } } },
+      harness.update,
+    );
+    expect(harness.calls.steps).toHaveLength(1);
+    expect(harness.calls.steps[0].status).toBe("done");
+    // The note is for a call still out; the tick says the rest.
+    expect(harness.calls.steps[0].progress).toBeUndefined();
   });
 
   it("names the files a change step touched, so the row can open one", () => {

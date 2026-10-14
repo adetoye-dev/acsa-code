@@ -15,7 +15,7 @@ import type { OpenFileTab } from "../types/workbench";
 import type { AISettings } from "../components/SettingsModal";
 import type { PipelineOutputLine, PipelineStatus } from "../types/telemetry";
 import { DESKTOP_REQUIRED_MESSAGE } from "../services/engineBridge";
-import type { AgentStep } from "../services/aiChatService";
+import type { AgentStep, RunTokens } from "../services/aiChatService";
 import {
   getActiveSelectedModel,
   isModelVisionCapable,
@@ -890,6 +890,53 @@ function upsertStep(prev: any[], step: any): any[] {
   return next;
 }
 
+/**
+ * Read a usage record, in either spelling the runtime uses.
+ *
+ * `app-server` reports camelCase under `tokenUsage` (`inputTokens`, and a
+ * `totalTokens` already added up); `exec` reports snake_case on `turn.completed`
+ * (`input_tokens`, and no total at all). Both were captured from real runs — the
+ * app-server in a probe against a local model, `exec` from the committed
+ * `__fixtures__/exec-run.json` — so this is the two shapes that exist, not a guess
+ * at what they might be.
+ */
+function readTokens(raw: any): RunTokens | null {
+  if (!raw || typeof raw !== "object") return null;
+  const num = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+  const input = num(raw.inputTokens ?? raw.input_tokens);
+  const output = num(raw.outputTokens ?? raw.output_tokens);
+  const cached = num(raw.cachedInputTokens ?? raw.cached_input_tokens) || undefined;
+  const reasoning = num(raw.reasoningOutputTokens ?? raw.reasoning_output_tokens) || undefined;
+  const total = num(raw.totalTokens ?? raw.total_tokens) || input + output;
+  if (total === 0) return null;
+  return { input, output, cached, reasoning, total };
+}
+
+/** An MCP tool call, as a step. The server and tool are what a reader needs. */
+function mcpStep(item: any, status: "running" | "done" | "failed") {
+  const server = String(item?.serverName ?? item?.server ?? "");
+  const tool = String(item?.toolName ?? item?.tool ?? item?.name ?? "");
+  return {
+    id: item?.id,
+    name: "MCP Tool",
+    detail: [server, tool].filter(Boolean).join(" · ").slice(0, 120) || "tool call",
+    status,
+  };
+}
+
+/** What the tool reported while it ran: a message, a count, or a percentage. */
+function mcpProgressText(params: any): string {
+  const direct = params?.progress ?? params?.message ?? params?.detail;
+  if (typeof direct === "string" && direct.trim()) return direct.trim();
+  const done = params?.progress ?? params?.current ?? params?.completed;
+  const total = params?.total ?? params?.totalItems;
+  if (typeof done === "number" && typeof total === "number" && total > 0) {
+    return `${done}/${total}`;
+  }
+  if (typeof done === "number") return `${done}`;
+  return "";
+}
+
 function commandStep(item: any, status: "running" | "done" | "failed") {
   // The item carries everything it printed when it finished, which is authoritative
   // over the deltas — they can start mid-line, and a resumed turn may not replay
@@ -940,6 +987,7 @@ export function applyAppServerEvent(
     logOutput: (line: any) => void;
     markTouched: (paths: string[]) => void;
     recordChanges?: (changes: PendingFileChange[]) => void;
+    recordUsage?: (usage: RunTokens) => void;
     fail: (detail: string) => void;
   },
 ): void {
@@ -1003,6 +1051,25 @@ export function applyAppServerEvent(
     return;
   }
 
+  // An MCP tool call reporting how far along it is. Attached to the step that owns
+  // it, so the row moves instead of sitting still for the length of a remote call.
+  if (method === "item/mcpToolCall/progress") {
+    const itemId = String(p.itemId ?? p.item_id ?? "");
+    const text = mcpProgressText(p);
+    if (itemId && text) {
+      update.setSteps((prev) => upsertStep(prev, { id: itemId, progress: text.slice(0, 120) }));
+    }
+    return;
+  }
+
+  // What the turn cost. `last` is this turn; `total` is the whole thread, which is
+  // a different question and not the one the transcript should answer per message.
+  if (method === "thread/tokenUsage/updated") {
+    const usage = readTokens(p.tokenUsage?.last ?? p.tokenUsage?.total ?? p.tokenUsage);
+    if (usage) update.recordUsage?.(usage);
+    return;
+  }
+
   // An action shows up when it *starts*. Waiting for it to finish is what made a
   // long command look like nothing was happening — the row appeared only once its
   // output was already stale.
@@ -1013,6 +1080,8 @@ export function applyAppServerEvent(
     } else if (item.type === "fileChange") {
       const step = fileChangeStep(item, "running");
       if (step) update.setSteps((prev) => upsertStep(prev, step));
+    } else if (item.type === "mcpToolCall") {
+      update.setSteps((prev) => upsertStep(prev, mcpStep(item, "running")));
     }
     return;
   }
@@ -1027,6 +1096,13 @@ export function applyAppServerEvent(
   }
   if (item.type === "reasoning") {
     update.setSteps((prev) => settleReasoning(prev, item));
+    return;
+  }
+  if (item.type === "mcpToolCall") {
+    // "failed" covers both the error object and a non-zero status: a call that came
+    // back with an error is the thing a reader needs to see.
+    const status = item.error || item.status === "failed" ? "failed" : "done";
+    update.setSteps((prev) => upsertStep(prev, { ...mcpStep(item, status), progress: undefined }));
     return;
   }
   if (item.type === "commandExecution") {
@@ -1103,10 +1179,18 @@ export function applyCodexEvent(
     logOutput: (line: any) => void;
     markTouched: (paths: string[]) => void;
     recordChanges?: (changes: PendingFileChange[]) => void;
+    recordUsage?: (usage: RunTokens) => void;
   },
 ): void {
   if (event?.type === "thread.started") {
     update.setSteps(() => []);
+    return;
+  }
+  if (event?.type === "turn.completed") {
+    // The one place this transport reports what the run cost — snake_case, and no
+    // total, which `readTokens` adds up.
+    const usage = readTokens(event.usage);
+    if (usage) update.recordUsage?.(usage);
     return;
   }
   const item = event?.item;
@@ -1120,6 +1204,8 @@ export function applyCodexEvent(
     } else if (item.type === "file_change") {
       const step = fileChangeStep(item, "running");
       if (step) update.setSteps((prev) => upsertStep(prev, step));
+    } else if (item.type === "mcp_tool_call" || item.type === "mcpToolCall") {
+      update.setSteps((prev) => upsertStep(prev, mcpStep(item, "running")));
     }
     return;
   }
@@ -1131,6 +1217,11 @@ export function applyCodexEvent(
   }
   if (item.type === "reasoning") {
     update.setSteps((prev) => settleReasoning(prev, item));
+    return;
+  }
+  if (item.type === "mcp_tool_call" || item.type === "mcpToolCall") {
+    const status = item.error || item.status === "failed" ? "failed" : "done";
+    update.setSteps((prev) => upsertStep(prev, { ...mcpStep(item, status), progress: undefined }));
     return;
   }
   if (item.type === "command_execution") {
@@ -1504,6 +1595,8 @@ export interface UsePipelineReturn {
   waitingForUser: string;
   /** Working time on the current turn, excluding time blocked on the human. */
   turnElapsedMs: number;
+  /** What the running turn has cost so far, or null before the provider reports. */
+  turnTokens: RunTokens | null;
   /** The ceiling applied to one turn, in minutes; zero means no limit. */
   turnLimitMinutes: number;
   isIndexing: boolean;
@@ -2538,6 +2631,7 @@ export function usePipeline(): UsePipelineReturn {
           logOutput: (line: any) => setActivityLog((prev) => [...prev, line]),
           markTouched: (paths: string[]) =>
             setTouchedPaths((prev) => [...prev, ...paths.filter((p) => !prev.includes(p))]),
+          recordUsage: (usage: RunTokens) => setTurnTokens(usage),
           recordChanges: (changes: PendingFileChange[]) =>
             setTurnChanges((prev) => {
               // One row per file, keeping the latest diff for it: an edit tool
@@ -2741,6 +2835,16 @@ export function usePipeline(): UsePipelineReturn {
    * happening" is the complaint this answers, and it is what the limit reads.
    */
   const [turnElapsedMs, setTurnElapsedMs] = useState(0);
+
+  /**
+   * What the turn has cost so far, as the provider counted it.
+   *
+   * Kept beside the clock because it answers the same shape of question — "what is
+   * this run doing?" — and it is the number a reader is most often surprised by:
+   * context is re-sent every step, so input tokens dwarf output. Reset with the
+   * clock, at the start of a turn.
+   */
+  const [turnTokens, setTurnTokens] = useState<RunTokens | null>(null);
   useEffect(() => {
     if (status !== "running" || waitingForUser) return;
     const startedAt = Date.now() - turnElapsedMs;
@@ -2752,9 +2856,12 @@ export function usePipeline(): UsePipelineReturn {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, waitingForUser]);
 
-  // A new turn starts from zero, and a finished one stops showing a clock.
+  // A new turn starts from zero, and a finished one stops showing a clock. The
+  // cost is cleared with it: a message that says what the run cost must not be
+  // carrying the previous run's number while this one is still paying for it.
   useEffect(() => {
     setTurnElapsedMs(0);
+    setTurnTokens(null);
   }, [status]);
 
   /**
@@ -2869,6 +2976,7 @@ export function usePipeline(): UsePipelineReturn {
     noFileChanges,
     waitingForUser,
     turnElapsedMs,
+    turnTokens,
     turnLimitMinutes,
     isIndexing,
     syncIndex,

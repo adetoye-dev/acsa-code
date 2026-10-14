@@ -553,6 +553,7 @@ try {
       model: "gpt-5.3-codex",
       timestamp: streamingNow - 120_000,
       durationMs: 119_000,
+      tokens: { input: 197_625, output: 16_339, cached: 189_824, reasoning: 4_094, total: 213_964 },
       steps: [
         { id: "r1", kind: "reasoning", name: "Reasoning", text: "Tracing the payout reset first.", status: "done" },
         {
@@ -681,8 +682,23 @@ try {
     return summary ? (summary.textContent || "").trim() : null;
   })()`);
   check("a finished turn collapses to one line: how much work, and how long",
-    flowHeader === "Completed 2 steps in 1m 59s",
+    flowHeader === "2 steps · worked for 1m 59s",
     `header reads ${JSON.stringify(flowHeader)}`);
+
+  // The duplicate, removed: the duration is on the flow row, and the line above the
+  // answer reports what the run cost instead.
+  const spend = await session.eval(`(() => {
+    const box = document.querySelector('[data-testid="chat-transcript"]');
+    if (!box) return null;
+    const text = box.innerText || "";
+    return {
+      workedForCount: (text.match(/worked for 1m 59s/g) || []).length,
+      tokens: /214k tokens/.test(text),
+    };
+  })()`);
+  check("the run's cost is reported where the duration used to be repeated",
+    spend && spend.workedForCount === 1 && spend.tokens,
+    spend ? `"worked for 1m 59s" appears ${spend.workedForCount}×, tokens shown ${spend.tokens}` : "no transcript");
 
   await session.eval(`(() => {
     const summary = document.querySelector('[data-testid="agent-flow-summary"]');

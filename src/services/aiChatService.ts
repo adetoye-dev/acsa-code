@@ -132,6 +132,32 @@ export interface AgentStep {
    * that edited six files was a label with no way through to any of them.
    */
   paths?: string[];
+  /**
+   * What an MCP tool call reported while it ran, when it reported anything.
+   *
+   * A tool call that talks to a server can take a while and says so; without this
+   * the step sat unchanged for the whole time, which reads as a hang.
+   */
+  progress?: string;
+}
+
+/**
+ * What one run cost, as the provider counted it.
+ *
+ * Reported by the runtime on every turn and, until now, dropped — so the only way
+ * to answer "what did that cost me?" was the provider's dashboard. Input tokens
+ * dominate (one real run on this machine: 197,625 in against 16,339 out, because
+ * context is re-sent every step), which is a thing worth seeing while you work
+ * rather than afterwards.
+ */
+export interface RunTokens {
+  input: number;
+  output: number;
+  /** Input tokens served from the provider's cache — the cheap ones. */
+  cached?: number;
+  /** Output tokens the model spent thinking, when the provider separates them. */
+  reasoning?: number;
+  total: number;
 }
 
 export interface ChatMessage {
@@ -159,6 +185,8 @@ export interface ChatMessage {
    * not `end - start` (which would count the waiting).
    */
   durationMs?: number;
+  /** What the provider counted for this turn, when it reported it. */
+  tokens?: RunTokens;
   provider?: string;
   model?: string;
   isStreaming?: boolean;
