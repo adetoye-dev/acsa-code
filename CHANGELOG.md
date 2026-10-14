@@ -17,6 +17,30 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.44] - 2026-10-14
+
+### Added
+
+- **What a run cost, in the transcript.** The line above an answer now reports the
+  tokens the provider counted, with the breakdown on hover — input, cached, output
+  and the reasoning tokens that hid inside output. It is worth the space because of
+  the shape of the number: context is re-sent on every step, so input dwarfs
+  output. One run measured here was 197,625 in against 16,339 out.
+- **MCP tool calls are visible, with their progress.** A call to an MCP server did
+  not become a step at all, so a run that spent a minute inside a remote tool looked
+  like it had stopped. It now appears as a step named for the server and the tool,
+  reports how far along it is while it runs, and settles with a tick or a cross.
+
+### Changed
+
+- **The duration is said once.** "worked for 1m 59s" above the answer and "completed
+  2 steps in 1m 59s" on the flow row inside it were the same turn and the same
+  number twice. The flow row keeps it — `2 steps · worked for 1m 59s` — and the
+  header spends itself on what the run cost instead. A turn with no flow on record
+  still keeps the duration in the header, so it is there either way.
+- **The flow closes itself when the answer starts arriving**, so the summary is what
+  you are reading. Open it again and it stays open.
+
 ## [0.2.43] - 2026-10-14
 
 ### Added
@@ -1037,7 +1061,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.43...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.44...dev
+[0.2.44]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.43...v0.2.44
 [0.2.43]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.42...v0.2.43
 [0.2.42]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.41...v0.2.42
 [0.2.41]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.40...v0.2.41
