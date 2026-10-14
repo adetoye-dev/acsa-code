@@ -735,9 +735,14 @@ try {
     if (!box) return null;
     const flow = box.querySelector('[data-testid="agent-flow"]');
     const bubble = flow && flow.closest('[data-testid="agent-flow"]').parentElement;
-    // The run's file changes are inside the flow, not a third card of their own.
-    const changeCard = flow && /Edited 1 file/.test(flow.textContent || "");
-    const changeText = Boolean(changeCard);
+    // The run's file changes are part of the summary, so they follow the answer —
+    // not inside the drawer, where only a reader who wanted the reasoning would see
+    // them.
+    const card = box.querySelector('[data-testid="change-log"]');
+    const changeText = Boolean(card && card.querySelectorAll("button").length > 0);
+    const insideFlow = Boolean(card && flow && flow.contains(card));
+    // The answer is the block the flow opens onto; the card follows it.
+    const answer = flow ? flow.nextElementSibling : null;
     // No second control that says what the row already says.
     const hideOrShow = flow && /\b(Hide|Show)\b/.test(flow.textContent);
     // A caret, which is the only affordance.
@@ -746,13 +751,26 @@ try {
       insideFlow: Boolean(changeText),
       hideOrShow: Boolean(hideOrShow),
       caret: Boolean(caret),
+      carets: flow ? flow.querySelectorAll("button svg.lucide-chevron-down, button svg.lucide-chevron-right").length : -1,
+      changeText: changeText,
+      insideFlow: insideFlow,
+      afterAnswer: Boolean(card && answer && (answer.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING)),
       // Nothing between the flow and the answer but the answer's own block.
       siblings: flow ? flow.parentElement.children.length : 0,
     };
   })()`);
-  check("the run is one panel: changes inside the flow, a caret instead of Hide/Show",
-    unified && unified.insideFlow && !unified.hideOrShow && unified.caret && unified.siblings === 2,
-    unified ? `changes inside ${unified.insideFlow}, Hide/Show text ${unified.hideOrShow}, caret ${unified.caret}, siblings ${unified.siblings}` : "no flow rendered");
+  // Three children of the bubble: the flow's row, the answer, and the changed files.
+  // Anything more is a fourth surface creeping back in.
+  check("the run is one panel: a caret instead of Hide/Show, and one caret only",
+    unified && !unified.hideOrShow && unified.caret && unified.carets === 1 && unified.siblings === 3,
+    unified
+      ? `Hide/Show text ${unified.hideOrShow}, carets ${unified.carets}, siblings ${unified.siblings}`
+      : "no flow rendered");
+  check("the changed files follow the answer, not the reasoning",
+    unified && unified.changeText && !unified.insideFlow && unified.afterAnswer,
+    unified
+      ? `change rows ${unified.changeText}, inside the flow ${unified.insideFlow}, after the answer ${unified.afterAnswer}`
+      : "no flow rendered");
 
   check("a reasoning paragraph wraps rather than being clipped",
     flow && flow.clipped <= 1,

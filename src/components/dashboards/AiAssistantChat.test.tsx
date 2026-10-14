@@ -1336,8 +1336,17 @@ describe("the agent's reasoning, in the flow", () => {
     fireEvent.click(screen.getByText("1 step · worked for 3m 10s"));
     fireEvent.click(screen.getByTestId("agent-step"));
     expect(screen.getByTestId("agent-step-output").textContent).toContain("main.4df65ef.js");
-    const flow = screen.getByTestId("agent-flow");
-    expect(flow.textContent).toContain("App.js");
+
+    // The changed files are part of the summary, so they sit under the answer rather
+    // than inside the drawer — asked for directly: "This is part of the summary, so I
+    // feel it should come after the summary message and not be inside the dropdown."
+    const card = screen.getByTestId("change-log");
+    expect(screen.getByTestId("agent-flow").contains(card)).toBe(false);
+    // The answer's own line, not the block that also carries the stop note.
+    const answer = screen
+      .getAllByText(/The build output confirms/)
+      .find((node) => (node.textContent || "").trim() === "The build output confirms")!;
+    expect(answer.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeGreaterThan(0);
   });
 
   it("says the user ended it when no backstop fired", () => {

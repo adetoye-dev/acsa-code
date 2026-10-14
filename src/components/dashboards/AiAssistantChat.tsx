@@ -416,7 +416,6 @@ const ChatTranscript = memo(function ChatTranscript({
                   isLive={false}
                   hasSummary={Boolean(msg.content && msg.content.trim())}
                   onOpenFile={onReviewFile}
-                  changes={msg.changes}
                   // The collapsed line's other half: "Completed 12 steps in 1m 59s".
                   // `durationMs` is the work the turn did, the same number the
                   // header above it reports as "worked for".
@@ -429,11 +428,10 @@ const ChatTranscript = memo(function ChatTranscript({
                 isStreaming={msg.isStreaming}
                 startedAt={msg.timestamp}
               />
-              {/* The file changes are part of the turn's flow, so they are inside
-                  that flow's drawer — see `changes` on AgentFlow below. A message
-                  whose flow was not recorded still shows them here rather than
-                  losing them. */}
-              {!msg.steps?.length && msg.changes && msg.changes.length > 0 && (
+              {/* What the run changed, under the answer: it is part of the summary a
+                  reader came for, not part of the working-out. Inside the drawer it
+                  was only visible to someone who also wanted the reasoning. */}
+              {msg.changes && msg.changes.length > 0 && (
                 <ChangeLogCard changes={msg.changes} onReview={onReviewFile} />
               )}
 
@@ -625,10 +623,6 @@ const ChatTranscript = memo(function ChatTranscript({
                 blockedOn={blockedOn}
                 onStop={onCancelPipeline}
                 phase={currentAgentPhase}
-                changes={turnChanges.map((change) => ({
-                  path: change.path,
-                  ...countDiffLines(change.diff),
-                }))}
               />
 
               {/* Live Streaming Answer */}
@@ -647,6 +641,18 @@ const ChatTranscript = memo(function ChatTranscript({
                   </span>
                 </div>
               ) : null}
+
+              {/* Under the answer, as it lands — the same place it takes once the
+                  turn is over. */}
+              {turnChanges.length > 0 && (
+                <ChangeLogCard
+                  changes={turnChanges.map((change) => ({
+                    path: change.path,
+                    ...countDiffLines(change.diff),
+                  }))}
+                  onReview={onReviewFile}
+                />
+              )}
             </div>
 
             {/* Bottom Message Actions for Running Turn */}
@@ -3259,8 +3265,6 @@ interface AgentFlowProps {
   onStop?: () => void;
   /** What the run is doing before it has taken a step, in words. */
   phase?: string;
-  /** What this run changed, as the last section of its own flow. */
-  changes?: { path: string; added: number; removed: number }[];
 }
 
 /**
@@ -3282,7 +3286,10 @@ function ChangeLogCard({
   const removed = changes.reduce((total, change) => total + change.removed, 0);
 
   return (
-    <div className="mt-2 rounded-xl border border-zinc-800 bg-zinc-950/60 overflow-hidden">
+    <div
+      data-testid="change-log"
+      className="mt-2.5 rounded-xl border border-zinc-800 bg-zinc-950/60 overflow-hidden"
+    >
       <div className="flex items-center justify-between gap-3 px-3 py-2 border-b border-zinc-800">
         <span className="text-2xs text-zinc-300">
           Edited {changes.length} {changes.length === 1 ? "file" : "files"}
@@ -3331,7 +3338,6 @@ function AgentFlow({
   onOpenFile,
   onStop,
   phase = "",
-  changes,
 }: AgentFlowProps) {
   // Auto-collapse if a summary or conclusion has been reached
   const [isOpen, setIsOpen] = useState(() => isLive && !hasSummary);
@@ -3400,10 +3406,9 @@ function AgentFlow({
         className="w-full flex items-center justify-between gap-2 py-0.5 text-left transition-colors cursor-pointer select-none group"
       >
         <div className="flex items-center gap-2 min-w-0">
-          <Icon
-            icon={isOpen ? ChevronDown : ChevronRight}
-            className="w-3.5 h-3.5 text-zinc-400 shrink-0"
-          />
+          {/* No caret here. The row had one on each side of the text — this one and
+              the one that closes the row — and two arrows for one control reads as
+              two controls. The far-right caret is the one a reader reaches for. */}
           {isLive ? (
             <div className="flex items-center gap-2 min-w-0 text-2xs">
               {/*
@@ -3653,10 +3658,6 @@ function AgentFlow({
             ),
           )}
 
-          {/* What the run changed, inside the run's own flow. It used to be a third
-              bordered card below the bubble, with the file list in it — a separate
-              surface for the same turn. */}
-          {changes && changes.length > 0 && <ChangeLogCard changes={changes} onReview={onOpenFile} />}
         </div>
       )}
     </div>
