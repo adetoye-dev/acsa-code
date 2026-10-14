@@ -1139,6 +1139,80 @@ describe("the agent's reasoning, in the flow", () => {
     }
   });
 
+  it("opens a file step straight into its diff", () => {
+    // One file, so the row can do the obvious thing: a step that says it edited
+    // payments.service.ts is a way through to payments.service.ts, not a label.
+    const opened: string[] = [];
+    const reset = seed({
+      steps: [
+        {
+          id: "e1",
+          name: "Edit Files",
+          detail: "payments.service.ts",
+          status: "done",
+          paths: ["src/payments.service.ts"],
+        },
+      ],
+    });
+    try {
+      render(
+        <AiAssistantChat
+          {...baseProps}
+          onReviewFile={async (path) => {
+            opened.push(path);
+          }}
+        />,
+      );
+      fireEvent.click(screen.getByTestId("agent-flow-summary"));
+
+      const step = screen.getByTestId("agent-step");
+      expect(step.getAttribute("title")).toBe("Open the diff for src/payments.service.ts");
+      fireEvent.click(step);
+      expect(opened).toEqual(["src/payments.service.ts"]);
+      // It opened a file; it did not also open a list.
+      expect(screen.queryByTestId("agent-step-files")).toBeNull();
+    } finally {
+      reset();
+    }
+  });
+
+  it("lists several files in place rather than opening one of them", () => {
+    // Choosing which of six files the reader meant is not a decision to make for
+    // them — the row opens the list and each file opens its own diff.
+    const opened: string[] = [];
+    const reset = seed({
+      steps: [
+        {
+          id: "e2",
+          name: "Edit Files",
+          detail: "a.ts, b.ts",
+          status: "done",
+          paths: ["src/a.ts", "src/b.ts"],
+        },
+      ],
+    });
+    try {
+      render(
+        <AiAssistantChat
+          {...baseProps}
+          onReviewFile={async (path) => {
+            opened.push(path);
+          }}
+        />,
+      );
+      fireEvent.click(screen.getByTestId("agent-flow-summary"));
+      fireEvent.click(screen.getByTestId("agent-step"));
+      expect(opened).toEqual([]);
+
+      const rows = [...screen.getByTestId("agent-step-files").querySelectorAll("button")];
+      expect(rows.map((row) => row.textContent)).toEqual(["src/a.ts", "src/b.ts"]);
+      fireEvent.click(rows[1]);
+      expect(opened).toEqual(["src/b.ts"]);
+    } finally {
+      reset();
+    }
+  });
+
   it("shows the reasoning while the turn is still running, without a click", () => {
     // The live half of the report: "actively writes it in the flow like an active
     // reasoning and workflow loop". The live accordion is open by default, so

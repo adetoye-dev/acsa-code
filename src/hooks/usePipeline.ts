@@ -919,6 +919,7 @@ function fileChangeStep(item: any, status: "running" | "done") {
       .join(", ")
       .slice(0, 120),
     status,
+    paths: changed,
   };
 }
 

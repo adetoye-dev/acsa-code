@@ -563,7 +563,13 @@ try {
           output: "9f2c1ab1d0 payout: reset audit status\\n1 file changed, 3 insertions(+)",
         },
         { id: "r2", kind: "reasoning", name: "Reasoning", text: "The commit is stale, so the refund path is the real fix.", status: "done" },
-        { id: "a1", name: "Edit Files", detail: "payments.service.ts", status: "done" },
+        {
+          id: "a1",
+          name: "Edit Files",
+          detail: "payments.service.ts",
+          status: "done",
+          paths: ["src/payments.service.ts"],
+        },
       ],
     },
   ]);
@@ -731,6 +737,23 @@ try {
       withinDock: box.right <= (document.querySelector('[data-testid="chat-dock-panel"]').getBoundingClientRect().right + 1),
     };
   })()`);
+  // The other half of "the steps are interactive": a change step is a way through to
+  // the file it changed, not a label naming it.
+  const fileStep = await session.eval(`(() => {
+    const box = document.querySelector('[data-testid="chat-transcript"]');
+    if (!box) return null;
+    const edit = [...box.querySelectorAll('[data-testid="agent-step"]')]
+      .find((n) => /Edit Files/.test(n.textContent || ""));
+    if (!edit) return null;
+    const title = edit.getAttribute("title");
+    edit.click();
+    return { title };
+  })()`);
+  await sleep(200);
+  check("a file step is a way through to the file it changed",
+    fileStep && fileStep.title === "Open the diff for src/payments.service.ts",
+    fileStep ? `title reads ${JSON.stringify(fileStep.title)}` : "no edit step rendered");
+
   check("a step opens the command's own output in place",
     stepOutput && stepOutput.collapsed === "false" && stepOutput.tag === "button" &&
       opened && opened.expanded === "true" && (opened.text || "").startsWith("9f2c1ab1d0") &&

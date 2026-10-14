@@ -17,6 +17,26 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.43] - 2026-10-14
+
+### Added
+
+- **A change step is a way through to the file it changed.** Click a step that
+  edited one file and its diff opens; a step that edited several opens the list in
+  place, and each file opens its own diff. Choosing which of six files you meant is
+  not a decision worth making for you, and the row used to be a label with no route
+  to any of them.
+
+### Changed
+
+- **The old thinking-and-steps accordion is gone**, now that the flow is the
+  whole story: the panel had a "View reasoning" button beside a row that already
+  said what it was, an "Execution Steps" block with the reasoning in a separate
+  "Model Thoughts" dump below it, and a `thinking` field that nothing had written
+  to since the reasoning moved into the flow. What is left is one row — the count,
+  the time, and Show/Hide — and what it opens is the reasoning and the actions, in
+  the order they happened.
+
 ## [0.2.42] - 2026-10-14
 
 ### Added
@@ -1017,7 +1037,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.42...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.43...dev
+[0.2.43]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.42...v0.2.43
 [0.2.42]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.41...v0.2.42
 [0.2.41]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.40...v0.2.41
 [0.2.40]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.39...v0.2.40

@@ -373,12 +373,12 @@ const ChatTranscript = memo(function ChatTranscript({
               )}
 
               {/* Collapsible Model Thinking & Agent Steps (auto-collapsed when summary exists) */}
-              {((msg.steps && msg.steps.length > 0) || Boolean(msg.thinking)) && (
-                <ThinkingAccordion
+              {msg.steps && msg.steps.length > 0 && (
+                <AgentFlow
                   steps={msg.steps}
-                  thinking={msg.thinking}
                   isLive={false}
                   hasSummary={Boolean(msg.content && msg.content.trim())}
+                  onOpenFile={onReviewFile}
                   // The collapsed line's other half: "Completed 12 steps in 1m 59s".
                   // `durationMs` is the work the turn did, the same number the
                   // header above it reports as "worked for".
@@ -573,9 +573,10 @@ const ChatTranscript = memo(function ChatTranscript({
 
             <div className="min-w-0 max-w-[95%] p-3.5 rounded-2xl text-xs leading-relaxed bg-zinc-900/90 border border-purple-500/30 text-zinc-100 rounded-tl-sm w-full shadow-lg">
               {/* Live Thinking Accordion (auto-collapses when summary arrives) */}
-              <ThinkingAccordion
+              <AgentFlow
                 steps={agentSteps}
                 isLive={true}
+                onOpenFile={onReviewFile}
                 hasSummary={Boolean(streamingAnswer && streamingAnswer.trim())}
                 elapsedSeconds={Math.floor(agentElapsedMs / 1000)}
                 blockedOn={blockedOn}
@@ -3207,15 +3208,16 @@ const INTERNAL_FRAMEWORK_STEPS = new Set([
   "verification",
 ]);
 
-/* ── Collapsible Thinking & Steps Accordion ───────────────────────────── */
-interface ThinkingAccordionProps {
+/* ── The agent's flow: its reasoning and its actions, in one list ─────── */
+interface AgentFlowProps {
   steps?: AgentStep[];
-  thinking?: string;
   isLive?: boolean;
   hasSummary?: boolean;
   elapsedSeconds?: number;
   /** The run is blocked on the user, so it is not thinking. */
   blockedOn?: string;
+  /** Opens a file's diff, for a step that changed one. */
+  onOpenFile?: (path: string) => Promise<void>;
 }
 
 /**
@@ -3266,14 +3268,25 @@ function ChangeLogCard({
   );
 }
 
-function ThinkingAccordion({
+/**
+ * The turn's flow: what the model reasoned, and what it did about it.
+ *
+ * One list, in the order it happened, collapsed to a single line when the turn is
+ * over and open while it runs. There used to be an accordion here whose header
+ * carried its own "View reasoning" button, whose drawer had a separate "Execution
+ * Steps" block and a "Model Thoughts" dump below it, and whose reasoning arrived
+ * through a `thinking` string that nothing ever wrote to. The reasoning is an entry
+ * in this list now, so the shell that held the two halves apart has nothing left to
+ * do — the row is the control, and what it opens is the flow.
+ */
+function AgentFlow({
   steps = NO_STEPS,
-  thinking = "",
   isLive = false,
   hasSummary = false,
   elapsedSeconds = 0,
   blockedOn = "",
-}: ThinkingAccordionProps) {
+  onOpenFile,
+}: AgentFlowProps) {
   // Auto-collapse if a summary or conclusion has been reached
   const [isOpen, setIsOpen] = useState(() => isLive && !hasSummary);
   // Which step has its output open. One at a time: two command logs open at once in
@@ -3313,9 +3326,8 @@ function ThinkingAccordion({
   // for a run that took eleven, and the header's whole job is to say how much work
   // happened. It is also what the live header names, so it wants an action.
   const actionSteps = visibleSteps.filter((s) => s.kind !== "reasoning");
-  const cleanedThought = cleanThoughtText(thinking);
 
-  if (visibleSteps.length === 0 && !cleanedThought && !isLive) {
+  if (visibleSteps.length === 0 && !isLive) {
     return null;
   }
 
@@ -3396,11 +3408,12 @@ function ThinkingAccordion({
           )}
         </div>
 
-        <div className="flex items-center gap-1.5 shrink-0 text-3xs text-zinc-500 font-mono">
-          <span className="px-1.5 py-0.5 rounded bg-zinc-800/60 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors">
-            {isOpen ? "Hide reasoning" : "View reasoning"}
-          </span>
-        </div>
+        {/* The row is the control. It used to carry a "View reasoning" pill beside
+            it, which was a second thing saying what the row already said — and in a
+            300px dock it was the pill that wrapped the line, not the summary. */}
+        <span className="shrink-0 text-3xs text-zinc-500 font-mono">
+          {isOpen ? "Hide" : "Show"}
+        </span>
       </button>
 
       {/* Expanded Drawer */}
@@ -3433,6 +3446,7 @@ function ThinkingAccordion({
                   const isFailed = step.status === "failed";
                   const category = getStepCategory(step.name);
                   const printed = (step.output ?? "").trim();
+                  const touched = step.paths ?? [];
 
                   const row = (
                     <>
@@ -3471,21 +3485,59 @@ function ThinkingAccordion({
                             {printed}
                           </pre>
                         )}
+                        {/* Every file a change step touched, each opening its own
+                            diff. A step that edited six files used to be a label with
+                            no way through to any of them. */}
+                        {openStep === step.id && !printed && touched.length > 1 && (
+                          <div data-testid="agent-step-files" className="mt-1 space-y-0.5">
+                            {touched.map((path) => (
+                              <button
+                                key={path}
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void onOpenFile?.(path);
+                                }}
+                                title={`Open the diff for ${path}`}
+                                className="block w-full text-left text-3xs font-mono text-zinc-400 hover:text-purple-300 truncate transition-colors cursor-pointer"
+                              >
+                                {path}
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     </>
                   );
 
-                  // A step with output is a control, so it is a button — with the
-                  // keyboard and screen-reader state that comes with one.
-                  if (printed) {
+                  // A step with something to open is a control, so it is a button —
+                  // with the keyboard and screen-reader state that comes with one.
+                  // One file opens its diff directly; several open the list, because
+                  // picking one of six for the reader is not a decision to make for
+                  // them.
+                  const opensDirectly = !printed && touched.length === 1;
+                  const expands = Boolean(printed) || touched.length > 1;
+                  if (expands || opensDirectly) {
                     return (
                       <button
                         key={step.id ?? `s-${idx}`}
                         type="button"
                         data-testid="agent-step"
-                        aria-expanded={openStep === step.id}
-                        onClick={() => setOpenStep((prev) => (prev === step.id ? null : step.id ?? null))}
-                        title={openStep === step.id ? "Hide output" : "Show output"}
+                        aria-expanded={opensDirectly ? undefined : openStep === step.id}
+                        onClick={() => {
+                          if (opensDirectly) {
+                            void onOpenFile?.(touched[0]);
+                            return;
+                          }
+                          setOpenStep((prev) => (prev === step.id ? null : step.id ?? null));
+                        }}
+                        title={
+                          opensDirectly
+                            ? `Open the diff for ${touched[0]}`
+                            : openStep === step.id
+                            ? "Hide"
+                            : "Show"
+                        }
                         className={`w-full text-left flex items-start gap-2 text-2xs py-1 px-1.5 rounded transition-colors cursor-pointer ${
                           isRunning
                             ? "bg-purple-950/20 text-purple-200"
@@ -3522,12 +3574,6 @@ function ThinkingAccordion({
             ),
           )}
 
-          {/* A turn that produced no narration of its own — an older transcript, or
-              a provider that sends none — still has whatever `thinking` was stored
-              with it. Kept as the last resort rather than as a section of its own. */}
-          {cleanedThought && (
-            <p className="text-2xs text-zinc-400 leading-relaxed whitespace-pre-wrap break-words">{cleanedThought}</p>
-          )}
         </div>
       )}
     </div>

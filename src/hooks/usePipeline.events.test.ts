@@ -169,6 +169,32 @@ describe("an app-server run, from the protocol", () => {
     expect(harness.calls.steps[0].status).toBe("done");
   });
 
+  it("names the files a change step touched, so the row can open one", () => {
+    // The row is a way through to the file it changed; `detail` is the readable
+    // summary and `paths` is what the click needs. Without the paths the step is a
+    // label, and the only route to the diff is scrolling back through the tree.
+    const harness = recorder();
+    applyAppServerEvent(
+      {
+        method: "item/completed",
+        params: {
+          item: {
+            id: "e1",
+            type: "fileChange",
+            changes: [{ path: "src/payments.service.ts" }, { path: "src/refunds.service.ts" }],
+          },
+        },
+      },
+      harness.update,
+    );
+
+    expect(harness.calls.steps[0]).toMatchObject({
+      name: "Edit Files",
+      detail: "payments.service.ts, refunds.service.ts",
+      paths: ["src/payments.service.ts", "src/refunds.service.ts"],
+    });
+  });
+
   it("keeps what a command printed, on the step that ran it", () => {
     // The output used to be dropped: a failing step named the command and nothing
     // it said, so "why did that fail?" meant running it again by hand.

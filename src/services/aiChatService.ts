@@ -124,6 +124,14 @@ export interface AgentStep {
    * full log belongs.
    */
   output?: string;
+  /**
+   * The files a change step touched, by path.
+   *
+   * `detail` names them for reading; these are what makes the row *do* something —
+   * one file opens its diff, several open a list of the same. Without them a step
+   * that edited six files was a label with no way through to any of them.
+   */
+  paths?: string[];
 }
 
 export interface ChatMessage {
@@ -154,7 +162,6 @@ export interface ChatMessage {
   provider?: string;
   model?: string;
   isStreaming?: boolean;
-  thinking?: string;
   steps?: AgentStep[];
   error?: boolean;
   errorType?: "offline" | "timeout" | "syntax" | "api" | "general";
