@@ -129,6 +129,8 @@ interface AiAssistantChatProps {
   streamingAnswer?: string;
   /** What the running turn has cost so far, as the provider counted it. */
   turnTokens?: RunTokens | null;
+  /** Why the app stopped the last turn, or null when the user stopped it. */
+  stoppedNotice?: string | null;
   agentSteps?: AgentStep[];
   activeAiSettings?: { provider: string; model: string } | null;
 }
@@ -414,6 +416,7 @@ const ChatTranscript = memo(function ChatTranscript({
                   isLive={false}
                   hasSummary={Boolean(msg.content && msg.content.trim())}
                   onOpenFile={onReviewFile}
+                  changes={msg.changes}
                   // The collapsed line's other half: "Completed 12 steps in 1m 59s".
                   // `durationMs` is the work the turn did, the same number the
                   // header above it reports as "worked for".
@@ -426,7 +429,11 @@ const ChatTranscript = memo(function ChatTranscript({
                 isStreaming={msg.isStreaming}
                 startedAt={msg.timestamp}
               />
-              {msg.changes && msg.changes.length > 0 && (
+              {/* The file changes are part of the turn's flow, so they are inside
+                  that flow's drawer — see `changes` on AgentFlow below. A message
+                  whose flow was not recorded still shows them here rather than
+                  losing them. */}
+              {!msg.steps?.length && msg.changes && msg.changes.length > 0 && (
                 <ChangeLogCard changes={msg.changes} onReview={onReviewFile} />
               )}
 
@@ -607,7 +614,8 @@ const ChatTranscript = memo(function ChatTranscript({
             </div>
 
             <div className="min-w-0 max-w-[95%] p-3.5 rounded-2xl text-xs leading-relaxed bg-zinc-900/90 border border-purple-500/30 text-zinc-100 rounded-tl-sm w-full shadow-lg">
-              {/* Live Thinking Accordion (auto-collapses when summary arrives) */}
+              {/* The run's flow: its row, and everything behind it. Closing when the
+                  answer starts is what the drawer's own state does — see AgentFlow. */}
               <AgentFlow
                 steps={agentSteps}
                 isLive={true}
@@ -615,6 +623,12 @@ const ChatTranscript = memo(function ChatTranscript({
                 hasSummary={Boolean(streamingAnswer && streamingAnswer.trim())}
                 elapsedSeconds={Math.floor(agentElapsedMs / 1000)}
                 blockedOn={blockedOn}
+                onStop={onCancelPipeline}
+                phase={currentAgentPhase}
+                changes={turnChanges.map((change) => ({
+                  path: change.path,
+                  ...countDiffLines(change.diff),
+                }))}
               />
 
               {/* Live Streaming Answer */}
@@ -632,37 +646,7 @@ const ChatTranscript = memo(function ChatTranscript({
                       : "The agent needs your approval before it continues"}
                   </span>
                 </div>
-              ) : (
-                !agentSteps || agentSteps.length === 0 ? (
-                  <div className="flex items-center gap-2 text-zinc-400 text-xs py-1">
-                    <Icon icon={RefreshCw} className="w-3 h-3 animate-spin text-purple-400" />
-                    <span>Thinking through solution...</span>
-                  </div>
-                ) : null
-              )}
-
-              {/* Stop Generating Button & Active Step */}
-              <div className="mt-3 pt-2.5 border-t border-zinc-800/60 flex items-center justify-between">
-                <span
-                  className={`text-2xs truncate max-w-[70%] ${
-                    blockedOn ? "text-amber-300 font-medium" : "text-zinc-400"
-                  }`}
-                >
-                  {blockedOn
-                    ? `Waiting for ${blockedOn}`
-                    : agentSteps.length > 0
-                    ? `Step ${agentSteps.length}: ${agentSteps[agentSteps.length - 1].name}`
-                    : currentAgentPhase || "Initializing..."}
-                </span>
-                <button
-                  type="button"
-                  onClick={onCancelPipeline}
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 hover:text-white text-2xs font-medium transition-colors border border-zinc-700/80 cursor-pointer shadow-sm shrink-0"
-                >
-                  <Icon icon={Square} className="w-2.5 h-2.5 fill-red-400 text-red-400" />
-                  <span>Stop Generating</span>
-                </button>
-              </div>
+              ) : null}
             </div>
 
             {/* Bottom Message Actions for Running Turn */}
@@ -675,18 +659,6 @@ const ChatTranscript = memo(function ChatTranscript({
         )}
       </div>
     )}
-
-  {/* Live copy, while the turn is still going. Once it ends the same card
-      is on the message, so this one stands down rather than doubling up. */}
-  {status === "running" && turnChanges.length > 0 && (
-    <ChangeLogCard
-      changes={turnChanges.map((change) => ({
-        path: change.path,
-        ...countDiffLines(change.diff),
-      }))}
-      onReview={onReviewFile}
-    />
-  )}
 
   <div ref={bottomRef} />
     </>
@@ -723,6 +695,7 @@ export function AiAssistantChat({
   onSyncIndex,
   streamingAnswer = "",
   turnTokens = null,
+  stoppedNotice = null,
   agentSteps = NO_STEPS,
   activeAiSettings = null,
 }: AiAssistantChatProps) {
@@ -1154,7 +1127,22 @@ export function AiAssistantChat({
     if (status === "running" && prevStatusRef.current !== "running") {
       turnStartedAtRef.current = Date.now();
     }
-    if (prevStatusRef.current === "running" && (status === "success" || status === "failed" || status === "error")) {
+    /*
+     * A stopped turn is a turn too.
+     *
+     * This used to fire only on `success | failed | error`, and every way of
+     * stopping a run — the Stop button, the loop backstop, the step backstop, the
+     * time limit — goes to `idle` instead. So the run's whole record was dropped:
+     * the steps, the reasoning, the files it had already changed, and any answer it
+     * had begun, all gone between one frame and the next. Reported from use as
+     * "everything suddenly just disappears at some point", and the only explanation
+     * had gone to the OUTPUT panel.
+     */
+    const stopped = status === "idle";
+    if (
+      prevStatusRef.current === "running" &&
+      (status === "success" || status === "failed" || status === "error" || stopped)
+    ) {
       const isSuccess = status === "success";
       let errorType: "offline" | "timeout" | "syntax" | "api" | "general" = "general";
       const detailLower = (failureDetail || "").toLowerCase();
@@ -1239,10 +1227,22 @@ export function AiAssistantChat({
           : waitingForUser === "waitingOnApproval"
           ? "\n\n> **Waiting on you.** The agent needs an approval before it continues."
           : "";
+      // What a stopped turn says. The answer it had already written is kept — it is
+      // usually most of the work — and the sentence names what ended it: the bound
+      // that fired (`stoppedNotice`), or the user's own Stop.
+      const stopNote = stopped
+        ? `\n\n> **Stopped.** ${
+            stoppedNotice ||
+            "You ended this turn. Its steps and changes are kept above — send a follow-up to carry on from here."
+          }`
+        : "";
+
       const finalContent = isSuccess
         ? (streamingAnswer || "Task completed.") +
           (noFileChanges && !planRunRef.current ? noChangesNote : "") +
           waitingNote
+        : stopped
+        ? (streamingAnswer || "The turn ended before it sent an answer.") + stopNote
         : failureDetail || failureSummary
         ? `⚠️ **Task Failed:** ${failureDetail || failureSummary}`
         : "The task needs attention. Review Problems or Output for details.";
@@ -1286,7 +1286,7 @@ export function AiAssistantChat({
     // `turnElapsedMs` is a dependency on purpose even though the effect must not
     // rebuild the message when it ticks: the guard above (`status` left "running")
     // makes those extra runs no-ops, and it is the value the finished message needs.
-  }, [status, failureDetail, failureSummary, noFileChanges, waitingForUser, turnChanges, projectRoot, selectedModelItem, streamingAnswer, agentSteps, planWriteSettled, turnElapsedMs, turnTokens]);
+  }, [status, failureDetail, failureSummary, noFileChanges, waitingForUser, turnChanges, projectRoot, selectedModelItem, streamingAnswer, agentSteps, planWriteSettled, turnElapsedMs, turnTokens, stoppedNotice]);
 
   /**
    * Ask Ollama what is actually installed, and believe it.
@@ -3255,6 +3255,12 @@ interface AgentFlowProps {
   blockedOn?: string;
   /** Opens a file's diff, for a step that changed one. */
   onOpenFile?: (path: string) => Promise<void>;
+  /** Ends the running turn. Shown only while live. */
+  onStop?: () => void;
+  /** What the run is doing before it has taken a step, in words. */
+  phase?: string;
+  /** What this run changed, as the last section of its own flow. */
+  changes?: { path: string; added: number; removed: number }[];
 }
 
 /**
@@ -3323,6 +3329,9 @@ function AgentFlow({
   elapsedSeconds = 0,
   blockedOn = "",
   onOpenFile,
+  onStop,
+  phase = "",
+  changes,
 }: AgentFlowProps) {
   // Auto-collapse if a summary or conclusion has been reached
   const [isOpen, setIsOpen] = useState(() => isLive && !hasSummary);
@@ -3372,43 +3381,49 @@ function AgentFlow({
   }
 
   const activeStep = actionSteps.find((s) => s.status === "running") || actionSteps[actionSteps.length - 1];
-  const completedCount = actionSteps.filter((s) => s.status === "done" || s.status === "success").length;
 
   return (
-    <div className="mb-2.5 rounded-xl border border-zinc-800/80 bg-zinc-950/50 overflow-hidden text-xs transition-all">
-      {/* Header Bar */}
+    /*
+     * Bare on purpose: this lives *inside* the message bubble, which already has a
+     * background and a border. Its own box inside that one was the "different
+     * backgrounds" report — a bordered panel, inside a bordered panel, above a third
+     * bordered card of file changes. One surface, with a hairline under the flow.
+     */
+    <div className="mb-1 text-xs" data-testid="agent-flow">
+      {/* Header Bar: the caret is the whole affordance. No "Show"/"Hide" button —
+          a second control saying what the row already says was the other half of
+          the clutter report. */}
       <button
         type="button"
         onClick={() => setIsOpen((prev) => !prev)}
-        className="w-full flex items-center justify-between px-3 py-2 bg-zinc-900/60 hover:bg-zinc-900/90 text-left transition-colors cursor-pointer select-none"
+        aria-expanded={isOpen}
+        className="w-full flex items-center justify-between gap-2 py-0.5 text-left transition-colors cursor-pointer select-none group"
       >
         <div className="flex items-center gap-2 min-w-0">
           <Icon
             icon={isOpen ? ChevronDown : ChevronRight}
             className="w-3.5 h-3.5 text-zinc-400 shrink-0"
           />
-          {isLive && !hasSummary ? (
-            <div className="flex items-center gap-2 min-w-0">
-              {/* A blocked run is not thinking, and a spinner that keeps turning
-                  is what made a six-minute wait look like hard work. */}
-              <Icon
-                icon={blockedOn ? HelpCircle : RefreshCw}
-                className={`w-3 h-3 shrink-0 ${
-                  blockedOn ? "text-amber-400" : "text-purple-400 animate-spin"
-                }`}
-              />
-              <span
-                className={`font-semibold font-mono text-2xs ${
-                  blockedOn ? "text-amber-300" : "text-purple-300"
-                }`}
-              >
-                {blockedOn ? `Waiting for ${blockedOn} (${elapsedSeconds}s)` : `Thinking (${elapsedSeconds}s)…`}
+          {isLive ? (
+            <div className="flex items-center gap-2 min-w-0 text-2xs">
+              {/*
+                One indicator, not three. The bubble's own line above already says
+                "Working 1m 29s" with its pulse, and this row said "Thinking (12s)…"
+                with a spinner beside it — two clocks and two spinners for one turn,
+                which is the "still feels like two distinct layouts" report. What is
+                left here is the thing that line cannot say: which step, or what the
+                run is waiting for. The switch is on `isLive` rather than on the
+                running-and-no-summary state, or the moment the answer started
+                arriving the row jumped to "2 steps · worked for 1m 29s" — the timer
+                said twice again, in the tense of a turn that has not finished.
+              */}
+              <span className={`font-mono truncate ${blockedOn ? "text-amber-300" : "text-zinc-400"}`}>
+                {blockedOn
+                  ? `Waiting for ${blockedOn}`
+                  : actionSteps.length > 0
+                  ? `Step ${actionSteps.length}: ${activeStep?.name ?? "…"}`
+                  : phase || "Starting…"}
               </span>
-              {activeStep && (
-                <span className="text-3xs text-zinc-400 truncate hidden sm:inline">
-                  · {activeStep.name}
-                </span>
-              )}
             </div>
           ) : (
             <div className="flex items-center gap-2 min-w-0">
@@ -3437,20 +3452,41 @@ function AgentFlow({
               {/* Only while it is still running: "18 of 20" is a progress report,
                   and a finished turn's progress is 100% — which the line above
                   already says. */}
-              {isLive && actionSteps.length > 0 && (
-                <span className="text-3xs text-zinc-500 font-mono">
-                  ({completedCount}/{actionSteps.length})
-                </span>
-              )}
+
             </div>
           )}
         </div>
 
-        {/* The row is the control. It used to carry a "View reasoning" pill beside
-            it, which was a second thing saying what the row already said — and in a
-            300px dock it was the pill that wrapped the line, not the summary. */}
-        <span className="shrink-0 text-3xs text-zinc-500 font-mono">
-          {isOpen ? "Hide" : "Show"}
+        {/* The caret is the affordance, and the only control a finished turn needs.
+            A running turn also needs a way to end itself — it used to live in a
+            separate bordered footer bar with the step counter in it. */}
+        <span className="flex items-center gap-2 shrink-0">
+          {isLive && onStop && (
+            <span
+              role="button"
+              tabIndex={0}
+              data-testid="agent-flow-stop"
+              title="Stop this turn — its steps and changes are kept"
+              onClick={(event) => {
+                event.stopPropagation();
+                onStop();
+              }}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" && event.key !== " ") return;
+                event.preventDefault();
+                event.stopPropagation();
+                onStop();
+              }}
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800/80 hover:bg-zinc-700 text-zinc-200 text-3xs font-medium transition-colors border border-zinc-700/80 cursor-pointer"
+            >
+              <Icon icon={Square} className="w-2 h-2 fill-red-400 text-red-400" />
+              Stop
+            </span>
+          )}
+          <Icon
+            icon={isOpen ? ChevronDown : ChevronRight}
+            className="w-3.5 h-3.5 text-zinc-500 group-hover:text-zinc-300 shrink-0 transition-colors"
+          />
         </span>
       </button>
 
@@ -3464,7 +3500,7 @@ function AgentFlow({
           that loses the thread between them — the reasoning is only worth reading
           *next to* the action it explains.
         */
-        <div className="px-3 pb-3 pt-2.5 space-y-2 border-t border-zinc-800/60 bg-zinc-950/80">
+        <div className="pt-2 mt-1.5 space-y-2 border-t border-zinc-800/60">
           {visibleSteps.map((step, idx) =>
             step.kind === "reasoning" ? (
               <p
@@ -3617,6 +3653,10 @@ function AgentFlow({
             ),
           )}
 
+          {/* What the run changed, inside the run's own flow. It used to be a third
+              bordered card below the bubble, with the file list in it — a separate
+              surface for the same turn. */}
+          {changes && changes.length > 0 && <ChangeLogCard changes={changes} onReview={onOpenFile} />}
         </div>
       )}
     </div>

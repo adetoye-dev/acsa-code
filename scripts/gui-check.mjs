@@ -554,6 +554,7 @@ try {
       timestamp: streamingNow - 120_000,
       durationMs: 119_000,
       tokens: { input: 197_625, output: 16_339, cached: 189_824, reasoning: 4_094, total: 213_964 },
+      changes: [{ path: "src/payments.service.ts", added: 4, removed: 13 }],
       steps: [
         { id: "r1", kind: "reasoning", name: "Reasoning", text: "Tracing the payout reset first.", status: "done" },
         {
@@ -725,6 +726,34 @@ try {
       (flow.firstText || "").startsWith("Tracing the payout reset") &&
       flow.steps === 2,
     flow ? `order ${flow.order.map((o) => o.replace("agent-", "")).join(" > ")}, first ${JSON.stringify(flow.firstText)}` : "no flow rendered");
+  // One run, one panel. Reported from use: "different backgrounds, two thinking
+  // text and spinners, the immediate dropdown layout with hide, instead of a
+  // unified layout that closes itself behind a single line dropdown the caret
+  // arrow after run."
+  const unified = await session.eval(`(() => {
+    const box = document.querySelector('[data-testid="chat-transcript"]');
+    if (!box) return null;
+    const flow = box.querySelector('[data-testid="agent-flow"]');
+    const bubble = flow && flow.closest('[data-testid="agent-flow"]').parentElement;
+    // The run's file changes are inside the flow, not a third card of their own.
+    const changeCard = flow && /Edited 1 file/.test(flow.textContent || "");
+    const changeText = Boolean(changeCard);
+    // No second control that says what the row already says.
+    const hideOrShow = flow && /\b(Hide|Show)\b/.test(flow.textContent);
+    // A caret, which is the only affordance.
+    const caret = flow && flow.querySelector("button svg");
+    return {
+      insideFlow: Boolean(changeText),
+      hideOrShow: Boolean(hideOrShow),
+      caret: Boolean(caret),
+      // Nothing between the flow and the answer but the answer's own block.
+      siblings: flow ? flow.parentElement.children.length : 0,
+    };
+  })()`);
+  check("the run is one panel: changes inside the flow, a caret instead of Hide/Show",
+    unified && unified.insideFlow && !unified.hideOrShow && unified.caret && unified.siblings === 2,
+    unified ? `changes inside ${unified.insideFlow}, Hide/Show text ${unified.hideOrShow}, caret ${unified.caret}, siblings ${unified.siblings}` : "no flow rendered");
+
   check("a reasoning paragraph wraps rather than being clipped",
     flow && flow.clipped <= 1,
     flow ? `${flow.clipped}px past its own box` : "no reasoning rendered");

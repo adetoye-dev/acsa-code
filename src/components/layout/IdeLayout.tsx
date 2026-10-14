@@ -199,6 +199,7 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
     respondToQuestion,
     turnElapsedMs,
     turnTokens,
+    stoppedNotice,
     turnLimitMinutes,
     turnChanges,
     openDiff,
@@ -1699,6 +1700,7 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
               respondToApproval={respondToApproval}
               turnElapsedMs={turnElapsedMs}
               turnTokens={turnTokens}
+              stoppedNotice={stoppedNotice}
               turnLimitMinutes={turnLimitMinutes}
               pendingQuestion={pendingQuestion}
               respondToQuestion={respondToQuestion}

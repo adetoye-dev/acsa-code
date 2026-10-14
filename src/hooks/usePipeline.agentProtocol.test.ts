@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_BASE_INSTRUCTIONS, AGENT_RUNTIME_FLAGS, RESERVED_RUNTIME_PROVIDER_IDS, agentCatalogEntry, approvalSummary, countDiffLines, defaultReasoningLevel, hostedProviderId, summarizeItemChanges, userInputResponse } from "./usePipeline";
+import { turnStopSentence, AGENT_BASE_INSTRUCTIONS, AGENT_RUNTIME_FLAGS, RESERVED_RUNTIME_PROVIDER_IDS, agentCatalogEntry, approvalSummary, countDiffLines, defaultReasoningLevel, hostedProviderId, summarizeItemChanges, userInputResponse } from "./usePipeline";
 
 /**
  * The instruction the app hands the agent through the model catalog on every run.
@@ -274,5 +274,41 @@ describe("the catalog entry for one model", () => {
     expect(entry.description).toContain("DeepSeek");
     expect(entry.base_instructions).toBe(AGENT_BASE_INSTRUCTIONS);
     expect(entry.apply_patch_tool_type).toBe("freeform");
+  });
+});
+
+/**
+ * What a stopped turn says on the record.
+ *
+ * The bug this belongs to: every way of stopping a run — Stop, the loop backstop,
+ * the step backstop, the time limit — recorded *nothing* in the transcript, so a
+ * whole run's steps, reasoning and changes vanished with no explanation on screen.
+ * The chat now keeps the message; these are the sentences it puts in it, and they
+ * are the only explanation a reader gets.
+ */
+describe("the sentence a stopped turn carries", () => {
+  it("names the action when a loop is what stopped it", () => {
+    // "Stopped after 60 steps" tells the reader only that we intervened. The
+    // repeated command tells them what to change.
+    const sentence = turnStopSentence({
+      reason: "repeats",
+      repeated: { signature: "Run Command ls -la frontend/build", count: 5 },
+    });
+    expect(sentence).toMatch(/same step ran 5 times/);
+    expect(sentence).toMatch(/ls -la frontend\/build/);
+    expect(sentence).toMatch(/send a follow-up to carry on/i);
+  });
+
+  it("says the backstop, not a loop, when the step ceiling fired", () => {
+    const sentence = turnStopSentence({ reason: "steps", steps: 60 });
+    expect(sentence).toMatch(/60 steps/);
+    expect(sentence).toMatch(/backstop, not a loop/);
+  });
+
+  it("says how long it was allowed to work when the clock fired", () => {
+    const sentence = turnStopSentence({ reason: "time", limitMinutes: 20 });
+    expect(sentence).toMatch(/20 minute turn limit/);
+    // And where to change it, since the ceiling is a setting.
+    expect(sentence).toMatch(/Settings → Agent/);
   });
 });

@@ -1277,6 +1277,145 @@ describe("the agent's reasoning, in the flow", () => {
     expect(screen.queryByText("Checking the driver.")).toBeNull();
   });
 
+  /**
+   * A stopped turn is a turn.
+   *
+   * Reported from use, from a screen recording: at ≈43s the whole run vanished —
+   * the steps, the reasoning and the files it had already changed — leaving the
+   * user's message and nothing else. The cause was that the transcript only ever
+   * recorded `success | failed | error`, and every way of stopping a run (Stop, the
+   * loop backstop, the step backstop, the time limit) goes to `idle` instead.
+   */
+  it("keeps a stopped turn's steps, reasoning and changes, and says what stopped it", () => {
+    const steps = [
+      { id: "r1", kind: "reasoning" as const, name: "Reasoning", text: "Checking the build hash.", status: "done" as const },
+      { id: "c1", name: "Run Command", detail: "ls -la frontend/build", status: "done" as const, output: "main.4df65ef.js" },
+    ];
+    // The live shape: a pending change carries the diff, and the counts are derived.
+    const changes = [{ path: "frontend/src/App.js", diff: "+added\n-removed\n" }];
+
+    const { rerender } = render(
+      <AiAssistantChat
+        {...baseProps}
+        status="running"
+        agentSteps={steps}
+        turnChanges={changes as never}
+        turnElapsedMs={190_000}
+      />,
+    );
+    // While it runs, the flow is open and readable.
+    expect(screen.getByText("Checking the build hash.")).toBeTruthy();
+
+    // The backstop stopped it: status goes to idle, which used to record nothing.
+    rerender(
+      <AiAssistantChat
+        {...baseProps}
+        status="idle"
+        agentSteps={steps}
+        turnChanges={changes as never}
+        turnElapsedMs={190_000}
+        streamingAnswer="The build output confirms"
+        stoppedNotice="Stopped after the same step ran 5 times (Run Command ls -la frontend/build)."
+      />,
+    );
+
+    // The answer it had written, and the reason it ended — on the record, in the
+    // transcript, where the user is looking.
+    const transcript = screen.getByTestId("chat-transcript");
+    expect(transcript.textContent).toContain("The build output confirms");
+    expect(transcript.textContent).toContain("Stopped after the same step ran 5 times");
+    // One step, and the time it worked — the run's record, collapsed as usual.
+    expect(screen.getByText("1 step · worked for 3m 10s")).toBeTruthy();
+
+    // And the flow is still all there behind the row: the reasoning, the command
+    // with its output, and the file it had changed.
+    expect(screen.getByText("1 step · worked for 3m 10s")).toBeTruthy();
+
+    // And the flow is still all there behind the row: the reasoning, the command
+    // with its output, and the file it had changed.
+    fireEvent.click(screen.getByText("1 step · worked for 3m 10s"));
+    fireEvent.click(screen.getByTestId("agent-step"));
+    expect(screen.getByTestId("agent-step-output").textContent).toContain("main.4df65ef.js");
+    const flow = screen.getByTestId("agent-flow");
+    expect(flow.textContent).toContain("App.js");
+  });
+
+  it("says the user ended it when no backstop fired", () => {
+    // The absence of a notice is how the Stop button is told apart from a bound
+    // firing, and the two need different sentences.
+    const steps = [{ id: "c1", name: "Run Command", detail: "npm test", status: "done" as const }];
+    const { rerender } = render(
+      <AiAssistantChat {...baseProps} status="running" agentSteps={steps} turnElapsedMs={30_000} />,
+    );
+    rerender(<AiAssistantChat {...baseProps} status="idle" agentSteps={steps} turnElapsedMs={30_000} />);
+
+    expect(screen.getByTestId("chat-transcript").textContent).toContain("You ended this turn");
+  });
+
+  it("names the step once, and the clock once", () => {
+    // Reported from use: "two thinking text and spinners". The bubble's own line
+    // says "Working …" with its pulse; the row under it must not repeat that in its
+    // own words — it says the thing the line cannot, which is where the run is.
+    render(
+      <AiAssistantChat
+        {...baseProps}
+        status="running"
+        agentSteps={[
+          { id: "c1", name: "Run Command", detail: "npm test", status: "running" },
+        ]}
+        turnElapsedMs={89_000}
+      />,
+    );
+
+    const flow = screen.getByTestId("agent-flow");
+    expect(flow.textContent).toContain("Step 1: Run Command");
+    // Neither clock appears twice, and the finished wording appears not at all.
+    expect((flow.textContent?.match(/Working/g) || []).length).toBe(0);
+    expect(flow.textContent).not.toContain("worked for");
+    expect(flow.textContent).not.toMatch(/Thinking \(/);
+  });
+
+  it("does not switch to the finished wording while the answer is still streaming", () => {
+    // The same rule at the moment it is easiest to break: the answer has started, so
+    // the drawer closes — but the turn has not finished, and the row must not start
+    // claiming a completed duration.
+    const steps = [{ id: "c1", name: "Run Command", detail: "npm test", status: "done" as const }];
+    render(
+      <AiAssistantChat
+        {...baseProps}
+        status="running"
+        agentSteps={steps}
+        turnElapsedMs={120_000}
+        streamingAnswer="Here is what I found"
+      />,
+    );
+
+    const flow = screen.getByTestId("agent-flow");
+    expect(flow.textContent).not.toContain("worked for");
+    expect(flow.textContent).toContain("Step 1: Run Command");
+  });
+
+  it("offers Stop inside the run's own flow row, not a footer of its own", () => {
+    // One panel: the control that ends the turn belongs to the row that describes
+    // it, not to a second bordered bar underneath.
+    const stopped = vi.fn();
+    render(
+      <AiAssistantChat
+        {...baseProps}
+        status="running"
+        onCancelPipeline={stopped}
+        agentSteps={[{ id: "c1", name: "Run Command", detail: "npm test", status: "running" }]}
+        turnElapsedMs={9_000}
+      />,
+    );
+
+    const flow = screen.getByTestId("agent-flow");
+    const stop = screen.getByTestId("agent-flow-stop");
+    expect(flow.contains(stop)).toBe(true);
+    fireEvent.click(stop);
+    expect(stopped).toHaveBeenCalled();
+  });
+
   it("shows the reasoning while the turn is still running, without a click", () => {
     // The live half of the report: "actively writes it in the flow like an active
     // reasoning and workflow loop". The live accordion is open by default, so

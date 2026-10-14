@@ -1335,6 +1335,28 @@ export const AGENT_RUNTIME_FLAGS: readonly string[] = [
  * planning against. The sandbox is what enforces that (see `PLAN_RUN_APPROVAL`);
  * this text is what asks for the shape of the answer.
  */
+/**
+ * What the transcript says when the app stopped a turn, in the reader's words.
+ *
+ * Extracted from the effect that fires it so the sentences can be tested on their
+ * own: this is the only explanation a stopped run gets, and the whole of the bug
+ * that prompted it was a stop with no explanation on screen at all. Which bound
+ * fired matters — "stopped after 60 steps" says we intervened, the repeated
+ * command says what to change.
+ */
+export function turnStopSentence(input: {
+  reason: "time" | "steps" | "repeats";
+  repeated?: { signature: string; count: number } | null;
+  steps?: number;
+  limitMinutes?: number;
+}): string {
+  if (input.reason === "repeats" && input.repeated) {
+    return turnRepeatNotice(input.repeated.signature, input.repeated.count);
+  }
+  if (input.reason === "steps") return turnStepLimitNotice(input.steps ?? 0);
+  return turnLimitNotice(input.limitMinutes ?? 0);
+}
+
 export const AGENT_PLAN_INSTRUCTIONS =
   "This run is planning only. Read the project first — the files, the code map, the index — " +
   "and plan against what is actually there rather than what you assume. " +
@@ -1597,6 +1619,8 @@ export interface UsePipelineReturn {
   turnElapsedMs: number;
   /** What the running turn has cost so far, or null before the provider reports. */
   turnTokens: RunTokens | null;
+  /** Why the app stopped the last turn, or null when the user stopped it. */
+  stoppedNotice: string | null;
   /** The ceiling applied to one turn, in minutes; zero means no limit. */
   turnLimitMinutes: number;
   isIndexing: boolean;
@@ -2845,6 +2869,20 @@ export function usePipeline(): UsePipelineReturn {
    * clock, at the start of a turn.
    */
   const [turnTokens, setTurnTokens] = useState<RunTokens | null>(null);
+
+  /**
+   * Why a turn was stopped, when the app stopped it rather than the model ending it.
+   *
+   * Set by the backstop below, and read by the chat when the turn winds up: a
+   * stopped run has to say what stopped it. Left null when the *user* is the one who
+   * pressed Stop — the absence is the signal, and the chat has its own sentence for
+   * that case.
+   *
+   * The reason used to go only to OUTPUT, and the chat recorded nothing at all for
+   * a stopped turn — so pressing Stop, or hitting the loop backstop, made a whole
+   * run's steps, reasoning and file changes vanish with no explanation on screen.
+   */
+  const [stoppedNotice, setStoppedNotice] = useState<string | null>(null);
   useEffect(() => {
     if (status !== "running" || waitingForUser) return;
     const startedAt = Date.now() - turnElapsedMs;
@@ -2862,6 +2900,7 @@ export function usePipeline(): UsePipelineReturn {
   useEffect(() => {
     setTurnElapsedMs(0);
     setTurnTokens(null);
+    setStoppedNotice(null);
   }, [status]);
 
   /**
@@ -2883,13 +2922,16 @@ export function usePipeline(): UsePipelineReturn {
     if (!reason) return;
     // The sentence names which bound fired. "Stopped after 60 steps" tells the
     // reader only that we intervened; the repeated action tells them what to fix.
+    // It goes on the turn's record as well as to OUTPUT: the message the transcript
+    // keeps has to be able to say why it ended.
     const repeated = reason === "repeats" ? repeatedAction(signatures) : null;
-    const sentence =
-      reason === "repeats" && repeated
-        ? turnRepeatNotice(repeated.signature, repeated.count)
-        : reason === "steps"
-        ? turnStepLimitNotice(agentSteps.length)
-        : turnLimitNotice(turnLimitMinutes);
+    const sentence = turnStopSentence({
+      reason,
+      repeated,
+      steps: agentSteps.length,
+      limitMinutes: turnLimitMinutes,
+    });
+    setStoppedNotice(sentence);
     setActivityLog((prev) => [
       ...prev,
       {
@@ -2977,6 +3019,7 @@ export function usePipeline(): UsePipelineReturn {
     waitingForUser,
     turnElapsedMs,
     turnTokens,
+    stoppedNotice,
     turnLimitMinutes,
     isIndexing,
     syncIndex,
