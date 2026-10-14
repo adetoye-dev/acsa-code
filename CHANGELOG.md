@@ -17,6 +17,19 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.46] - 2026-10-14
+
+### Added
+
+- **The change groups in Source Control fold away.** Staged, working-tree and
+  conflicted changes each fold from their own header — a caret that points the way
+  the group is, with the count still visible while it is folded. A run that changed
+  thirty files used to push the commit box and the history below it off the panel
+  with no way to bring them back. What you fold is remembered, because "this group
+  is noise until I get to it" is a decision about the repository rather than about
+  this visit. Each group's own "stage all" / "unstage all" stays a separate control,
+  so folding a list is never a way to trigger it by accident.
+
 ## [0.2.45] - 2026-10-14
 
 ### Fixed
@@ -1082,7 +1095,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.45...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.46...dev
+[0.2.46]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.45...v0.2.46
 [0.2.45]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.44...v0.2.45
 [0.2.44]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.43...v0.2.44
 [0.2.43]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.42...v0.2.43
