@@ -17,6 +17,27 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.48] - 2026-10-15
+
+### Fixed
+
+- **"Retry" retries.** When a download failed, the titlebar button — labelled
+  *Retry* — only opened the panel, and the panel's actions render only while there
+  is nothing in flight, so a failed install showed the reason and nothing to press.
+  Quitting and relaunching was the only way out, which is what it took. Both the
+  banner and Settings → About now offer a retry that runs, and the titlebar button
+  does what its label says.
+- **A failed download says what happened.** `error decoding response body` is
+  reqwest's way of saying the transfer stopped partway, and it left the reader with
+  nothing to act on. It now says the download stopped, that this is usually the
+  connection rather than the app, and names both ways forward — try again, or take
+  the build from the release page.
+- **Changed files are named, not addressed.** The rows in "Edited N files" read
+  `/Users/…/Desktop/work/…` and truncated there, so the part that identifies the
+  file was the part cut off, and every row began with the same three segments. They
+  show the file name now, with the full path on the tooltip. The directory comes
+  back only when two files in the same run share a name.
+
 ## [0.2.47] - 2026-10-15
 
 ### Changed
@@ -1109,7 +1130,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.47...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.48...dev
+[0.2.48]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.47...v0.2.48
 [0.2.47]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.46...v0.2.47
 [0.2.46]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.45...v0.2.46
 [0.2.45]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.44...v0.2.45
