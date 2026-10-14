@@ -191,7 +191,6 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
     clearLog,
     isTauriAvailable,
     streamingAnswer,
-    streamingThought,
     failureDetail,
     noFileChanges,
     waitingForUser,
@@ -1036,7 +1035,6 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
     isIndexing,
     onSyncIndex: syncIndex,
     streamingAnswer,
-    streamingThought,
     agentSteps,
     failureDetail,
     pendingApproval,
@@ -1691,7 +1689,6 @@ export function IdeLayout(pipeline: UsePipelineReturn) {
               isIndexing={isIndexing}
               onSyncIndex={syncIndex}
               streamingAnswer={streamingAnswer}
-              streamingThought={streamingThought}
               agentSteps={agentSteps}
               failureDetail={failureDetail}
               noFileChanges={noFileChanges}

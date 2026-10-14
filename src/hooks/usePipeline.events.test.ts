@@ -119,6 +119,137 @@ describe("an app-server run, from the protocol", () => {
     expect(harness.calls.logs[0].stream).toBe("stdout");
   });
 
+  /**
+   * The model's narration, which the runtime streams and this side used to drop.
+   * Reported from use, against Copilot's agent: the flow shows *why*, not only
+   * which command ran — "I'm first tracing the current payout reset" and then the
+   * command that checked it.
+   */
+  it("keeps the model's reasoning, in the same ordered flow as its actions", () => {
+    const harness = recorder();
+    const send = (method: string, params: any) =>
+      applyAppServerEvent({ method, params }, harness.update);
+
+    send("item/reasoning/summaryTextDelta", { delta: "Tracing the payout reset." });
+    send("item/reasoning/summaryTextDelta", { delta: " The commit looks stale." });
+    send("item/started", { item: { id: "c1", type: "commandExecution", command: "git log -1" } });
+    send("item/completed", { item: { id: "c1", type: "commandExecution", command: "git log -1", exitCode: 0 } });
+    send("item/reasoning/summaryPartAdded", {});
+    send("item/reasoning/summaryTextDelta", { delta: "Refund path needs a provider reference." });
+
+    // Two paragraphs rather than four fragments: consecutive deltas extend the open
+    // one, and `summaryPartAdded` is what starts the next.
+    expect(harness.calls.steps.map((s) => s.kind ?? "action")).toEqual([
+      "reasoning",
+      "action",
+      "reasoning",
+    ]);
+    expect(harness.calls.steps[0].text).toBe("Tracing the payout reset. The commit looks stale.");
+    expect(harness.calls.steps[2].text).toBe("Refund path needs a provider reference.");
+    // The action settles in place, between the two paragraphs.
+    expect(harness.calls.steps[1]).toMatchObject({ id: "c1", name: "Run Command", status: "done" });
+  });
+
+  it("shows an action from the moment it starts, as one row that settles", () => {
+    // A row that appears only when the command has finished makes a slow step look
+    // like nothing is happening.
+    const harness = recorder();
+    applyAppServerEvent(
+      { method: "item/started", params: { item: { id: "c9", type: "commandExecution", command: "npm test" } } },
+      harness.update,
+    );
+    expect(harness.calls.steps).toHaveLength(1);
+    expect(harness.calls.steps[0].status).toBe("running");
+
+    applyAppServerEvent(
+      { method: "item/completed", params: { item: { id: "c9", type: "commandExecution", command: "npm test", exitCode: 0 } } },
+      harness.update,
+    );
+    expect(harness.calls.steps).toHaveLength(1);
+    expect(harness.calls.steps[0].status).toBe("done");
+  });
+
+  it("keeps what a command printed, on the step that ran it", () => {
+    // The output used to be dropped: a failing step named the command and nothing
+    // it said, so "why did that fail?" meant running it again by hand.
+    const harness = recorder();
+    applyAppServerEvent(
+      { method: "item/started", params: { item: { id: "c4", type: "commandExecution", command: "npm test" } } },
+      harness.update,
+    );
+    applyAppServerEvent(
+      { method: "item/commandExecution/outputDelta", params: { itemId: "c4", delta: "3 failed, 41 passed\n" } },
+      harness.update,
+    );
+    applyAppServerEvent(
+      { method: "item/commandExecution/outputDelta", params: { itemId: "c4", delta: "  at payments.spec.ts:88\n" } },
+      harness.update,
+    );
+
+    expect(harness.calls.steps).toHaveLength(1);
+    expect(harness.calls.steps[0].output).toBe("3 failed, 41 passed\n  at payments.spec.ts:88\n");
+    expect(harness.calls.steps[0].status).toBe("running");
+
+    // The finished item carries everything it printed, and wins over the deltas.
+    applyAppServerEvent(
+      {
+        method: "item/completed",
+        params: {
+          item: { id: "c4", type: "commandExecution", command: "npm test", exitCode: 1, aggregatedOutput: "3 failed, 41 passed\n" },
+        },
+      },
+      harness.update,
+    );
+    expect(harness.calls.steps).toHaveLength(1);
+    expect(harness.calls.steps[0]).toMatchObject({ status: "failed", output: "3 failed, 41 passed\n" });
+  });
+
+  it("keeps a step's output bounded, because it is stored on the message", () => {
+    // A build log is hundreds of kilobytes. This is a display copy, not a log file.
+    const harness = recorder();
+    for (let i = 0; i < 40; i += 1) {
+      applyAppServerEvent(
+        { method: "item/commandExecution/outputDelta", params: { itemId: "c5", delta: "x".repeat(200) } },
+        harness.update,
+      );
+    }
+    const output = harness.calls.steps[0].output as string;
+    expect(output.length).toBeLessThanOrEqual(2002);
+    expect(output.endsWith("…")).toBe(true);
+  });
+
+  it("prefers a reasoning item's summary to the raw chain beside it", () => {
+    // Both arrive on a Codex model: the summary is what the model chose to say, and
+    // the raw chain is the same thing at five times the length. One item measured on
+    // this machine carried 7,500 characters of it.
+    const harness = recorder();
+    applyAppServerEvent(
+      { method: "item/reasoning/textDelta", params: { delta: "raw chain of thought, long" } },
+      harness.update,
+    );
+    applyAppServerEvent(
+      {
+        method: "item/completed",
+        params: {
+          item: {
+            type: "reasoning",
+            summary: [{ type: "summary_text", text: "Checked the refund path." }],
+            content: [{ type: "reasoning_text", text: "raw chain of thought, long" }],
+          },
+        },
+      },
+      harness.update,
+    );
+
+    expect(harness.calls.steps).toHaveLength(1);
+    expect(harness.calls.steps[0]).toMatchObject({
+      kind: "reasoning",
+      source: "summary",
+      text: "Checked the refund path.",
+      status: "done",
+    });
+  });
+
   it("marks the files a camelCase fileChange names", () => {
     // The app-server vocabulary is camelCase where `exec`'s is snake_case, which is
     // exactly the kind of difference a shared reducer would get wrong.

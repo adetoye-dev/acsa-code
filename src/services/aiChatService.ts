@@ -101,6 +101,29 @@ export interface AgentStep {
   name: string;
   detail?: string;
   status: "running" | "done" | "failed" | "success";
+  /**
+   * This entry is the model's reasoning rather than an action it took, and `text`
+   * is what it said.
+   *
+   * Reasoning lives in the *same ordered list* as the actions on purpose. The
+   * runtime narrates what it is about to do and then does it, so ordering is the
+   * part that makes the flow readable — "I'm checking the payout reset" followed by
+   * the command that checked it — and two arrays would have to be re-interleaved on
+   * a timestamp apiece to get that back, after the fact.
+   */
+  kind?: "reasoning";
+  /** The reasoning text, when `kind` is "reasoning". */
+  text?: string;
+  /**
+   * What the command printed, for a step that ran one.
+   *
+   * Captured from the runtime's own output deltas, which this side used to drop —
+   * so a step read "Run Command — npm test" with no way to see what it said, and
+   * the answer to "why did that fail?" was to run it again by hand. Capped, because
+   * this is stored on the message: the terminal and the Output panel are where a
+   * full log belongs.
+   */
+  output?: string;
 }
 
 export interface ChatMessage {

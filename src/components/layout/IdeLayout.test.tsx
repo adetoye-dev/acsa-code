@@ -124,7 +124,6 @@ function pipeline(): UsePipelineReturn {
     clearLog: noop,
     isTauriAvailable: true,
     streamingAnswer: "",
-    streamingThought: "",
     agentSteps: [],
     failureDetail: "",
     pendingApproval: null,

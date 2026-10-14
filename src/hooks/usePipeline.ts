@@ -772,12 +772,164 @@ async function runAgentOnAppServer(params: {
 }
 
 /**
+ * How much text one reasoning paragraph keeps.
+ *
+ * Summaries run to a few dozen characters; the raw chain of thought behind them
+ * ran to 7,500 in one item measured on this machine, and the whole thing is stored
+ * on the message and rendered as a paragraph. This is a display ceiling, not a
+ * model one.
+ */
+const REASONING_TEXT_LIMIT = 2000;
+
+/**
+ * How much of a command's output one step keeps.
+ *
+ * Enough to read what happened — a failing test's first lines, an `ls`, a git
+ * command's answer — without turning a message into a log file. The Output panel
+ * and the terminal are where the whole thing belongs.
+ */
+const STEP_OUTPUT_LIMIT = 2000;
+
+function clampOutput(text: string): string {
+  return text.length > STEP_OUTPUT_LIMIT ? `${text.slice(0, STEP_OUTPUT_LIMIT)}\n…` : text;
+}
+
+/** Append output to the step it belongs to, creating a running row if it arrives first. */
+function appendStepOutput(prev: any[], itemId: string, delta: string): any[] {
+  if (!itemId || !delta) return prev;
+  const idx = prev.findIndex((s: any) => s.id === itemId);
+  if (idx < 0) {
+    return [...prev, { id: itemId, name: "Run Command", detail: "", status: "running", output: clampOutput(delta) }];
+  }
+  const next = [...prev];
+  next[idx] = { ...next[idx], output: clampOutput(`${next[idx].output ?? ""}${delta}`) };
+  return next;
+}
+
+/** The reasoning entry still being written, if it is the last thing that happened. */
+function openReasoningEntry(prev: any[]): any | null {
+  const last = prev[prev.length - 1];
+  return last && last.kind === "reasoning" && last.status === "running" ? last : null;
+}
+
+/** The text of a reasoning item's `summary` (or `content`): `[{ type, text }]`. */
+function reasoningPartsText(parts: unknown): string {
+  if (!Array.isArray(parts)) return "";
+  return parts
+    .map((part: any) => (typeof part?.text === "string" ? part.text : ""))
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+}
+
+function appendReasoning(prev: any[], delta: string, source: "summary" | "text"): any[] {
+  const open = openReasoningEntry(prev);
+  if (!open || (open.source && open.source !== source)) {
+    return [
+      ...prev,
+      {
+        id: `reasoning-${prev.length}-${source}`,
+        kind: "reasoning",
+        source,
+        name: source === "summary" ? "Reasoning" : "Thinking",
+        text: delta.slice(0, REASONING_TEXT_LIMIT),
+        status: "running",
+      },
+    ];
+  }
+  const combined = `${open.text ?? ""}${delta}`;
+  const text =
+    combined.length > REASONING_TEXT_LIMIT ? `${combined.slice(0, REASONING_TEXT_LIMIT)}…` : combined;
+  const next = [...prev];
+  next[next.length - 1] = { ...open, text };
+  return next;
+}
+
+function closeOpenReasoning(prev: any[]): any[] {
+  const open = openReasoningEntry(prev);
+  if (!open) return prev;
+  const next = [...prev];
+  next[next.length - 1] = { ...open, status: "done" };
+  return next;
+}
+
+/**
+ * Settle a finished reasoning item, which is authoritative over its deltas.
+ *
+ * The summary wins when the provider sends both: it is the part the model chose to
+ * say, and the raw chain beside it is usually the same thing at five times the
+ * length.
+ */
+function settleReasoning(prev: any[], item: any): any[] {
+  const summary = reasoningPartsText(item?.summary);
+  const raw = reasoningPartsText(item?.content) || (typeof item?.text === "string" ? item.text.trim() : "");
+  const text = summary || raw;
+  const open = openReasoningEntry(prev);
+  if (!text) return closeOpenReasoning(prev);
+  const source: "summary" | "text" = summary ? "summary" : "text";
+  const entry = {
+    id: item?.id || open?.id || `reasoning-${prev.length}`,
+    kind: "reasoning",
+    source,
+    name: source === "summary" ? "Reasoning" : "Thinking",
+    text: text.slice(0, REASONING_TEXT_LIMIT),
+    status: "done",
+  };
+  if (!open) return [...prev, entry];
+  const next = [...prev];
+  next[next.length - 1] = entry;
+  return next;
+}
+
+/** Insert or update by id, so an action that starts and finishes is one row. */
+function upsertStep(prev: any[], step: any): any[] {
+  const idx = step.id ? prev.findIndex((s: any) => s.id === step.id) : -1;
+  if (idx < 0) return [...prev, step];
+  const next = [...prev];
+  next[idx] = { ...next[idx], ...step };
+  return next;
+}
+
+function commandStep(item: any, status: "running" | "done" | "failed") {
+  // The item carries everything it printed when it finished, which is authoritative
+  // over the deltas — they can start mid-line, and a resumed turn may not replay
+  // all of them.
+  const printed = item?.aggregatedOutput ?? item?.aggregated_output;
+  return {
+    id: item?.id,
+    name: "Run Command",
+    detail: String(item?.command || "").slice(0, 120),
+    status,
+    ...(typeof printed === "string" && printed.length > 0 ? { output: clampOutput(printed) } : {}),
+  };
+}
+
+function fileChangeStep(item: any, status: "running" | "done") {
+  const changed: string[] = Array.isArray(item?.changes)
+    ? item.changes
+        .map((c: any) => String(c?.path ?? c?.file ?? ""))
+        .filter((path: string) => path.length > 0)
+    : [];
+  if (changed.length === 0) return null;
+  return {
+    id: item?.id || `as-edit-${changed.join("|").slice(0, 60)}`,
+    name: "Edit Files",
+    detail: changed
+      .map((path) => path.split(/[\\/]/).pop())
+      .join(", ")
+      .slice(0, 120),
+    status,
+  };
+}
+
+/**
  * Map one app-server notification onto the chat's progress surfaces.
  *
  * The vocabulary differs from `exec`'s: camelCase item types, a dedicated delta
  * channel for the answer, and usage as its own notification rather than a field
  * on the turn event.
  */
+
 export function applyAppServerEvent(
   event: any,
   update: {
@@ -819,6 +971,51 @@ export function applyAppServerEvent(
     return;
   }
 
+  // The model's own narration, streamed while it works.
+  //
+  // This arrived on every turn and was dropped on the floor: the transcript said
+  // which commands ran and nothing about why, which is the half a reader needs to
+  // tell a run that is working from one that is guessing. It goes into the same
+  // ordered list the actions do, so "I'm checking the payout reset" stays attached
+  // to the command that checked it — including after the turn finishes.
+  if (method === "item/reasoning/summaryPartAdded") {
+    // A new paragraph starts here; close the open one so the next delta does not
+    // run into it.
+    update.setSteps(closeOpenReasoning);
+    return;
+  }
+  if (method === "item/reasoning/summaryTextDelta" || method === "item/reasoning/textDelta") {
+    const delta = String(p.delta ?? "");
+    if (delta) {
+      const source = method.endsWith("summaryTextDelta") ? "summary" : "text";
+      update.setSteps((prev) => appendReasoning(prev, delta, source));
+    }
+    return;
+  }
+
+  // What a command printed, while it prints it — dropped until now, so a failing
+  // step in the transcript said which command ran and nothing it said.
+  if (method === "item/commandExecution/outputDelta") {
+    const itemId = String(p.itemId ?? p.item_id ?? "");
+    const delta = String(p.delta ?? "");
+    if (itemId && delta) update.setSteps((prev) => appendStepOutput(prev, itemId, delta));
+    return;
+  }
+
+  // An action shows up when it *starts*. Waiting for it to finish is what made a
+  // long command look like nothing was happening — the row appeared only once its
+  // output was already stale.
+  if (method === "item/started" && p.item) {
+    const item = p.item;
+    if (item.type === "commandExecution") {
+      update.setSteps((prev) => upsertStep(prev, commandStep(item, "running")));
+    } else if (item.type === "fileChange") {
+      const step = fileChangeStep(item, "running");
+      if (step) update.setSteps((prev) => upsertStep(prev, step));
+    }
+    return;
+  }
+
   if (method !== "item/completed" || !p.item) return;
   const item = p.item;
 
@@ -827,22 +1024,13 @@ export function applyAppServerEvent(
     update.setAnswer(item.text);
     return;
   }
+  if (item.type === "reasoning") {
+    update.setSteps((prev) => settleReasoning(prev, item));
+    return;
+  }
   if (item.type === "commandExecution") {
-    update.setSteps((prev) => {
-      const step = {
-        id: item.id || `as-${Date.now()}-${prev.length}`,
-        name: "Run Command",
-        detail: String(item.command || "").slice(0, 120),
-        status: item.exitCode === 0 || item.exitCode === undefined ? "done" : "failed",
-      };
-      const idx = prev.findIndex((s: any) => s.id === step.id);
-      if (idx >= 0) {
-        const next = [...prev];
-        next[idx] = { ...next[idx], ...step };
-        return next;
-      }
-      return [...prev, step];
-    });
+    const status = item.exitCode === 0 || item.exitCode === undefined ? "done" : "failed";
+    update.setSteps((prev) => upsertStep(prev, commandStep(item, status)));
     return;
   }
   if (item.type === "fileChange") {
@@ -857,15 +1045,8 @@ export function applyAppServerEvent(
       // possible: turn-scoped, and it counts only what the agent did — unlike a
       // `git diff`, which would also count the user's own uncommitted edits.
       update.recordChanges?.(summarizeItemChanges(item));
-      update.setSteps((prev) => [
-        ...prev,
-        {
-          id: `as-edit-${changed.join("|").slice(0, 60)}`,
-          name: "Edit Files",
-          detail: changed.map((path) => path.split(/[\\/]/).pop()).join(", ").slice(0, 120),
-          status: "done",
-        },
-      ]);
+      const step = fileChangeStep(item, "done");
+      if (step) update.setSteps((prev) => upsertStep(prev, step));
     }
   }
 }
@@ -928,28 +1109,32 @@ export function applyCodexEvent(
     return;
   }
   const item = event?.item;
+
+  // The same two things the app-server path gained: an action appears when it
+  // starts rather than when it finishes, and the model's reasoning joins the flow
+  // instead of being dropped. `exec` names them in snake_case.
+  if (event?.type === "item.started" && item) {
+    if (item.type === "command_execution") {
+      update.setSteps((prev) => upsertStep(prev, commandStep(item, "running")));
+    } else if (item.type === "file_change") {
+      const step = fileChangeStep(item, "running");
+      if (step) update.setSteps((prev) => upsertStep(prev, step));
+    }
+    return;
+  }
   if (event?.type !== "item.completed" || !item) return;
 
   if (item.type === "agent_message" && item.text) {
     update.appendAnswer(String(item.text));
     return;
   }
+  if (item.type === "reasoning") {
+    update.setSteps((prev) => settleReasoning(prev, item));
+    return;
+  }
   if (item.type === "command_execution") {
-    update.setSteps((prev) => {
-      const step = {
-        id: item.id || `codex-${Date.now()}-${prev.length}`,
-        name: "Run Command",
-        detail: String(item.command || "").slice(0, 120),
-        status: item.exit_code === 0 || item.exit_code === undefined ? "done" : "failed",
-      };
-      const idx = prev.findIndex((s: any) => s.id === step.id);
-      if (idx >= 0) {
-        const next = [...prev];
-        next[idx] = { ...next[idx], ...step };
-        return next;
-      }
-      return [...prev, step];
-    });
+    const status = item.exit_code === 0 || item.exit_code === undefined ? "done" : "failed";
+    update.setSteps((prev) => upsertStep(prev, commandStep(item, status)));
     return;
   }
   if (item.type === "file_change") {
@@ -962,21 +1147,8 @@ export function applyCodexEvent(
       : [];
     if (changed.length > 0) {
       update.markTouched(changed);
-      update.setSteps((prev) => {
-        const step = {
-          id: `codex-edit-${changed.join("|").slice(0, 80)}`,
-          name: "Edit Files",
-          detail: changed.map((p) => p.split(/[\\/]/).pop()).join(", ").slice(0, 120),
-          status: "done",
-        };
-        const idx = prev.findIndex((s: any) => s.id === step.id);
-        if (idx >= 0) {
-          const next = [...prev];
-          next[idx] = { ...next[idx], ...step };
-          return next;
-        }
-        return [...prev, step];
-      });
+      const step = fileChangeStep(item, "done");
+      if (step) update.setSteps((prev) => upsertStep(prev, step));
     }
     return;
   }
@@ -1346,7 +1518,6 @@ export interface UsePipelineReturn {
 
   // Real-time Streaming & Agent Step State
   streamingAnswer: string;
-  streamingThought: string;
   agentSteps: AgentStep[];
   /** Why the last agent run failed, for the chat to show in place of a generic line. */
   failureDetail: string;
@@ -1689,7 +1860,6 @@ export function usePipeline(): UsePipelineReturn {
 
   const clearReviewDiff = useCallback(() => setReviewDiff(null), []);
   const [streamingAnswer, setStreamingAnswer] = useState<string>("");
-  const [streamingThought, setStreamingThought] = useState<string>("");
   const [agentSteps, setAgentSteps] = useState<AgentStep[]>([]);
   // The reason a run failed, in the runtime's own words. The chat used to get
   // this from the orchestration result; when that was removed nothing filled it
@@ -2277,7 +2447,6 @@ export function usePipeline(): UsePipelineReturn {
       // like when the agent started.
       const before = fileSignature(projectFiles);
       setStreamingAnswer("");
-      setStreamingThought("");
       setAgentSteps([]);
       setTouchedPaths([]);
 
@@ -2715,7 +2884,6 @@ export function usePipeline(): UsePipelineReturn {
     clearLog,
     isTauriAvailable,
     streamingAnswer,
-    streamingThought,
     agentSteps,
     failureDetail,
     pendingApproval,

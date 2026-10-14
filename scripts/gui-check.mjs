@@ -542,6 +542,30 @@ try {
       model: "qwen2.5-coder:7b",
       timestamp: streamingNow - 60_000,
     },
+    // A finished turn with the reasoning kept in the flow, in the order it
+    // happened: what the model said it was about to do, then the row for the thing
+    // it did. Reported from use, against Copilot's panel.
+    {
+      id: "gui-flow",
+      role: "assistant",
+      content: "Fixed the payout reset.",
+      provider: "openai",
+      model: "gpt-5.3-codex",
+      timestamp: streamingNow - 120_000,
+      durationMs: 119_000,
+      steps: [
+        { id: "r1", kind: "reasoning", name: "Reasoning", text: "Tracing the payout reset first.", status: "done" },
+        {
+          id: "c1",
+          name: "Run Command",
+          detail: "git log -1 --format=%H",
+          status: "done",
+          output: "9f2c1ab1d0 payout: reset audit status\\n1 file changed, 3 insertions(+)",
+        },
+        { id: "r2", kind: "reasoning", name: "Reasoning", text: "The commit is stale, so the refund path is the real fix.", status: "done" },
+        { id: "a1", name: "Edit Files", detail: "payments.service.ts", status: "done" },
+      ],
+    },
   ]);
   await session.eval(`(() => {
     const messages = ${states};
@@ -642,6 +666,85 @@ try {
   check("a finished turn says how long it worked for, not when it started",
     wide && wide.header === "worked for 7m 29s",
     wide ? `header reads ${JSON.stringify(wide.header)}` : "no assistant header rendered");
+
+  // The reasoning, in the flow, in the rendered app. Copilot's shape: one line for
+  // a finished turn — "Completed 20 steps in 1m 59s" — that opens in place into the
+  // reasoning and the actions interleaved, in the order they happened.
+  const flowHeader = await session.eval(`(() => {
+    const summary = document.querySelector('[data-testid="agent-flow-summary"]');
+    return summary ? (summary.textContent || "").trim() : null;
+  })()`);
+  check("a finished turn collapses to one line: how much work, and how long",
+    flowHeader === "Completed 2 steps in 1m 59s",
+    `header reads ${JSON.stringify(flowHeader)}`);
+
+  await session.eval(`(() => {
+    const summary = document.querySelector('[data-testid="agent-flow-summary"]');
+    const button = summary && summary.closest("button");
+    if (button) button.click();
+  })()`);
+  await sleep(400);
+  const flow = await session.eval(`(() => {
+    const dock = document.querySelector('[data-testid="chat-dock-panel"]');
+    if (!dock) return null;
+    const box = dock.querySelector('[data-testid="chat-transcript"]');
+    const parts = [...box.querySelectorAll('[data-testid="agent-reasoning"], [data-testid="agent-step"]')];
+    const reasoning = box.querySelector('[data-testid="agent-reasoning"]');
+    return {
+      order: parts.map((n) => n.getAttribute("data-testid")),
+      firstText: reasoning ? (reasoning.textContent || "").trim() : null,
+      clipped: reasoning ? reasoning.scrollWidth - reasoning.clientWidth : -1,
+      steps: parts.filter((n) => n.getAttribute("data-testid") === "agent-step").length,
+    };
+  })()`);
+  check("opening it shows the reasoning between the actions it explains",
+    flow && JSON.stringify(flow.order) ===
+      JSON.stringify(["agent-reasoning", "agent-step", "agent-reasoning", "agent-step"]) &&
+      (flow.firstText || "").startsWith("Tracing the payout reset") &&
+      flow.steps === 2,
+    flow ? `order ${flow.order.map((o) => o.replace("agent-", "")).join(" > ")}, first ${JSON.stringify(flow.firstText)}` : "no flow rendered");
+  check("a reasoning paragraph wraps rather than being clipped",
+    flow && flow.clipped <= 1,
+    flow ? `${flow.clipped}px past its own box` : "no reasoning rendered");
+
+  // "the steps are interactive": a step that ran a command opens the command's own
+  // output in place. The output used to be dropped on the floor, so the row named
+  // the command and nothing it said.
+  const stepOutput = await session.eval(`(() => {
+    const box = document.querySelector('[data-testid="chat-transcript"]');
+    const step = box && box.querySelector('[data-testid="agent-step"]');
+    if (!step) return null;
+    const collapsed = step.getAttribute("aria-expanded");
+    step.click();
+    return { collapsed, tag: step.tagName.toLowerCase() };
+  })()`);
+  await sleep(300);
+  const opened = await session.eval(`(() => {
+    const printed = document.querySelector('[data-testid="agent-step-output"]');
+    if (!printed) return null;
+    const box = printed.getBoundingClientRect();
+    const step = document.querySelector('[data-testid="agent-step"]');
+    return {
+      text: (printed.textContent || "").slice(0, 40),
+      overflowX: printed.scrollWidth - printed.clientWidth,
+      expanded: step ? step.getAttribute("aria-expanded") : null,
+      withinDock: box.right <= (document.querySelector('[data-testid="chat-dock-panel"]').getBoundingClientRect().right + 1),
+    };
+  })()`);
+  check("a step opens the command's own output in place",
+    stepOutput && stepOutput.collapsed === "false" && stepOutput.tag === "button" &&
+      opened && opened.expanded === "true" && (opened.text || "").startsWith("9f2c1ab1d0") &&
+      opened.overflowX <= 1 && opened.withinDock,
+    opened
+      ? `expanded ${opened.expanded}, ${opened.overflowX}px over, inside dock ${opened.withinDock}, reads ${JSON.stringify(opened.text)}`
+      : "no output panel opened");
+  // Bring it into view for the screenshot: the transcript has been following the
+  // live tail, so the drawer opens below the fold.
+  await session.eval(`(() => {
+    const printed = document.querySelector('[data-testid="agent-step-output"]');
+    if (printed) printed.scrollIntoView({ block: "center" });
+  })()`);
+  await sleep(300);
   await session.screenshot("chat-transcript-wide");
 
   // 5d. The cloud provider panel reads in the order it is filled in, with one

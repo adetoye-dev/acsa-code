@@ -24,7 +24,15 @@ vi.mock("../ui/BrandLogos", () => ({
   },
 }));
 
-const SEEDED = [
+/** A stored message, loose enough for the fields the shapes under test add. */
+type SeedMessage = {
+  id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  timestamp: number;
+} & Record<string, unknown>;
+
+const SEEDED: SeedMessage[] = [
   {
     id: "m1",
     role: "user" as const,
@@ -1001,5 +1009,153 @@ describe("the running agent's clock", () => {
     expect(screen.queryByText(/of 20m/)).toBeNull();
     // The ceiling is not thrown away — it answers a hover, and names the setting.
     expect(screen.getByText("Working 1m 29s").getAttribute("title")).toMatch(/Settings → Agent/);
+  });
+});
+
+/**
+ * The flow: what the model said it was doing, next to what it did.
+ *
+ * Reported from use, against Copilot's agent panel — "it shows the reasoning that
+ * goes on to help make those decisions", collapsed when the turn ends into one
+ * line and opened again in place. The reasoning arrives as entries in the same
+ * ordered list as the actions (`kind: "reasoning"`), so this is the assertion that
+ * the transcript keeps that order rather than showing a steps block and a thoughts
+ * dump side by side.
+ */
+describe("the agent's reasoning, in the flow", () => {
+  const FLOW = [
+    {
+      id: "r1",
+      kind: "reasoning" as const,
+      name: "Reasoning",
+      text: "Tracing the payout reset first.",
+      status: "done" as const,
+    },
+    { id: "c1", name: "Run Command", detail: "git log -1 --format=%H", status: "done" as const },
+    {
+      id: "r2",
+      kind: "reasoning" as const,
+      name: "Reasoning",
+      text: "The commit is stale, so the refund path is the real fix.",
+      status: "done" as const,
+    },
+    { id: "a1", name: "Edit Files", detail: "payments.service.ts", status: "done" as const },
+  ];
+
+  const seed = (extra: Record<string, unknown>) => {
+    SEEDED.push({
+      id: "flow-1",
+      role: "assistant" as const,
+      content: "Fixed the payout reset.",
+      provider: "openai",
+      model: "gpt-5.3-codex",
+      timestamp: 1,
+      durationMs: 119_000,
+      steps: FLOW,
+      ...extra,
+    });
+    return () => {
+      SEEDED.length = 2;
+    };
+  };
+
+  const flowOrder = () =>
+    [...screen.getByTestId("chat-transcript").querySelectorAll('[data-testid="agent-reasoning"], [data-testid="agent-step"]')].map(
+      (node) => `${node.getAttribute("data-testid")}:${node.textContent || ""}`,
+    );
+
+  it("collapses a finished turn into one line, and opens in place", () => {
+    const reset = seed({});
+    try {
+      render(<AiAssistantChat {...baseProps} />);
+
+      // One line, the same shape Copilot shows: how much work, and how long it took.
+      const header = screen.getByText("Completed 2 steps in 1m 59s");
+      expect(header).toBeTruthy();
+      // Two actions, not four entries — the reasoning is not a step.
+      expect(screen.queryByText(/Completed 4 steps/)).toBeNull();
+      // Collapsed: the flow is not in the document until it is asked for.
+      expect(screen.queryByTestId("agent-reasoning")).toBeNull();
+
+      fireEvent.click(header);
+      expect(screen.getByText("Tracing the payout reset first.")).toBeTruthy();
+    } finally {
+      reset();
+    }
+  });
+
+  it("keeps the reasoning between the actions it explains", () => {
+    const reset = seed({});
+    try {
+      render(<AiAssistantChat {...baseProps} />);
+      fireEvent.click(screen.getByText("Completed 2 steps in 1m 59s"));
+
+      const flow = flowOrder();
+      expect(flow.map((entry) => entry.split(":")[0])).toEqual([
+        "agent-reasoning",
+        "agent-step",
+        "agent-reasoning",
+        "agent-step",
+      ]);
+      expect(flow[0]).toContain("Tracing the payout reset");
+      expect(flow[1]).toContain("Run Command");
+      expect(flow[2]).toContain("refund path");
+    } finally {
+      reset();
+    }
+  });
+
+  it("opens a step's own output in place, and closes it again", () => {
+    // "the steps are interactive" — a step that only names the command leaves the
+    // reader to run it again to find out what it said.
+    const reset = seed({
+      steps: [
+        {
+          id: "c1",
+          name: "Run Command",
+          detail: "npm test",
+          status: "failed",
+          output: "3 failed, 41 passed\n  at payments.spec.ts:88",
+        },
+      ],
+    });
+    try {
+      render(<AiAssistantChat {...baseProps} />);
+      fireEvent.click(screen.getByTestId("agent-flow-summary"));
+
+      const step = screen.getByTestId("agent-step");
+      expect(step.getAttribute("aria-expanded")).toBe("false");
+      expect(screen.queryByTestId("agent-step-output")).toBeNull();
+
+      fireEvent.click(step);
+      const printed = screen.getByTestId("agent-step-output");
+      expect(printed.textContent).toContain("3 failed, 41 passed");
+      expect(step.getAttribute("aria-expanded")).toBe("true");
+
+      fireEvent.click(step);
+      expect(screen.queryByTestId("agent-step-output")).toBeNull();
+    } finally {
+      reset();
+    }
+  });
+
+  it("shows the reasoning while the turn is still running, without a click", () => {
+    // The live half of the report: "actively writes it in the flow like an active
+    // reasoning and workflow loop". The live accordion is open by default, so
+    // narration is read as it arrives rather than after the fact.
+    render(
+      <AiAssistantChat
+        {...baseProps}
+        status="running"
+        agentSteps={[
+          { id: "r1", kind: "reasoning", name: "Reasoning", text: "Checking the driver assignment.", status: "running" },
+          { id: "c1", name: "Run Command", detail: "rg driver", status: "running" },
+        ]}
+        turnElapsedMs={12_000}
+      />,
+    );
+
+    expect(screen.getByText(/Checking the driver assignment/)).toBeTruthy();
+    expect(screen.getByText("Run Command")).toBeTruthy();
   });
 });

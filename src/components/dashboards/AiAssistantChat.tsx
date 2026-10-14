@@ -125,7 +125,6 @@ interface AiAssistantChatProps {
   isIndexing?: boolean;
   onSyncIndex?: () => void;
   streamingAnswer?: string;
-  streamingThought?: string;
   agentSteps?: AgentStep[];
   activeAiSettings?: { provider: string; model: string } | null;
 }
@@ -221,7 +220,6 @@ interface ChatTranscriptProps {
   isWide: boolean;
   status: PipelineStatus;
   streamingAnswer: string;
-  streamingThought: string;
   agentSteps: AgentStep[];
   agentElapsedMs: number;
   turnLimitMinutes: number;
@@ -254,7 +252,6 @@ const ChatTranscript = memo(function ChatTranscript({
   isWide,
   status,
   streamingAnswer,
-  streamingThought,
   agentSteps,
   agentElapsedMs,
   turnLimitMinutes,
@@ -382,6 +379,10 @@ const ChatTranscript = memo(function ChatTranscript({
                   thinking={msg.thinking}
                   isLive={false}
                   hasSummary={Boolean(msg.content && msg.content.trim())}
+                  // The collapsed line's other half: "Completed 12 steps in 1m 59s".
+                  // `durationMs` is the work the turn did, the same number the
+                  // header above it reports as "worked for".
+                  elapsedSeconds={msg.durationMs ? Math.round(msg.durationMs / 1000) : 0}
                 />
               )}
 
@@ -574,7 +575,6 @@ const ChatTranscript = memo(function ChatTranscript({
               {/* Live Thinking Accordion (auto-collapses when summary arrives) */}
               <ThinkingAccordion
                 steps={agentSteps}
-                thinking={streamingThought}
                 isLive={true}
                 hasSummary={Boolean(streamingAnswer && streamingAnswer.trim())}
                 elapsedSeconds={Math.floor(agentElapsedMs / 1000)}
@@ -597,7 +597,7 @@ const ChatTranscript = memo(function ChatTranscript({
                   </span>
                 </div>
               ) : (
-                !streamingThought && (!agentSteps || agentSteps.length === 0) ? (
+                !agentSteps || agentSteps.length === 0 ? (
                   <div className="flex items-center gap-2 text-zinc-400 text-xs py-1">
                     <Icon icon={RefreshCw} className="w-3 h-3 animate-spin text-purple-400" />
                     <span>Thinking through solution...</span>
@@ -686,7 +686,6 @@ export function AiAssistantChat({
   isIndexing = false,
   onSyncIndex,
   streamingAnswer = "",
-  streamingThought = "",
   agentSteps = NO_STEPS,
   activeAiSettings = null,
 }: AiAssistantChatProps) {
@@ -1227,7 +1226,6 @@ export function AiAssistantChat({
         provider: selectedModelItem?.providerId || "ollama",
         model: selectedModelItem?.model || "ACSA Agent",
         steps: finalizedSteps.length > 0 ? finalizedSteps : undefined,
-        thinking: cleanThoughtText(streamingThought) || undefined,
         error: !isSuccess,
         errorType: !isSuccess ? errorType : undefined,
         // Recorded on the message, not only in live state, so the log scrolls
@@ -1250,7 +1248,7 @@ export function AiAssistantChat({
     // `turnElapsedMs` is a dependency on purpose even though the effect must not
     // rebuild the message when it ticks: the guard above (`status` left "running")
     // makes those extra runs no-ops, and it is the value the finished message needs.
-  }, [status, failureDetail, failureSummary, noFileChanges, waitingForUser, turnChanges, projectRoot, selectedModelItem, streamingAnswer, streamingThought, agentSteps, planWriteSettled, turnElapsedMs]);
+  }, [status, failureDetail, failureSummary, noFileChanges, waitingForUser, turnChanges, projectRoot, selectedModelItem, streamingAnswer, agentSteps, planWriteSettled, turnElapsedMs]);
 
   /**
    * Ask Ollama what is actually installed, and believe it.
@@ -2629,7 +2627,6 @@ Click to re-index project.`}
           isWide={isWide}
           status={status}
           streamingAnswer={streamingAnswer}
-          streamingThought={streamingThought}
           agentSteps={agentSteps}
           agentElapsedMs={turnElapsedMs}
           turnLimitMinutes={turnLimitMinutes}
@@ -3279,6 +3276,9 @@ function ThinkingAccordion({
 }: ThinkingAccordionProps) {
   // Auto-collapse if a summary or conclusion has been reached
   const [isOpen, setIsOpen] = useState(() => isLive && !hasSummary);
+  // Which step has its output open. One at a time: two command logs open at once in
+  // a 300px dock is a scroll hunt, not a comparison.
+  const [openStep, setOpenStep] = useState<string | null>(null);
 
   const prevLiveRef = useRef(isLive);
   const prevSummaryRef = useRef(hasSummary);
@@ -3309,14 +3309,18 @@ function ThinkingAccordion({
     return !INTERNAL_FRAMEWORK_STEPS.has(name);
   });
 
+  // Reasoning is in the flow but is not a step: counting it would report "20 steps"
+  // for a run that took eleven, and the header's whole job is to say how much work
+  // happened. It is also what the live header names, so it wants an action.
+  const actionSteps = visibleSteps.filter((s) => s.kind !== "reasoning");
   const cleanedThought = cleanThoughtText(thinking);
 
   if (visibleSteps.length === 0 && !cleanedThought && !isLive) {
     return null;
   }
 
-  const activeStep = visibleSteps.find((s) => s.status === "running") || visibleSteps[visibleSteps.length - 1];
-  const completedCount = visibleSteps.filter((s) => s.status === "done" || s.status === "success").length;
+  const activeStep = actionSteps.find((s) => s.status === "running") || actionSteps[actionSteps.length - 1];
+  const completedCount = actionSteps.filter((s) => s.status === "done" || s.status === "success").length;
 
   return (
     <div className="mb-2.5 rounded-xl border border-zinc-800/80 bg-zinc-950/50 overflow-hidden text-xs transition-all">
@@ -3357,16 +3361,35 @@ function ThinkingAccordion({
           ) : (
             <div className="flex items-center gap-2 min-w-0">
               <Icon icon={Sparkles} className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-              <span className="font-semibold text-zinc-300 font-mono text-2xs">
-                {elapsedSeconds > 0
-                  ? `Thought for ${elapsedSeconds}s`
-                  : visibleSteps.length > 0
-                  ? "What the agent did"
+              <span
+                data-testid="agent-flow-summary"
+                className="font-semibold text-zinc-300 font-mono text-2xs"
+              >
+                {/*
+                  "Completed 20 steps in 1m 59s" — one line, the same shape the
+                  transcript keeps for a finished turn, expanded in place by the
+                  click that opens this drawer. `elapsedSeconds` is the work the
+                  turn did (it pauses while the run waits on a person), which is
+                  the number the composer counted beside the stop button.
+                */}
+                {actionSteps.length > 0
+                  ? elapsedSeconds > 0
+                    ? `Completed ${actionSteps.length} ${
+                        actionSteps.length === 1 ? "step" : "steps"
+                      } in ${formatDuration(elapsedSeconds * 1000)}`
+                    : `Completed ${actionSteps.length} ${
+                        actionSteps.length === 1 ? "step" : "steps"
+                      }`
+                  : elapsedSeconds > 0
+                  ? `Thought for ${formatDuration(elapsedSeconds * 1000)}`
                   : "Model Reasoning"}
               </span>
-              {visibleSteps.length > 0 && (
+              {/* Only while it is still running: "18 of 20" is a progress report,
+                  and a finished turn's progress is 100% — which the line above
+                  already says. */}
+              {isLive && actionSteps.length > 0 && (
                 <span className="text-3xs text-zinc-500 font-mono">
-                  ({completedCount}/{visibleSteps.length} {visibleSteps.length === 1 ? "step" : "steps"})
+                  ({completedCount}/{actionSteps.length})
                 </span>
               )}
             </div>
@@ -3382,33 +3405,37 @@ function ThinkingAccordion({
 
       {/* Expanded Drawer */}
       {isOpen && (
-        <div className="p-3 space-y-3 border-t border-zinc-800/60 bg-zinc-950/80">
-          {/* Actionable Steps Checklist (Tool calls, Syntax checks, Subagents) */}
-          {visibleSteps.length > 0 && (
-            <div className="space-y-1.5">
-              <div className="text-3xs font-semibold uppercase tracking-wider text-zinc-500 font-mono mb-1">
-                Execution Steps
-              </div>
-              <div className="space-y-1 pl-1">
-                {visibleSteps.map((step, idx) => {
+        /*
+          One flow, in the order it happened: what the model said it was about to
+          do, then the row for the thing it did, then what it made of the result.
+          The action rows used to live in their own "Execution Steps" block with the
+          reasoning beside them as a separate dump, which is the one arrangement
+          that loses the thread between them — the reasoning is only worth reading
+          *next to* the action it explains.
+        */
+        <div className="px-3 pb-3 pt-2.5 space-y-2 border-t border-zinc-800/60 bg-zinc-950/80">
+          {visibleSteps.map((step, idx) =>
+            step.kind === "reasoning" ? (
+              <p
+                key={step.id ?? `r-${idx}`}
+                data-testid="agent-reasoning"
+                className="text-2xs text-zinc-400 leading-relaxed whitespace-pre-wrap break-words"
+              >
+                {cleanThoughtText(step.text ?? "")}
+                {isLive && step.status === "running" && (
+                  <span className="inline-block w-1.5 h-3 ml-1 bg-purple-400 align-middle animate-pulse" />
+                )}
+              </p>
+            ) : (
+              (() => {
                   const isRunning = isLive && step.status === "running";
                   const isSuccess = step.status === "done" || step.status === "success";
                   const isFailed = step.status === "failed";
                   const category = getStepCategory(step.name);
+                  const printed = (step.output ?? "").trim();
 
-                  return (
-                    <div
-                      key={idx}
-                      className={`flex items-start gap-2 text-2xs py-1 px-1.5 rounded transition-colors ${
-                        isRunning
-                          ? "bg-purple-950/20 text-purple-200"
-                          : isSuccess
-                          ? "text-zinc-300 hover:bg-zinc-900/40"
-                          : isFailed
-                          ? "bg-red-950/20 text-red-300"
-                          : "text-zinc-500"
-                      }`}
-                    >
+                  const row = (
+                    <>
                       <div className="mt-0.5 shrink-0 flex items-center gap-1.5">
                         {isRunning ? (
                           <Icon icon={RefreshCw} className="w-3 h-3 text-purple-400 animate-spin" />
@@ -3433,25 +3460,73 @@ function ThinkingAccordion({
                             — {step.detail}
                           </span>
                         )}
+                        {/* The step's own output, on request. A row that only names
+                            the command leaves the reader to run it again to find out
+                            what it said. */}
+                        {openStep === step.id && printed && (
+                          <pre
+                            data-testid="agent-step-output"
+                            className="mt-1.5 p-2 rounded-lg bg-black/60 border border-zinc-800 text-3xs font-mono text-zinc-400 whitespace-pre-wrap break-words max-h-40 overflow-y-auto"
+                          >
+                            {printed}
+                          </pre>
+                        )}
                       </div>
+                    </>
+                  );
+
+                  // A step with output is a control, so it is a button — with the
+                  // keyboard and screen-reader state that comes with one.
+                  if (printed) {
+                    return (
+                      <button
+                        key={step.id ?? `s-${idx}`}
+                        type="button"
+                        data-testid="agent-step"
+                        aria-expanded={openStep === step.id}
+                        onClick={() => setOpenStep((prev) => (prev === step.id ? null : step.id ?? null))}
+                        title={openStep === step.id ? "Hide output" : "Show output"}
+                        className={`w-full text-left flex items-start gap-2 text-2xs py-1 px-1.5 rounded transition-colors cursor-pointer ${
+                          isRunning
+                            ? "bg-purple-950/20 text-purple-200"
+                            : isSuccess
+                            ? "text-zinc-300 hover:bg-zinc-900/40"
+                            : isFailed
+                            ? "bg-red-950/20 text-red-300"
+                            : "text-zinc-500"
+                        }`}
+                      >
+                        {row}
+                      </button>
+                    );
+                  }
+
+                  return (
+                    <div
+                      key={step.id ?? `s-${idx}`}
+                      data-testid="agent-step"
+                      className={`flex items-start gap-2 text-2xs py-1 px-1.5 rounded transition-colors ${
+                        isRunning
+                          ? "bg-purple-950/20 text-purple-200"
+                          : isSuccess
+                          ? "text-zinc-300 hover:bg-zinc-900/40"
+                          : isFailed
+                          ? "bg-red-950/20 text-red-300"
+                          : "text-zinc-500"
+                      }`}
+                    >
+                      {row}
                     </div>
                   );
-                })}
-              </div>
-            </div>
+              })()
+            ),
           )}
 
-          {/* Model Thoughts / Streaming Reasoning */}
+          {/* A turn that produced no narration of its own — an older transcript, or
+              a provider that sends none — still has whatever `thinking` was stored
+              with it. Kept as the last resort rather than as a section of its own. */}
           {cleanedThought && (
-            <div className="space-y-1">
-              <div className="text-3xs font-semibold uppercase tracking-wider text-zinc-500 font-mono">
-                Model Thoughts
-              </div>
-              <div className="p-2.5 rounded-lg bg-zinc-900/80 border border-zinc-800 text-2xs font-mono text-zinc-400 whitespace-pre-wrap max-h-48 overflow-y-auto leading-relaxed">
-                {cleanedThought}
-                {isLive && <span className="inline-block w-1.5 h-3 bg-purple-400 ml-1 animate-pulse align-middle" />}
-              </div>
-            </div>
+            <p className="text-2xs text-zinc-400 leading-relaxed whitespace-pre-wrap break-words">{cleanedThought}</p>
           )}
         </div>
       )}
