@@ -25,6 +25,9 @@ import {
   Undo2,
 } from "lucide-react";
 import { Icon } from "../ui/Icon";
+
+/** Where the folded change groups are remembered. */
+const COLLAPSED_GROUPS_KEY = "acsa_git_collapsed_groups";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { FileIcon } from "../ui/FileIcon";
 import { SurfaceFallback } from "../ui/SurfaceFallback";
@@ -249,6 +252,36 @@ export function GitDashboard({
   const [branch, setBranch] = useState("main");
   const [ahead, setAhead] = useState(0);
   const [behind, setBehind] = useState(0);
+  /**
+   * Which change groups are folded away, by title.
+   *
+   * Remembered across visits on purpose: the reason to fold a group is "this one is
+   * noise until I get to it", which is a decision about the repository rather than
+   * about this visit. Same store the explorer keeps its own folders in.
+   */
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(() => {
+    try {
+      const stored = localStorage.getItem(COLLAPSED_GROUPS_KEY);
+      const parsed = stored ? JSON.parse(stored) : null;
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      /* storage unavailable, or something else wrote there: start unfolded */
+      return {};
+    }
+  });
+
+  const toggleGroup = (title: string) => {
+    setCollapsedGroups((prev) => {
+      const next = { ...prev, [title]: !prev[title] };
+      try {
+        localStorage.setItem(COLLAPSED_GROUPS_KEY, JSON.stringify(next));
+      } catch {
+        /* storage unavailable; this session still folds */
+      }
+      return next;
+    });
+  };
+
   const [staged, setStaged] = useState<ChangedGitFile[]>([]);
   const [unstaged, setUnstaged] = useState<ChangedGitFile[]>([]);
   /** Unresolved conflicts, which are neither staged nor a working-tree change. */
@@ -785,6 +818,8 @@ export function GitDashboard({
                   until they are gone. */}
               <ChangeGroup
                 title="Merge conflicts"
+                collapsed={Boolean(collapsedGroups["Merge conflicts"])}
+                onToggle={() => toggleGroup("Merge conflicts")}
                 files={conflicted}
                 isStaged={false}
                 busy={busy}
@@ -798,6 +833,8 @@ export function GitDashboard({
               />
               <ChangeGroup
                 title="Staged changes"
+                collapsed={Boolean(collapsedGroups["Staged changes"])}
+                onToggle={() => toggleGroup("Staged changes")}
                 files={staged}
                 isStaged
                 busy={busy}
@@ -812,6 +849,8 @@ export function GitDashboard({
               />
               <ChangeGroup
                 title="Changes"
+                collapsed={Boolean(collapsedGroups["Changes"])}
+                onToggle={() => toggleGroup("Changes")}
                 files={unstaged}
                 isStaged={false}
                 busy={busy}
@@ -1149,6 +1188,9 @@ interface ChangeGroupProps {
   title: string;
   files: ChangedGitFile[];
   isStaged: boolean;
+  /** Folded away — the header stays, the files do not. */
+  collapsed: boolean;
+  onToggle: () => void;
   busy: string | null;
   selectedPath: string | null;
   onPreview: (file: ChangedGitFile) => void;
@@ -1163,6 +1205,8 @@ function ChangeGroup({
   title,
   files,
   isStaged,
+  collapsed,
+  onToggle,
   busy,
   selectedPath,
   onPreview,
@@ -1175,10 +1219,29 @@ function ChangeGroup({
   if (files.length === 0) return null;
   return (
     <section className="py-1">
+      {/*
+        The header folds the group. It did not, and VS Code's does: a run that
+        changed thirty files pushed the commit box — and everything below it — out
+        of the sidebar with no way to get it back. The count stays in the header so a
+        folded group still says how much is in it.
+      */}
       <div className="flex items-center justify-between gap-2 px-3 py-1.5">
-        <span className="text-4xs font-semibold uppercase tracking-wider text-zinc-500">
-          {title} · {files.length}
-        </span>
+        <button
+          type="button"
+          onClick={onToggle}
+          data-testid={`git-group-${title}`}
+          aria-expanded={!collapsed}
+          title={collapsed ? `Show ${title.toLowerCase()}` : `Hide ${title.toLowerCase()}`}
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left cursor-pointer group/header"
+        >
+          <Icon
+            icon={collapsed ? ChevronRight : ChevronDown}
+            className="w-3 h-3 shrink-0 text-zinc-500 group-hover/header:text-zinc-300 transition-colors"
+          />
+          <span className="truncate text-4xs font-semibold uppercase tracking-wider text-zinc-500 group-hover/header:text-zinc-300 transition-colors">
+            {title} · {files.length}
+          </span>
+        </button>
         <button
           type="button"
           title={`${actionTitle} all`}
@@ -1189,7 +1252,8 @@ function ChangeGroup({
           <Icon icon={actionIcon} className="w-3 h-3" />
         </button>
       </div>
-      {files.map((file) => {
+      {!collapsed &&
+        files.map((file) => {
         const status = isStaged ? file.indexStatus : file.workTreeStatus;
         const active = selectedPath === file.path;
         return (
@@ -1255,10 +1319,10 @@ function ChangeGroup({
                   <Icon icon={Undo2} className="w-3 h-3" />
                 </button>
               )}
+              </div>
             </div>
-          </div>
-        );
-      })}
+          );
+        })}
     </section>
   );
 }

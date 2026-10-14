@@ -104,6 +104,9 @@ beforeEach(() => {
   engine.calls = [];
   engine.payloads = [];
   engine.overrides = {};
+  // The folded groups are remembered there, so a test that folds one would
+  // otherwise leave the next test with a folded group it never asked for.
+  localStorage.clear();
 });
 afterEach(cleanup);
 
@@ -472,5 +475,82 @@ describe("the source control page", () => {
     fireEvent.click(await screen.findByTestId("git-file-src/b.ts"));
     expect(await screen.findByTestId("git-hunks-error")).toBeTruthy();
     expect(screen.getByText("fatal: bad revision")).toBeTruthy();
+  });
+});
+
+/**
+ * Folding a group of changes.
+ *
+ * Asked for directly: "I should be able to collapse changes lists in git page
+ * sidebar". A run that changed thirty files pushed the commit box and the history
+ * below it out of the sidebar, and there was no way to fold the list back — the
+ * header was a label with one action button and no control of its own.
+ */
+describe("folding a group of changes", () => {
+  const open = async () => {
+    render(<GitDashboard projectCwd="/work/acsa-code" />);
+    await waitFor(() => expect(screen.getByTestId("git-group-Changes")).toBeTruthy());
+  };
+
+  it("folds the files away and keeps the count on the header", async () => {
+    await open();
+    expect(screen.getByTestId("git-file-src/b.ts")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("git-group-Changes"));
+
+    expect(screen.queryByTestId("git-file-src/b.ts")).toBeNull();
+    // A folded group still says how much is behind it.
+    expect(screen.getByText("Changes · 2")).toBeTruthy();
+    expect(screen.getByTestId("git-group-Changes").getAttribute("aria-expanded")).toBe("false");
+    // The caret is the affordance, and it has to point the way the group is.
+    expect(screen.getByTestId("git-group-Changes").querySelector(".lucide-chevron-right")).toBeTruthy();
+  });
+
+  it("shows an open caret while the group is open", async () => {
+    // The control existed but had nothing to say about its own state: the header was
+    // a label and a button, so a folded group looked like an empty one.
+    await open();
+    expect(screen.getByTestId("git-group-Changes").querySelector(".lucide-chevron-down")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("git-group-Changes"));
+    expect(screen.getByTestId("git-group-Changes").querySelector(".lucide-chevron-down")).toBeNull();
+  });
+
+  it("folds one group without touching the other", async () => {
+    await open();
+
+    fireEvent.click(screen.getByTestId("git-group-Staged changes"));
+
+    expect(screen.queryByTestId("git-file-src/a.ts")).toBeNull();
+    // The working-tree group is the one the reader is looking at; folding the
+    // staged one must not close it too.
+    expect(screen.getByTestId("git-file-src/b.ts")).toBeTruthy();
+    expect(screen.getByTestId("git-group-Changes").getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("remembers which groups were folded", async () => {
+    // The reason to fold a group is "this one is noise until I get to it", which is
+    // a decision about the repository rather than about this visit.
+    const first = render(<GitDashboard projectCwd="/work/acsa-code" />);
+    await waitFor(() => expect(screen.getByTestId("git-group-Changes")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("git-group-Changes"));
+    first.unmount();
+
+    render(<GitDashboard projectCwd="/work/acsa-code" />);
+    await waitFor(() =>
+      expect(screen.getByTestId("git-group-Changes").getAttribute("aria-expanded")).toBe("false"),
+    );
+    expect(screen.queryByTestId("git-file-src/b.ts")).toBeNull();
+  });
+
+  it("keeps the group's own action button working, and separate from the fold", async () => {
+    await open();
+    fireEvent.click(screen.getByTestId("git-group-Changes"));
+
+    // "Stage all" is a control on the header, not the header.
+    fireEvent.click(screen.getByTitle("Stage all"));
+
+    await waitFor(() => expect(engine.calls).toContain("stage-all"));
+    expect(screen.getByTestId("git-group-Changes").getAttribute("aria-expanded")).toBe("false");
   });
 });
