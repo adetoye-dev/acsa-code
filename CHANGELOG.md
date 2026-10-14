@@ -17,6 +17,27 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.45] - 2026-10-14
+
+### Fixed
+
+- **A stopped turn no longer erases itself.** Seen in a screen recording: the run was
+  at "Step 9: Run Command" with its reasoning streaming, and a fraction of a second
+  later the panel held nothing but the user's message — no steps, no reasoning, no
+  file changes, no answer. Stopping a run recorded nothing, and the only explanation
+  went to the Output panel, which is not where anyone is looking. Every way a turn
+  ends prematurely — the Stop button, the loop backstop, the step ceiling, the time
+  limit — now keeps the run on the record: what it had already answered, the steps
+  and reasoning behind it, the files it changed, and a sentence naming what stopped
+  it. A stop you asked for says so, in its own words.
+- **One panel for a run, not three.** The transcript drew the agent's reasoning in
+  its own bordered panel (with its own spinner and its own timer), a second bordered
+  bar for "Step 9: Run Command" and Stop, and a third bordered card for the changed
+  files — three surfaces, two spinners and two clocks for one turn, under a "Hide"
+  button beside a row that already said what it was. The flow is now bare inside the
+  message, with a caret as the only affordance, Stop in the row it ends, and the
+  changed files as the last section of that same flow.
+
 ## [0.2.44] - 2026-10-14
 
 ### Added
@@ -1061,7 +1082,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.44...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.45...dev
+[0.2.45]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.44...v0.2.45
 [0.2.44]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.43...v0.2.44
 [0.2.43]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.42...v0.2.43
 [0.2.42]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.41...v0.2.42

@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "acsa-code"
-version = "0.2.44"
+version = "0.2.45"
 dependencies = [
  "keyring",
  "serde",
