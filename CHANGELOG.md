@@ -35,19 +35,16 @@ for them, not which file moved.
   shows what it printed without leaving the chat — previously the row named the
   command and nothing it said, so "why did that fail?" meant running it again by
   hand.
+- **Nothing extra is asked of the model to show this.** The reasoning, the output
+  and the step timings are all produced and billed on every run already; the app
+  only stopped throwing them away. Which text you get depends on the model — Codex
+  models send short summaries, DeepSeek sends the raw reasoning, and a model that
+  produces neither simply shows the steps.
 
 ### Changed
 
 - **A step appears when it starts, not when it finishes.** A long command used to
   be a silent gap followed by a row that was already stale.
-
-### Notes
-
-- These are the model's own words, already produced on every run and already
-  billed as output tokens: showing them asks nothing extra of the model and costs
-  nothing extra. Which text you get depends on the model — Codex models send short
-  summaries, DeepSeek sends the raw reasoning, and a model that produces neither
-  simply shows the steps.
 
 ## [0.2.41] - 2026-10-13
 
