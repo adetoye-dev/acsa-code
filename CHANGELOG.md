@@ -17,6 +17,38 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.42] - 2026-10-14
+
+### Added
+
+- **The agent shows its reasoning, in the flow, next to the steps it explains.**
+  The runtime narrates what it is about to do and what it made of the result, and
+  the transcript was dropping every word — it said which commands ran and nothing
+  about why. Those paragraphs now appear in order between the actions, so "I'm
+  first tracing the payout reset" stays attached to the command that traced it.
+- **A finished turn collapses to one line: `Completed 12 steps in 1m 59s`.** Click
+  it and the same flow opens in place — the reasoning and the actions, in the order
+  they happened, rather than a steps list in one block and the thinking in another.
+  The count is actions; the reasoning is not a step, and the time is the work the
+  turn did.
+- **A step opens the command's own output.** Clicking a step that ran something
+  shows what it printed without leaving the chat — previously the row named the
+  command and nothing it said, so "why did that fail?" meant running it again by
+  hand.
+
+### Changed
+
+- **A step appears when it starts, not when it finishes.** A long command used to
+  be a silent gap followed by a row that was already stale.
+
+### Notes
+
+- These are the model's own words, already produced on every run and already
+  billed as output tokens: showing them asks nothing extra of the model and costs
+  nothing extra. Which text you get depends on the model — Codex models send short
+  summaries, DeepSeek sends the raw reasoning, and a model that produces neither
+  simply shows the steps.
+
 ## [0.2.41] - 2026-10-13
 
 ### Fixed
@@ -988,7 +1020,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.41...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.42...dev
+[0.2.42]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.41...v0.2.42
 [0.2.41]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.40...v0.2.41
 [0.2.40]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.39...v0.2.40
 [0.2.39]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.38...v0.2.39
