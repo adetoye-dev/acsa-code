@@ -17,6 +17,20 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.47] - 2026-10-15
+
+### Changed
+
+- **The files a run changed follow the summary, not the reasoning.** "Edited 2 files
+  +13 −4" was inside the folded drawer, so seeing which files changed meant also
+  asking for the reasoning. It sits under the answer now — while the turn runs, and
+  after it — because it is part of the summary rather than part of the working-out.
+
+### Fixed
+
+- **One caret on the flow row.** It had one on each side of the text, which reads as
+  two controls for the same fold. The far-right caret is the one that stayed.
+
 ## [0.2.46] - 2026-10-14
 
 ### Added
@@ -1095,7 +1109,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.46...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.47...dev
+[0.2.47]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.46...v0.2.47
 [0.2.46]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.45...v0.2.46
 [0.2.45]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.44...v0.2.45
 [0.2.44]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.43...v0.2.44
