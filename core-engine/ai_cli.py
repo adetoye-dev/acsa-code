@@ -713,7 +713,15 @@ def inline_edit(payload: dict) -> dict:
     if not ok:
         return {"ok": False, "error": error, "replacement": ""}
     if not raw:
-        return {"ok": False, "error": "The provider returned an empty replacement.", "replacement": ""}
+        return {
+            "ok": False,
+            "error": (
+                "The model returned no code for this edit. A local model does that "
+                "occasionally on the first try — run it again, or choose a different "
+                "model for editor edits."
+            ),
+            "replacement": "",
+        }
 
     _record_usage(
         provider, model, tokens[0], tokens[1], elapsed_ms, payload.get("projectRoot")

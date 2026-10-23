@@ -506,7 +506,10 @@ export async function executeInlineEdit({
 }): Promise<InlineEditResult> {
   const { provider, model, apiKey, baseUrl } = settings;
   const timeoutController = new AbortController();
-  const timeoutId = window.setTimeout(() => timeoutController.abort(), 30000);
+  // 60s, not 30: a local model's *first* edit pays for loading the model, and a cold
+  // 7B there can outlast a half-minute before it has produced a token. The engine's
+  // own ceiling is 180s; this one exists so a request cannot hang the editor forever.
+  const timeoutId = window.setTimeout(() => timeoutController.abort(), 60000);
   const abortRelay = () => timeoutController.abort();
   signal?.addEventListener("abort", abortRelay, { once: true });
   const requestSignal = timeoutController.signal;
@@ -535,10 +538,28 @@ export async function executeInlineEdit({
     });
     if (res.ok) {
       const data = (await res.json()) as any;
-      if (data.ok && typeof data.replacement === "string" && data.replacement.trim()) {
-        return finish({ ok: true, replacement: data.replacement });
+      if (data.ok && typeof data.replacement === "string") {
+        if (data.replacement.trim()) return finish({ ok: true, replacement: data.replacement });
+        // `ok` with nothing in it: a model that answered without code. Worth its own
+        // sentence, because "try again" is the actual remedy and the reader cannot
+        // read that from a status code.
+        return finish({
+          ok: false,
+          reason: "The model returned no code for this edit — try again, or choose another model for editor edits.",
+        });
       }
-      return finish({ ok: false, reason: data.reason || `Inline edit request failed (${res.status})` });
+      /*
+       * The engine reports its refusals under `error`; only the sanitizer path fills
+       * `reason`. Reading `reason` alone turned every one of them — a missing key, an
+       * empty reply, a provider 402 — into "Inline edit request failed (200)", because
+       * the HTTP call itself had succeeded. Reported from use as "Fix with AI is
+       * failing", with no way to tell what had failed. `aiReview` reads `error` and
+       * always did; this was the one path that did not.
+       */
+      return finish({
+        ok: false,
+        reason: data.reason || data.error || `The inline edit returned nothing (${res.status}).`,
+      });
     }
   } catch (err: any) {
     if (err?.name === "AbortError") return finish({ ok: false, reason: "Inline edit request was cancelled or timed out." });
