@@ -17,6 +17,23 @@ for them, not which file moved.
 
 ## [Unreleased]
 
+## [0.2.49] - 2026-10-23
+
+### Fixed
+
+- **"Fix with AI" says what failed.** Its failures arrived as
+  `Inline edit request failed (200)` — a status code for a request that had
+  *succeeded*, because the engine reports its refusals in the body and the page was
+  reading the wrong field of it. A missing provider key, a provider error and a
+  model that answered without code all looked identical and said nothing. The
+  engine's own words reach the toast now.
+- **An answer with no code says so, and says what to do.** "The provider returned an
+  empty replacement" was accurate and useless; it now says the model returned no
+  code for the edit and that running it again, or choosing another editor model, is
+  the way forward — which is what actually fixes it on a local model.
+- **A local model's first edit is not cut off at thirty seconds.** It pays for
+  loading the model, and a cold 7B can take longer than that to produce a token.
+
 ## [0.2.48] - 2026-10-15
 
 ### Fixed
@@ -1130,7 +1147,8 @@ for them, not which file moved.
 - First public build: the workbench, the bundled engine sidecar, the integrated
   terminal, and signed, notarised macOS releases.
 
-[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.48...dev
+[Unreleased]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.49...dev
+[0.2.49]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.48...v0.2.49
 [0.2.48]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.47...v0.2.48
 [0.2.47]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.46...v0.2.47
 [0.2.46]: https://github.com/adetoye-dev/acsa-code/compare/v0.2.45...v0.2.46
