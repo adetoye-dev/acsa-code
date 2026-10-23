@@ -52,7 +52,7 @@ TypeScript it falls back to *are* distributed — fetched by
 - **dockview** 8.5.1 — MIT — [github.com/dockview/dockview](https://github.com/dockview/dockview)
 - **dockview-core** 8.5.1 — MIT — [github.com/dockview/dockview](https://github.com/dockview/dockview)
 - **dockview-react** 8.5.1 — MIT — [github.com/dockview/dockview](https://github.com/dockview/dockview)
-- **dompurify** 3.4.15 — (MPL-2.0 OR Apache-2.0) — [github.com/cure53/DOMPurify](https://github.com/cure53/DOMPurify)
+- **dompurify** 3.4.17 — (MPL-2.0 OR Apache-2.0) — [github.com/cure53/DOMPurify](https://github.com/cure53/DOMPurify)
 - **events** 3.3.0 — MIT — [github.com/Gozala/events](https://github.com/Gozala/events)
 - **float-tooltip** 1.7.5 — MIT — [github.com/vasturiano/float-tooltip](https://github.com/vasturiano/float-tooltip)
 - **force-graph** 1.52.0 — MIT — [github.com/vasturiano/force-graph](https://github.com/vasturiano/force-graph)
